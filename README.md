@@ -1,4 +1,4 @@
-# Jet-Leg
+# Jet-Lag
 
 > 한국 직장인을 위한 멀티포맷 RAG 기반 개인 지식 에이전트.
 >
@@ -40,7 +40,7 @@
 ## 레포 구조
 
 ```
-Jet-Leg/
+Jet-Lag/
 ├── api/         # FastAPI 백엔드 (W1 Day 2~)
 ├── web/         # Next.js PWA 프론트엔드 (W1 Day 6~)
 ├── evals/       # Ragas 평가 셋 / 러너 (W5~)
