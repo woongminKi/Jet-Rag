@@ -1,7 +1,7 @@
 [project]
-name = "jet-lag-api"
+name = "jet-rag-api"
 version = "0.1.0"
-description = "Jet-Lag 백엔드 — 한국어 멀티포맷 RAG 개인 지식 에이전트"
+description = "Jet-Rag 백엔드 — 한국어 멀티포맷 RAG 개인 지식 에이전트"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.136.0",
