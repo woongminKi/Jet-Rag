@@ -1,0 +1,10 @@
+[project]
+name = "jet-leg-api"
+version = "0.1.0"
+description = "Jet-Leg 백엔드 — 한국어 멀티포맷 RAG 개인 지식 에이전트"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.136.0",
+    "python-dotenv>=1.2.2",
+    "uvicorn[standard]>=0.45.0",
+]
