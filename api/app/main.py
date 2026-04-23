@@ -1,6 +1,7 @@
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
 
-from app.routers import documents_router
+from app.routers import documents_router, stats_router
 
 app = FastAPI(
     title="Jet-Rag API",
@@ -9,6 +10,12 @@ app = FastAPI(
 )
 
 app.include_router(documents_router)
+app.include_router(stats_router)
+
+
+@app.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    return RedirectResponse(url="/docs")
 
 
 @app.get("/health")
