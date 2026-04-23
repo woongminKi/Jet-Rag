@@ -22,6 +22,7 @@ router = APIRouter(tags=["search"])
 
 _MAX_QUERY_LEN = 200
 _MAX_MATCHED_CHUNKS_PER_DOC = 3
+_SNIPPET_AROUND = 80
 
 
 class MatchedChunk(BaseModel):
@@ -159,17 +160,21 @@ def search(
 
         # chunk_idx 오름차순 상위 3건 (이미 ORDER BY chunk_idx 로 fetch 했으므로 그대로 슬라이스)
         top_chunks = matched[:_MAX_MATCHED_CHUNKS_PER_DOC]
-        matched_chunks = [
-            MatchedChunk(
-                chunk_id=c["id"],
-                chunk_idx=c["chunk_idx"],
-                text=c.get("text") or "",
-                page=c.get("page"),
-                section_title=c.get("section_title"),
-                highlight=[],  # 다음 커밋(5)에서 채움
+        matched_chunks = []
+        for c in top_chunks:
+            snippet, highlights = _make_snippet_with_highlights(
+                c.get("text") or "", clean
             )
-            for c in top_chunks
-        ]
+            matched_chunks.append(
+                MatchedChunk(
+                    chunk_id=c["id"],
+                    chunk_idx=c["chunk_idx"],
+                    text=snippet,
+                    page=c.get("page"),
+                    section_title=c.get("section_title"),
+                    highlight=highlights,
+                )
+            )
 
         items.append(
             SearchHit(
@@ -200,3 +205,42 @@ def search(
 
 def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _make_snippet_with_highlights(
+    text: str, query: str, around: int = _SNIPPET_AROUND
+) -> tuple[str, list[list[int]]]:
+    """매칭 위치 ±around 로 자른 스니펫 + 그 스니펫 내 매칭 구간 [start, end] 리스트 반환.
+
+    프론트엔드는 반환된 highlight 인덱스로 <mark> 등을 직접 감싼다.
+    인덱스는 모두 잘린 스니펫(반환되는 첫 번째 값) 기준이다.
+    """
+    if not text or not query:
+        return text[: around * 2], []
+
+    text_lower = text.lower()
+    q_lower = query.lower()
+    q_len = len(query)
+
+    first_idx = text_lower.find(q_lower)
+    if first_idx == -1:
+        # 매칭 없음 — 본문 앞부분만 잘라 반환 (highlight 없음)
+        return text[: around * 2], []
+
+    start = max(0, first_idx - around)
+    end = min(len(text), first_idx + q_len + around)
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(text) else ""
+    snippet = f"{prefix}{text[start:end]}{suffix}"
+
+    # 잘린 스니펫 내부 인덱스로 다시 매칭 위치 수집
+    snippet_lower = snippet.lower()
+    highlights: list[list[int]] = []
+    pos = 0
+    while True:
+        hit = snippet_lower.find(q_lower, pos)
+        if hit == -1:
+            break
+        highlights.append([hit, hit + q_len])
+        pos = hit + q_len  # 비중첩 진행 (검색어가 자기 자신과 겹치는 케이스는 무시)
+    return snippet, highlights
