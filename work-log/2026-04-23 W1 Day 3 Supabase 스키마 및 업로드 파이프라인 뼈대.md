@@ -189,21 +189,31 @@ Jet-Rag/
 
 ---
 
-## 6. 남은 이슈·내일 스코프 (Day 4~5)
+## 6. 남은 이슈 (처리 시점별)
+
+| # | 이슈 | 심각도 | 처리 시점 |
+|---|---|---|---|
+| 1 | `ingest_logs` 스테이지당 2행(`started` + `succeeded`) 모델 — Python `_now_iso()` vs DB `DEFAULT now()` 시계 차이로 `finished_at < started_at` 역전 가능 | 낮음 (의미 영향 없음) | Day 4 — 1행 `INSERT → UPDATE` 모델로 리팩토링 |
+
+*Day 3 종료 시점에 블로커는 없음. 사용자 대시보드 작업(SQL 실행 + Storage bucket 생성) 직후 Day 4 파이프라인 스테이지 구현으로 진입.*
+
+---
+
+## 7. 다음 스코프 — Day 4~5
 
 1. 기획서 §10.2 [4]~[11] 파이프라인 단계 구현
-   - [4] 포맷별 추출 — Day 4 PDF 우선 (PyMuPDF), Day 5 에 나머지 포맷 일부
+   - [4] 포맷별 추출 — Day 4 PDF 우선 (PyMuPDF), W2 에 나머지 포맷
    - [5]·[6] Vision·콘텐츠 게이트 — W2 로 분리 (Day 4 엔 스킵)
-   - [7] 청킹 — LlamaIndex `SemanticSplitterNodeParser`
-   - [8] 태그·요약·diff — Gemini Flash (Day 5)
+   - [7] 청킹 — §10.5 섹션·semantic·병합 (Day 4)
+   - [8] 태그·요약·diff — Gemini Flash (Day 4 후반부 / Day 5)
    - [9] 임베딩 — BGE-M3 via HF Inference API (Day 5)
-   - [10] 적재 — `VectorStore.upsert_chunks` 활용
-2. `search_dense` / `search_sparse` 실제 구현 (Supabase RPC 정의 필요)
-3. `GET /documents`, `GET /documents/{id}` 리스트·상세 조회 엔드포인트
+   - [10] 적재 — `VectorStore.upsert_chunks` 활용 (Day 4)
+2. `search_dense` / `search_sparse` 실제 구현 (Supabase RPC 정의 필요, Day 5~W3)
+3. `GET /documents`, `GET /documents/{id}` 리스트·상세 조회 엔드포인트 (Day 5)
 4. W1 전체 DoD: "PDF 1개 업로드 → 키워드 검색 가능"
 
 ---
 
-## 7. 회고 한 줄
+## 8. 회고 한 줄
 
 Day 3 는 **외부 서비스 접촉 전 경계선**까지 끝낸 날. 사용자 대시보드 작업(SQL 실행 + bucket 생성) 직후 즉시 E2E 테스트 가능한 상태로 매듭지었다.
