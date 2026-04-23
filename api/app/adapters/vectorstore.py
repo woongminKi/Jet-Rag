@@ -7,13 +7,14 @@ class ChunkRecord:
     doc_id: str
     chunk_idx: int
     text: str
-    dense_vec: list[float]
-    sparse_json: dict[str, float]
+    dense_vec: list[float] | None = None        # 임베딩 전(Day 4) 에는 None, Day 5 에 채움
+    sparse_json: dict[str, float] = field(default_factory=dict)
     page: int | None = None
     section_title: str | None = None
+    bbox: tuple[float, float, float, float] | None = None   # x0, y0, x1, y1 (PDF 좌표)
     char_range: tuple[int, int] | None = None
     metadata: dict = field(default_factory=dict)
-    chunk_id: str | None = None  # None이면 저장 시 서버에서 생성
+    chunk_id: str | None = None  # None 이면 저장 시 서버에서 생성
 
 
 @dataclass(frozen=True)

@@ -78,11 +78,13 @@ class SupabasePgVectorStore:
             "text": chunk.text,
             "page": chunk.page,
             "section_title": chunk.section_title,
-            "bbox": list(chunk.bbox) if chunk.bbox else None,
-            "dense_vec": chunk.dense_vec,
-            "sparse_json": chunk.sparse_json,
-            "metadata": chunk.metadata,
+            "sparse_json": chunk.sparse_json or {},
+            "metadata": chunk.metadata or {},
         }
+        if chunk.bbox is not None:
+            row["bbox"] = list(chunk.bbox)
+        if chunk.dense_vec is not None:
+            row["dense_vec"] = chunk.dense_vec
         if chunk.char_range is not None:
             start, end = chunk.char_range
             row["char_range"] = f"[{start},{end})"
