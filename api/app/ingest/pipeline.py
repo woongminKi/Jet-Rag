@@ -1,9 +1,9 @@
 """인제스트 파이프라인 entrypoint — `BackgroundTasks` 로 호출되는 단일 진입점.
 
-Day 4 전반부 스코프 (§10.2 [4] · [7] · [10])
-    extract → chunk → load
+Day 4 스코프 (§10.2 [4] · [7] · [8] · [10])
+    extract → chunk → tag_summarize → load
 
-Day 4.5~5 에 [8] tag_summarize 와 [9] embed 가 추가되면 이 순서의 중간·끝에 삽입된다.
+Day 5 에 [9] embed 가 load 앞/뒤에 삽입되고, diff 감지(§10.6 호출 3) 는 embed 이후.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from .jobs import fail_job, finish_job, start_job
 from .stages.chunk import run_chunk_stage
 from .stages.extract import run_extract_stage
 from .stages.load import run_load_stage
+from .stages.tag_summarize import run_tag_summarize_stage
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,8 @@ def run_pipeline(job_id: str, doc_id: str) -> None:
             job_id, doc_id=doc_id, extraction=extraction
         )
 
-        # TODO(Day 4.5): tag_summarize 스테이지 삽입
+        # 태그·요약은 §10.10 정책상 실패해도 파이프라인 중단하지 않음 (NULL 유지)
+        run_tag_summarize_stage(job_id, doc_id=doc_id, extraction=extraction)
 
         loaded = run_load_stage(job_id, chunks=chunk_records)
         logger.info(
