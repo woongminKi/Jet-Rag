@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timezone
 
 from fastapi import APIRouter
@@ -31,10 +32,16 @@ class JobsStats(BaseModel):
     failed_sample: list[dict]  # 최근 실패 5건 요약 (에러 디버그용)
 
 
+class TagCount(BaseModel):
+    tag: str
+    count: int
+
+
 class StatsResponse(BaseModel):
     documents: DocumentsStats
     chunks_total: int
     jobs: JobsStats
+    popular_tags: list[TagCount]  # 사용 빈도 top-10
     generated_at: str
 
 
@@ -46,7 +53,7 @@ def stats() -> StatsResponse:
     # ---- documents ----
     docs = (
         supabase.table("documents")
-        .select("doc_type, source_channel, size_bytes, flags")
+        .select("doc_type, source_channel, size_bytes, flags, tags")
         .eq("user_id", user_id)
         .is_("deleted_at", "null")
         .execute()
@@ -65,6 +72,11 @@ def stats() -> StatsResponse:
         total_size += d["size_bytes"] or 0
         if (d.get("flags") or {}).get("extract_skipped"):
             extract_skipped += 1
+
+    tag_counter = Counter(tag for d in docs for tag in (d.get("tags") or []))
+    popular_tags = [
+        TagCount(tag=t, count=c) for t, c in tag_counter.most_common(10)
+    ]
 
     # ---- chunks ----
     chunks_resp = supabase.table("chunks").select("id", count="exact").execute()
@@ -106,5 +118,6 @@ def stats() -> StatsResponse:
             by_status=by_status,
             failed_sample=failed_sample,
         ),
+        popular_tags=popular_tags,
         generated_at=datetime.now(timezone.utc).isoformat(),
     )
