@@ -1,9 +1,9 @@
 """인제스트 파이프라인 entrypoint — `BackgroundTasks` 로 호출되는 단일 진입점.
 
-Day 4 스코프 (§10.2 [4] · [7] · [8] · [10])
-    extract → chunk → tag_summarize → load
+Day 5 스코프 (§10.2 [4] · [7] · [8] · [10] · [9])
+    extract → chunk → tag_summarize → load → embed
 
-Day 5 에 [9] embed 가 load 앞/뒤에 삽입되고, diff 감지(§10.6 호출 3) 는 embed 이후.
+Tier 2/3 dedup 과 doc_embedding 은 embed 이후 별도 스테이지로 Day 5 B4/B6 에서 추가.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import logging
 
 from .jobs import fail_job, finish_job, start_job
 from .stages.chunk import run_chunk_stage
+from .stages.embed import run_embed_stage
 from .stages.extract import run_extract_stage
 from .stages.load import run_load_stage
 from .stages.tag_summarize import run_tag_summarize_stage
@@ -37,11 +38,17 @@ def run_pipeline(job_id: str, doc_id: str) -> None:
         run_tag_summarize_stage(job_id, doc_id=doc_id, extraction=extraction)
 
         loaded = run_load_stage(job_id, chunks=chunk_records)
+        embedded = run_embed_stage(job_id, doc_id=doc_id)
+
+        # TODO(Day 5 B4): doc_embedding 생성
+        # TODO(Day 5 B6): Tier 2/3 dedup
+
         logger.info(
-            "ingest pipeline done: job=%s doc=%s chunks_loaded=%s warnings=%s",
+            "ingest pipeline done: job=%s doc=%s chunks_loaded=%s embedded=%s warnings=%s",
             job_id,
             doc_id,
             loaded,
+            embedded,
             len(extraction.warnings),
         )
 
