@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 
-from app.routers import documents_router, stats_router
+from app.routers import documents_router, search_router, stats_router
 
 app = FastAPI(
     title="Jet-Rag API",
@@ -10,6 +10,7 @@ app = FastAPI(
 )
 
 app.include_router(documents_router)
+app.include_router(search_router)
 app.include_router(stats_router)
 
 
