@@ -129,7 +129,12 @@ def get_latest_job_for_doc(doc_id: str) -> IngestJob | None:
 # ---------------------- logs (1행 모델) ----------------------
 
 def begin_stage(job_id: str, *, stage: str) -> int:
-    """스테이지 시작을 기록하고 로그 row id 를 반환한다. 이후 `end_stage()` 로 마감."""
+    """스테이지 시작을 기록하고 로그 row id 를 반환한다. 이후 `end_stage()` 로 마감.
+
+    `started_at` 을 DB `DEFAULT now()` 에 맡기면 Python 이 쓰는 `end_stage.finished_at`
+    (`_now_iso()`) 와 시계 소스가 달라 skew 발생 → `started_at > finished_at` 역전이 관찰된
+    사례가 있어, 양쪽 모두 Python 한 머신의 시계를 사용하도록 명시 지정한다.
+    """
     client = get_supabase_client()
     resp = (
         client.table(_TABLE_LOGS)
@@ -138,6 +143,7 @@ def begin_stage(job_id: str, *, stage: str) -> int:
                 "job_id": job_id,
                 "stage": stage,
                 "status": "started",
+                "started_at": _now_iso(),
             }
         )
         .execute()
