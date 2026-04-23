@@ -41,6 +41,7 @@ pnpm-debug.log*
 /evals/runs/
 /uploads/
 /tmp/
+/assets/
 
 # === IDE / OS ===
 .vscode/
