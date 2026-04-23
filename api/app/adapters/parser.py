@@ -19,10 +19,14 @@ class ExtractionResult:
 
 
 class DocumentParser(Protocol):
-    """포맷별 문서 파서. 구현체마다 source_type 하나 담당."""
+    """포맷별 문서 파서. 구현체마다 source_type 하나 담당.
+
+    업로드 바이트를 Storage 에 저장한 후 다시 다운로드해 `parse()` 에 넘기는 흐름이므로,
+    파일 경로가 아닌 `bytes` + 원본 파일명을 받는다.
+    """
 
     source_type: str
 
-    def can_parse(self, file_path: str, mime_type: str | None) -> bool: ...
+    def can_parse(self, file_name: str, mime_type: str | None) -> bool: ...
 
-    def parse(self, file_path: str) -> ExtractionResult: ...
+    def parse(self, data: bytes, *, file_name: str) -> ExtractionResult: ...
