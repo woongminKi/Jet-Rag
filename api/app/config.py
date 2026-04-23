@@ -16,6 +16,7 @@ class Settings:
     supabase_service_role_key: str
     supabase_storage_bucket: str
     gemini_api_key: str
+    hf_api_token: str
     default_user_id: str
 
 
@@ -27,6 +28,7 @@ def get_settings() -> Settings:
         supabase_service_role_key=os.environ.get("SUPABASE_SERVICE_ROLE_KEY", ""),
         supabase_storage_bucket=os.environ.get("SUPABASE_STORAGE_BUCKET", "documents"),
         gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
+        hf_api_token=os.environ.get("HF_API_TOKEN", ""),
         default_user_id=os.environ.get(
             "DEFAULT_USER_ID", "00000000-0000-0000-0000-000000000001"
         ),
