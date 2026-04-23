@@ -17,6 +17,7 @@ export default function IngestPage() {
       docId: null,
       jobId: null,
       duplicated: false,
+      retryNonce: 0,
     }));
     setItems((prev) => [...placeholders, ...prev]);
 
@@ -52,6 +53,18 @@ export default function IngestPage() {
     );
   };
 
+  // 재시도 성공 시 같은 doc_id 의 새 job 으로 갱신 + retryNonce 증가로
+  // useJobStatusPolling 의 effect 를 강제 재실행시킨다.
+  const handleReingest = (localId: string, jobId: string) => {
+    setItems((prev) =>
+      prev.map((it) =>
+        it.localId === localId
+          ? { ...it, jobId, retryNonce: it.retryNonce + 1 }
+          : it,
+      ),
+    );
+  };
+
   return (
     <main className="container mx-auto flex-1 px-4 py-8 md:px-6 md:py-12">
       <div className="mx-auto max-w-3xl space-y-6">
@@ -68,7 +81,7 @@ export default function IngestPage() {
 
         <section className="space-y-3">
           <h2 className="text-sm font-semibold text-foreground">처리 현황</h2>
-          <UploadList items={items} />
+          <UploadList items={items} onReingest={handleReingest} />
         </section>
       </div>
     </main>

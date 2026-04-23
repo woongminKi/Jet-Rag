@@ -1,11 +1,14 @@
 'use client';
 
-import { CheckCircle2, FileIcon, Loader2, XCircle } from 'lucide-react';
+import { useState } from 'react';
+import { CheckCircle2, FileIcon, Loader2, RefreshCw, XCircle } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { useJobStatusPolling } from '@/lib/hooks/use-job-status-polling';
 import { formatBytes } from '@/lib/format';
 import { inferDocType } from '@/lib/stages';
+import { ApiError, reingestDocument } from '@/lib/api';
 import { StageProgress } from './stage-progress';
 
 export interface UploadItemData {
@@ -16,17 +19,41 @@ export interface UploadItemData {
   jobId: string | null;
   duplicated: boolean;
   uploadError?: string | null;
+  retryNonce: number;
 }
 
 interface UploadItemProps {
   data: UploadItemData;
+  onReingest?: (localId: string, jobId: string) => void;
 }
 
-export function UploadItem({ data }: UploadItemProps) {
+export function UploadItem({ data, onReingest }: UploadItemProps) {
   const enabled = !!data.docId && !data.duplicated;
-  const polling = useJobStatusPolling(data.docId, enabled);
+  const polling = useJobStatusPolling(data.docId, enabled, data.retryNonce);
   const job = polling.job;
   const status = job?.status ?? (data.duplicated ? 'duplicated' : data.uploadError ? 'error' : 'queued');
+
+  const [retryLoading, setRetryLoading] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
+
+  const canRetry =
+    !!data.docId && job?.status === 'failed' && !!onReingest && !retryLoading;
+
+  const handleRetry = async () => {
+    if (!data.docId || !onReingest) return;
+    setRetryLoading(true);
+    setRetryError(null);
+    try {
+      const res = await reingestDocument(data.docId);
+      onReingest(data.localId, res.job_id);
+    } catch (err) {
+      const message =
+        err instanceof ApiError ? err.detail : '재시도 요청에 실패했습니다.';
+      setRetryError(message);
+    } finally {
+      setRetryLoading(false);
+    }
+  };
 
   return (
     <Card className="p-4">
@@ -47,7 +74,24 @@ export function UploadItem({ data }: UploadItemProps) {
                 <span>{formatBytes(data.sizeBytes)}</span>
               </div>
             </div>
-            <StatusBadge status={status} timedOut={polling.timedOut} />
+            <div className="flex items-center gap-2">
+              {canRetry && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1 px-2 text-xs"
+                  onClick={handleRetry}
+                  disabled={retryLoading}
+                >
+                  <RefreshCw
+                    className={`h-3 w-3 ${retryLoading ? 'animate-spin' : ''}`}
+                  />
+                  재시도
+                </Button>
+              )}
+              <StatusBadge status={status} timedOut={polling.timedOut} />
+            </div>
           </div>
 
           {data.uploadError ? (
@@ -72,6 +116,11 @@ export function UploadItem({ data }: UploadItemProps) {
               {job?.status === 'failed' && job.error_msg && (
                 <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
                   {job.error_msg}
+                </p>
+              )}
+              {retryError && (
+                <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                  {retryError}
                 </p>
               )}
               {polling.error && !job && (
