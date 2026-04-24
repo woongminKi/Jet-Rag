@@ -55,3 +55,6 @@ Thumbs.db
 # === Logs ===
 logs/
 *.log
+
+# === Local reference only (v0 wireframe 원본) ===
+/docs/jet-rag wireframe/
