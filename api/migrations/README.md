@@ -5,6 +5,7 @@ Supabase SQL Editor에서 순서대로 실행.
 | # | 파일 | 내용 |
 |---|---|---|
 | 001 | `001_init.sql` | 초기 스키마 — `documents`, `chunks`, `ingest_jobs`, `ingest_logs` + pgvector/uuid-ossp extension + 인덱스 + RLS enable |
+| 002 | `002_documents_received_ms.sql` | W2 Day 2 — `documents.received_ms INT NULL` 추가 (SLO 측정용, `/stats.slo_buckets` 집계 근거) |
 
 ## 실행 절차
 
