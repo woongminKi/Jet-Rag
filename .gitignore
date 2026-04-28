@@ -6,6 +6,7 @@
 *.pem
 credentials.json
 service-account.json
+.mcp.json
 
 # === Python ===
 __pycache__/
