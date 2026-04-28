@@ -7,6 +7,7 @@ const LABELS: Record<DocType, string> = {
   docx: 'DOCX',
   pptx: 'PPTX',
   image: '이미지',
+  url: 'URL',
   txt: 'TXT',
   md: 'MD',
 };

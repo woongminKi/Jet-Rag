@@ -3,6 +3,7 @@ import type { StageValue } from '@/lib/api';
 export const STAGE_ORDER: StageValue[] = [
   'extract',
   'chunk',
+  'content_gate',
   'tag_summarize',
   'load',
   'embed',
@@ -13,6 +14,7 @@ export const STAGE_ORDER: StageValue[] = [
 export const STAGE_LABELS: Record<StageValue, string> = {
   extract: '추출',
   chunk: '청킹',
+  content_gate: '안전 검사',
   tag_summarize: '태그·요약',
   load: '적재',
   embed: '임베딩',

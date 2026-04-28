@@ -5,6 +5,7 @@ export type DocType =
   | 'docx'
   | 'pptx'
   | 'image'
+  | 'url'
   | 'txt'
   | 'md';
 
@@ -26,6 +27,7 @@ export type JobStatusValue =
 export type StageValue =
   | 'extract'
   | 'chunk'
+  | 'content_gate'
   | 'tag_summarize'
   | 'load'
   | 'embed'
@@ -138,4 +140,32 @@ export interface DocumentStatusResponse {
   doc_id: string;
   job: JobStatus | null;
   logs: Array<Record<string, unknown>> | null;
+}
+
+/** GET /documents/{id} — 단건 종합 응답 (W2 §3.M, F′-α2). */
+export interface DocumentDetailResponse {
+  id: string;
+  title: string;
+  doc_type: DocType;
+  source_channel: SourceChannel;
+  size_bytes: number;
+  content_type: string;
+  tags: string[];
+  summary: string | null;
+  flags: Record<string, unknown>;
+  chunks_count: number;
+  latest_job: JobStatus | null;
+  created_at: string;
+  received_ms: number | null;
+  source_url: string | null;
+}
+
+/** GET /documents/batch-status — 여러 doc_id 의 latest job 일괄 조회. */
+export interface BatchStatusItem {
+  doc_id: string;
+  job: JobStatus | null;
+}
+
+export interface BatchStatusResponse {
+  items: BatchStatusItem[];
 }
