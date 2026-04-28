@@ -10,16 +10,24 @@
 from __future__ import annotations
 
 import hashlib
+import time
+import uuid
 from pathlib import PurePosixPath
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
 
-from app.adapters.impl.supabase_storage import SupabaseBlobStorage
 from app.config import get_settings
 from app.db import get_supabase_client
-from app.ingest import create_job, get_latest_job_for_doc, list_logs_for_job, run_pipeline
+from app.ingest import (
+    create_job,
+    get_latest_job_for_doc,
+    list_logs_for_job,
+    run_full_ingest,
+    run_pipeline,
+)
+from app.routers._input_gate import HEAD_BYTES, validate_magic
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -38,6 +46,11 @@ _ALLOWED_EXTENSIONS: dict[str, str] = {
     ".md": "md",
 }
 _MAX_SIZE_BYTES = 50 * 1024 * 1024  # 50MB
+_CHUNK_SIZE = 64 * 1024              # 스트리밍 read chunk
+# pending path 네임스페이스. 단일 사용자 MVP 동안 "default" 고정.
+# W5 멀티유저 도입 시 실제 user_id 로 치환 → Supabase Storage RLS 정책이 prefix 기반으로
+# 자연스럽게 대응. documents.user_id (UUID) 와 별개의 path 라벨.
+_PENDING_PATH_NAMESPACE = "default"
 _SourceChannel = Literal["drag-drop", "os-share", "clipboard", "url", "camera", "api"]
 
 
@@ -202,10 +215,21 @@ async def upload_document(
     source_channel: _SourceChannel = Form("api"),
     title: str | None = Form(None),
 ) -> UploadResponse:
-    data = await file.read()
+    """수신 ≤ 2초 SLO. Storage upload 는 BG `run_full_ingest` 위임.
+
+    수신 단계 흐름 (응답 전):
+      1) 확장자 화이트리스트 → 거절 시 400
+      2) chunk-streaming 으로 SHA-256 + size counter (50MB 한도) + 첫 head 매직바이트 검증
+      3) Tier 1 dedup (SHA-256) — 중복이면 즉시 응답 (Storage upload 없음)
+      4) `documents` insert with `storage_path = "pending/{namespace}/{uuid}{ext}"` placeholder
+      5) `ingest_jobs` insert + BG 큐잉 (raw bytes 전달) → 202 Accepted
+
+    BG 단계 (응답 후): `run_full_ingest` 가 Storage upload + path update + 8-stage 파이프라인.
+    """
+    started_at = time.perf_counter()
     file_name = file.filename or "untitled"
 
-    # ---- 입력 게이트 단계 A ----
+    # ---- 입력 게이트 단계 A: 확장자 화이트리스트 ----
     ext = PurePosixPath(file_name).suffix.lower()
     doc_type = _ALLOWED_EXTENSIONS.get(ext)
     if doc_type is None:
@@ -213,19 +237,39 @@ async def upload_document(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"지원되지 않는 확장자입니다: {ext or '(없음)'}",
         )
-    size = len(data)
+
+    # ---- chunk streaming: SHA-256 + size counter + 매직바이트 (조기 검증) ----
+    hasher = hashlib.sha256()
+    buf = bytearray()
+    magic_validated = False
+    while True:
+        chunk = await file.read(_CHUNK_SIZE)
+        if not chunk:
+            break
+        hasher.update(chunk)
+        buf.extend(chunk)
+        if len(buf) > _MAX_SIZE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"파일 크기 상한(50MB) 초과",
+            )
+        # head 가 충분히 모이면 즉시 매직바이트 검증 (조기 reject 로 메모리 절약)
+        if not magic_validated and len(buf) >= HEAD_BYTES:
+            validate_magic(ext=ext, raw_head=bytes(buf[:HEAD_BYTES]))
+            magic_validated = True
+
+    # 작은 파일 (< HEAD_BYTES) 은 스트림 종료 후 한 번 검증
+    if not magic_validated:
+        validate_magic(ext=ext, raw_head=bytes(buf))
+
+    raw = bytes(buf)
+    size = len(raw)
     if size == 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="빈 파일입니다.",
         )
-    if size > _MAX_SIZE_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"파일 크기 상한(50MB) 초과: {size} bytes",
-        )
-
-    sha256 = hashlib.sha256(data).hexdigest()
+    sha256 = hasher.hexdigest()
     content_type = file.content_type or "application/octet-stream"
     settings = get_settings()
     supabase = get_supabase_client()
@@ -245,30 +289,45 @@ async def upload_document(
         existing_doc_id = existing_doc["id"]
         existing_flags = existing_doc.get("flags") or {}
 
-        # 이전 인제스트가 실패해 chunks/doc_embedding 이 비어있는 케이스는
-        # 사용자 입장에서 재업로드 = 재시도 의도. POST /reingest 와 동일하게 처리.
+        # 이전 인제스트가 실패한 row → 재업로드 = 재시도 의도. POST /reingest 와 동일.
+        # Storage upload 도 실패했을 가능성이 있어 run_full_ingest (멱등 upsert) 로 통합.
         if existing_flags.get("failed"):
             _reset_doc_for_reingest(supabase, existing_doc_id)
+            received_ms = int((time.perf_counter() - started_at) * 1000)
+            (
+                supabase.table("documents")
+                .update({"received_ms": received_ms})
+                .eq("id", existing_doc_id)
+                .execute()
+            )
             job = create_job(doc_id=existing_doc_id)
-            background_tasks.add_task(run_pipeline, job.id, existing_doc_id)
+            background_tasks.add_task(
+                run_full_ingest,
+                job_id=job.id,
+                doc_id=existing_doc_id,
+                raw=raw,
+                sha256=sha256,
+                ext=ext,
+                content_type=content_type,
+            )
             return UploadResponse(
                 doc_id=existing_doc_id,
                 job_id=job.id,
                 duplicated=False,
             )
 
+        # 정상 중복 — 새 row 생성 X
         return UploadResponse(
             doc_id=existing_doc_id,
             job_id=None,
             duplicated=True,
         )
 
-    # ---- Storage 업로드 ----
-    storage = SupabaseBlobStorage(bucket=settings.supabase_storage_bucket)
-    blob = storage.put(data=data, file_name=file_name, content_type=content_type)
-
-    # ---- documents insert ----
+    # ---- 신규 — pending path 로 documents insert (Storage upload 는 BG 가 담당) ----
+    doc_uuid = uuid.uuid4().hex
+    pending_path = f"pending/{_PENDING_PATH_NAMESPACE}/{doc_uuid}{ext}"
     doc_title = title or PurePosixPath(file_name).stem
+    received_ms = int((time.perf_counter() - started_at) * 1000)
     doc_row = (
         supabase.table("documents")
         .insert(
@@ -277,20 +336,28 @@ async def upload_document(
                 "title": doc_title,
                 "doc_type": doc_type,
                 "source_channel": source_channel,
-                "storage_path": blob.path,
+                "storage_path": pending_path,
                 "sha256": sha256,
                 "size_bytes": size,
                 "content_type": content_type,
+                "received_ms": received_ms,
             }
         )
         .execute()
     )
     doc_id = doc_row.data[0]["id"]
 
-    # ---- ingest_jobs insert + BackgroundTasks ----
+    # ---- ingest_jobs + BG (Storage upload + path update + pipeline 위임) ----
     job = create_job(doc_id=doc_id)
-    background_tasks.add_task(run_pipeline, job.id, doc_id)
-
+    background_tasks.add_task(
+        run_full_ingest,
+        job_id=job.id,
+        doc_id=doc_id,
+        raw=raw,
+        sha256=sha256,
+        ext=ext,
+        content_type=content_type,
+    )
     return UploadResponse(doc_id=doc_id, job_id=job.id, duplicated=False)
 
 
