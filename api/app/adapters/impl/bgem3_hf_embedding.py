@@ -61,6 +61,21 @@ class BGEM3HFEmbeddingProvider:
         vec = _with_retry(call, label="bge-m3.embed")
         return EmbeddingResult(dense=vec, sparse={})
 
+    def embed_query(self, text: str) -> list[float]:
+        """검색 쿼리용 단일 텍스트 → 1024 dim dense vector.
+
+        W3 §3.A 하이브리드 검색의 dense 입력. `embed()` 와 동일 호출이지만
+        sparse 미사용이라 `EmbeddingResult` 래핑을 생략, list[float] 직접 반환.
+        chunks 인덱싱과 같은 모델·endpoint 사용 (검색-인덱싱 일관성).
+        """
+        def call() -> list[float]:
+            resp = self._client.post(
+                _URL, headers=self._headers, json={"inputs": text}
+            )
+            return _parse_single_response(resp)
+
+        return _with_retry(call, label="bge-m3.embed_query")
+
     def embed_batch(self, texts: list[str]) -> list[EmbeddingResult]:
         if not texts:
             return []
