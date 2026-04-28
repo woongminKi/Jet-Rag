@@ -1,15 +1,13 @@
 """Extract 스테이지 — 포맷별 원본 파일 추출 (기획서 §10.2 [4] · §10.3).
 
-지원 포맷 (W2 Day 3 까지 누적)
+지원 포맷 (W2 Day 4 까지 누적)
 - PDF: `PyMuPDFParser` — 블록 단위 섹션·bbox·페이지 (스캔본 감지 시 ImageParser 재라우팅)
-- HWPX: `HwpxParser` — section 단위 단락 (W2 Day 3, §3.C)
-- 이미지: `ImageParser` (Vision composition) — PNG/JPEG/HEIC (W2 Day 3, §3.D)
-- 그 외(hwp/docx/pptx/url/txt/md): **graceful skip** — `flags.extract_skipped=true` 마킹.
-  후속 어댑터 도입 시 `/documents/{id}/reingest` 로 재처리.
-
-Day 4 이후 예정
-- URL (`UrlParser` + trafilatura)
-- HWP 5.x (`pyhwp`)
+- HWPX: `HwpxParser` — section 단위 단락 (Day 3, §3.C)
+- 이미지: `ImageParser` (Vision composition) — PNG/JPEG/HEIC (Day 3, §3.D)
+- URL: `UrlParser` — trafilatura 본문 추출 (Day 4, §3.E)
+- HWP 5.x: `Hwp5Parser` — pyhwp `hwp5txt` CLI subprocess (Day 4, §3.F)
+- 그 외(docx/pptx/txt/md): **graceful skip** — `flags.extract_skipped=true` 마킹.
+  W3 에 DOCX/PPTX 어댑터 도입 시 `/documents/{id}/reingest` 로 재처리.
 """
 
 from __future__ import annotations
@@ -20,10 +18,12 @@ from typing import Any
 
 import fitz  # PyMuPDF — 스캔 PDF rerouting 시 페이지를 PNG 로 렌더
 
+from app.adapters.impl.hwp_parser import Hwp5Parser
 from app.adapters.impl.hwpx_parser import HwpxParser
 from app.adapters.impl.image_parser import ImageParser
 from app.adapters.impl.pymupdf_parser import PyMuPDFParser
 from app.adapters.impl.supabase_storage import SupabaseBlobStorage
+from app.adapters.impl.url_parser import UrlParser
 from app.adapters.parser import DocumentParser, ExtractedSection, ExtractionResult
 from app.config import get_settings
 from app.db import get_supabase_client
@@ -35,12 +35,17 @@ _STAGE = "extract"
 _pdf_parser = PyMuPDFParser()
 _hwpx_parser = HwpxParser()
 _image_parser = ImageParser()
+_url_parser = UrlParser()
+_hwp_parser = Hwp5Parser()
 
-# doc_type → DocumentParser 디스패처. Day 4 에 url + hwp 추가 예정.
+# doc_type → DocumentParser 디스패처. W2 까지 PDF + HWPX + image + URL + HWP 5.x.
+# DOCX/PPTX 는 W3 이월.
 _PARSERS_BY_DOC_TYPE: dict[str, DocumentParser] = {
     "pdf": _pdf_parser,
     "hwpx": _hwpx_parser,
     "image": _image_parser,
+    "url": _url_parser,
+    "hwp": _hwp_parser,
 }
 
 # 스캔 PDF 감지 임계값 — PyMuPDFParser raw_text 가 이 이하면 텍스트 레이어 부재로 간주
