@@ -12,24 +12,15 @@ Vision 은 `GeminiVisionCaptioner` (adapters/impl/gemini_vision.py) 로 분리.
 from __future__ import annotations
 
 import logging
-import random
-import time
-from functools import lru_cache
-from typing import Callable, TypeVar
 
-from google import genai
 from google.genai import types
 
+from app.adapters.impl._gemini_common import get_client, with_retry
 from app.adapters.llm import ChatMessage
-from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "gemini-2.5-flash"
-_MAX_ATTEMPTS = 3
-_BASE_BACKOFF_SECONDS = 1.0
-
-T = TypeVar("T")
 
 
 class GeminiLLMProvider:
@@ -57,7 +48,7 @@ class GeminiLLMProvider:
         )
 
         def call() -> str:
-            response = _get_client().models.generate_content(
+            response = get_client().models.generate_content(
                 model=self._model,
                 contents=conversation,
                 config=config,
@@ -67,7 +58,7 @@ class GeminiLLMProvider:
                 raise RuntimeError(f"Gemini 응답이 비어있습니다: {response}")
             return text
 
-        return _with_retry(call, label="gemini.generate_content")
+        return with_retry(call, label="gemini.generate_content")
 
     # ---------------------- 내부 변환 ----------------------
 
@@ -126,37 +117,3 @@ class GeminiLLMProvider:
         return types.GenerateContentConfig(**kwargs)
 
 
-# ---------------------- 모듈 레벨 유틸 ----------------------
-
-
-@lru_cache
-def _get_client() -> genai.Client:
-    settings = get_settings()
-    if not settings.gemini_api_key:
-        raise RuntimeError(
-            "GEMINI_API_KEY 가 설정되지 않았습니다. .env 를 확인하세요."
-        )
-    return genai.Client(api_key=settings.gemini_api_key)
-
-
-def _with_retry(fn: Callable[[], T], *, label: str) -> T:
-    last_exc: Exception | None = None
-    for attempt in range(1, _MAX_ATTEMPTS + 1):
-        try:
-            return fn()
-        except Exception as exc:  # noqa: BLE001 — 외부 API 호출 실패를 한 곳에서 흡수
-            last_exc = exc
-            if attempt == _MAX_ATTEMPTS:
-                break
-            delay = _BASE_BACKOFF_SECONDS * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
-            logger.warning(
-                "%s 실패(attempt=%d/%d, delay=%.1fs): %s",
-                label,
-                attempt,
-                _MAX_ATTEMPTS,
-                delay,
-                exc,
-            )
-            time.sleep(delay)
-    assert last_exc is not None
-    raise last_exc
