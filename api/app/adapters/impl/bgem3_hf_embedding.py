@@ -120,6 +120,29 @@ def _parse_batch_response(
 
 # ---------------------- retry ----------------------
 
+# transient network/server 에러 — 재시도 가치 있음.
+# RemoteProtocolError 가 Day 3 smoke 에서 발견된 ConnectionTerminated 의 매핑.
+_RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.PoolTimeout,
+    httpx.RemoteProtocolError,
+    httpx.ReadError,
+    httpx.WriteError,
+)
+# HTTP 5xx + 429 (rate limit) — 서버 측 일시 문제.
+_RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+
+
+def _is_retryable(exc: Exception) -> bool:
+    if isinstance(exc, _RETRYABLE_EXCEPTIONS):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in _RETRYABLE_STATUS_CODES
+    return False
+
 
 def _with_retry(fn: Callable[[], T], *, label: str) -> T:
     last_exc: Exception | None = None
@@ -128,11 +151,20 @@ def _with_retry(fn: Callable[[], T], *, label: str) -> T:
             return fn()
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
+            # 4xx 인증/요청 오류, 응답 파싱 오류 (RuntimeError) 등 비-transient 는 즉시 실패
+            if not _is_retryable(exc):
+                logger.warning(
+                    "%s 비-transient 실패 (attempt=%d, retry 안 함): %s",
+                    label,
+                    attempt,
+                    exc,
+                )
+                break
             if attempt == _MAX_ATTEMPTS:
                 break
             delay = _BASE_BACKOFF_SECONDS * (2 ** (attempt - 1)) + random.uniform(0, 1.0)
             logger.warning(
-                "%s 실패(attempt=%d/%d, delay=%.1fs): %s",
+                "%s transient 실패 (attempt=%d/%d, %.1fs 후 재시도): %s",
                 label,
                 attempt,
                 _MAX_ATTEMPTS,
