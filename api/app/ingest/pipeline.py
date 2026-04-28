@@ -1,9 +1,7 @@
 """인제스트 파이프라인 entrypoint — `BackgroundTasks` 로 호출되는 단일 진입점.
 
-Day 5 스코프 (§10.2 [4] · [7] · [8] · [10] · [9])
-    extract → chunk → tag_summarize → load → embed
-
-Tier 2/3 dedup 과 doc_embedding 은 embed 이후 별도 스테이지로 Day 5 B4/B6 에서 추가.
+8-stage (W2 명세 v0.3 §3.A 확정)
+    extract → chunk → content_gate → tag_summarize → load → embed → doc_embed → dedup
 """
 
 from __future__ import annotations
@@ -14,6 +12,7 @@ from app.db import get_supabase_client
 
 from .jobs import _now_iso, fail_job, finish_job, start_job
 from .stages.chunk import run_chunk_stage
+from .stages.content_gate import run_content_gate_stage
 from .stages.dedup import run_dedup_stage
 from .stages.doc_embed import run_doc_embed_stage
 from .stages.embed import run_embed_stage
@@ -40,6 +39,14 @@ def run_pipeline(job_id: str, doc_id: str) -> None:
 
         chunk_records = run_chunk_stage(
             job_id, doc_id=doc_id, extraction=extraction
+        )
+
+        # content_gate — chunks metadata 에 PII/워터마크 부착 + doc flags 마킹
+        chunk_records, _gate_flags = run_content_gate_stage(
+            job_id,
+            doc_id=doc_id,
+            chunks=chunk_records,
+            extraction=extraction,
         )
 
         # 태그·요약은 §10.10 정책상 실패해도 파이프라인 중단하지 않음 (NULL 유지)
