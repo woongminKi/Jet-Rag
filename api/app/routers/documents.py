@@ -10,13 +10,16 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 import uuid
 from pathlib import PurePosixPath
 from typing import Literal
 
+import httpx
+import trafilatura
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config import get_settings
 from app.db import get_supabase_client
@@ -28,6 +31,9 @@ from app.ingest import (
     run_pipeline,
 )
 from app.routers._input_gate import HEAD_BYTES, validate_magic
+from app.routers._url_gate import validate_url_safety
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -84,6 +90,21 @@ class ReingestResponse(BaseModel):
     doc_id: str
     job_id: str
     chunks_deleted: int
+
+
+class UrlUploadRequest(BaseModel):
+    url: str = Field(..., description="수집할 페이지 URL (http/https 만 허용).")
+    title: str | None = Field(
+        None,
+        description="제공 안 할 시 trafilatura 메타·OG title·hostname 순으로 자동 추정.",
+    )
+    source_channel: _SourceChannel = "url"
+
+
+_URL_FETCH_TIMEOUT_SECONDS = 10
+_URL_FETCH_USER_AGENT = (
+    "Mozilla/5.0 (compatible; Jet-Rag/1.0; +https://github.com/woongminKi/Jet-Rag)"
+)
 
 
 class DocumentListItem(BaseModel):
@@ -356,6 +377,170 @@ async def upload_document(
         raw=raw,
         sha256=sha256,
         ext=ext,
+        content_type=content_type,
+    )
+    return UploadResponse(doc_id=doc_id, job_id=job.id, duplicated=False)
+
+
+# ============================================================
+# POST /documents/url
+# ============================================================
+@router.post(
+    "/url",
+    response_model=UploadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def upload_url(
+    background_tasks: BackgroundTasks,
+    payload: UrlUploadRequest,
+) -> UploadResponse:
+    """URL 수집. SSRF 검증 → fetch → 기존 BG 흐름 (`run_full_ingest`) 재사용.
+
+    수신 ≤ 2초 SLO 는 fetch timeout (10s) 으로 제한적이지만, 정상 사이트는 통상 ≤ 2초 응답.
+    명세 v0.3 §3.E. doc_type='url', `flags.source_url` 에 원본 URL 보존.
+    """
+    started_at = time.perf_counter()
+
+    # SSRF 검증
+    safe, reason = validate_url_safety(payload.url)
+    if not safe:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"안전하지 않은 URL: {reason}",
+        )
+
+    # Fetch
+    try:
+        async with httpx.AsyncClient(
+            timeout=_URL_FETCH_TIMEOUT_SECONDS,
+            follow_redirects=True,
+        ) as client:
+            resp = await client.get(
+                payload.url, headers={"User-Agent": _URL_FETCH_USER_AGENT}
+            )
+            resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"URL 응답 에러: {exc.response.status_code}",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"URL 조회 실패: {exc}",
+        ) from exc
+
+    html_bytes = resp.content
+    size = len(html_bytes)
+    if size == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="URL 응답 본문이 비어있습니다.",
+        )
+    if size > _MAX_SIZE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"HTML 크기 상한(50MB) 초과: {size} bytes",
+        )
+
+    # content_type — semicolon 뒤 charset 등 제거
+    raw_ct = resp.headers.get("content-type", "text/html")
+    content_type = raw_ct.split(";")[0].strip() or "text/html"
+
+    sha256 = hashlib.sha256(html_bytes).hexdigest()
+    settings = get_settings()
+    supabase = get_supabase_client()
+
+    # ---- Tier 1 dedup ----
+    existing = (
+        supabase.table("documents")
+        .select("id, flags")
+        .eq("user_id", settings.default_user_id)
+        .eq("sha256", sha256)
+        .is_("deleted_at", "null")
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        existing_doc = existing.data[0]
+        existing_doc_id = existing_doc["id"]
+        existing_flags = existing_doc.get("flags") or {}
+
+        if existing_flags.get("failed"):
+            _reset_doc_for_reingest(supabase, existing_doc_id)
+            received_ms = int((time.perf_counter() - started_at) * 1000)
+            (
+                supabase.table("documents")
+                .update({"received_ms": received_ms})
+                .eq("id", existing_doc_id)
+                .execute()
+            )
+            job = create_job(doc_id=existing_doc_id)
+            background_tasks.add_task(
+                run_full_ingest,
+                job_id=job.id,
+                doc_id=existing_doc_id,
+                raw=html_bytes,
+                sha256=sha256,
+                ext=".html",
+                content_type=content_type,
+            )
+            return UploadResponse(
+                doc_id=existing_doc_id, job_id=job.id, duplicated=False
+            )
+
+        return UploadResponse(
+            doc_id=existing_doc_id, job_id=None, duplicated=True
+        )
+
+    # 제목 추정 — payload → trafilatura 메타 → URL hostname
+    title = payload.title
+    if not title:
+        try:
+            metadata = trafilatura.extract_metadata(
+                html_bytes.decode("utf-8", errors="replace")
+            )
+            if metadata and metadata.title:
+                title = metadata.title.strip()
+        except Exception:  # noqa: BLE001
+            logger.exception("trafilatura.extract_metadata 실패 (title fallback 사용)")
+    if not title:
+        from urllib.parse import urlparse as _urlparse
+
+        title = _urlparse(payload.url).hostname or "untitled URL"
+
+    # ---- documents insert (pending path + flags.source_url) ----
+    doc_uuid = uuid.uuid4().hex
+    pending_path = f"pending/{_PENDING_PATH_NAMESPACE}/{doc_uuid}.html"
+    received_ms = int((time.perf_counter() - started_at) * 1000)
+    doc_row = (
+        supabase.table("documents")
+        .insert(
+            {
+                "user_id": settings.default_user_id,
+                "title": title,
+                "doc_type": "url",
+                "source_channel": payload.source_channel,
+                "storage_path": pending_path,
+                "sha256": sha256,
+                "size_bytes": size,
+                "content_type": content_type,
+                "received_ms": received_ms,
+                "flags": {"source_url": payload.url},
+            }
+        )
+        .execute()
+    )
+    doc_id = doc_row.data[0]["id"]
+
+    job = create_job(doc_id=doc_id)
+    background_tasks.add_task(
+        run_full_ingest,
+        job_id=job.id,
+        doc_id=doc_id,
+        raw=html_bytes,
+        sha256=sha256,
+        ext=".html",
         content_type=content_type,
     )
     return UploadResponse(doc_id=doc_id, job_id=job.id, duplicated=False)
