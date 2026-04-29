@@ -63,6 +63,20 @@ export interface TagCount {
   count: number;
 }
 
+/** W3 Day 2 Phase 3 — `/search` 의 ring buffer 기반 SLO 통계.
+ *  sample_count === 0 이면 모든 백분위/평균은 null.
+ *  fallback_breakdown 은 항상 3개 키 (transient_5xx, permanent_4xx, none) 노출. */
+export interface SearchSloStats {
+  p50_ms: number | null;
+  p95_ms: number | null;
+  sample_count: number;
+  avg_dense_hits: number | null;
+  avg_sparse_hits: number | null;
+  avg_fused: number | null;
+  fallback_count: number;
+  fallback_breakdown: Record<string, number>;
+}
+
 export interface Stats {
   documents: {
     total: number;
@@ -80,6 +94,7 @@ export interface Stats {
     failed_sample: Array<Record<string, unknown>>;
   };
   popular_tags: TagCount[];
+  search_slo: SearchSloStats;
   generated_at: string;
 }
 
@@ -104,6 +119,18 @@ export interface SearchHit {
   matched_chunks: MatchedChunk[];
 }
 
+export interface QueryParsedInfo {
+  has_dense: boolean;
+  has_sparse: boolean;
+  dense_hits: number;
+  sparse_hits: number;
+  fused: number;
+  /** W3 Day 2 Phase 3 D-1 — HF API 실패 분류.
+   *  null: dense path 정상 / "transient_5xx": sparse-only fallback 진입
+   *  503 응답에는 본 필드가 노출되지 않음 (응답 자체가 안 감). */
+  fallback_reason?: string | null;
+}
+
 export interface SearchResponse {
   query: string;
   total: number;
@@ -111,6 +138,7 @@ export interface SearchResponse {
   offset: number;
   items: SearchHit[];
   took_ms: number;
+  query_parsed: QueryParsedInfo;
 }
 
 export interface UploadResponse {

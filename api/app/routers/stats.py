@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from app.config import get_settings
 from app.db import get_supabase_client
+from app.services import search_metrics
 
 router = APIRouter(tags=["stats"])
 
@@ -60,12 +61,34 @@ class SloBucketStats(BaseModel):
     pass_rate: float | None
 
 
+class SearchSloStats(BaseModel):
+    """`/search` SLO 측정값 — W3 Day 2 Phase 3.
+
+    `app/services/search_metrics.py` 의 in-memory ring buffer (최근 500건) 기반.
+    프로세스 재시작 시 휘발 — W4-Q-16 에서 DB 영속화 검토.
+
+    `fallback_breakdown` 키:
+      - transient_5xx: HF API 일시 오류 → sparse-only fallback (200 응답)
+      - permanent_4xx: HF API 영구 오류 → 503 raise (가시성 위해 record)
+      - none: dense path 정상
+    """
+    p50_ms: int | None
+    p95_ms: int | None
+    sample_count: int
+    avg_dense_hits: float | None
+    avg_sparse_hits: float | None
+    avg_fused: float | None
+    fallback_count: int
+    fallback_breakdown: dict[str, int]
+
+
 class StatsResponse(BaseModel):
     documents: DocumentsStats
     chunks_total: int
     jobs: JobsStats
     popular_tags: list[TagCount]  # 사용 빈도 top-10
     slo_buckets: dict[str, SloBucketStats]  # W2 §3.A: pdf_50p · image · pdf_scan · hwp · url
+    search_slo: SearchSloStats  # W3 Day 2 Phase 3 — `/search` p50/p95/fallback 분포
     generated_at: str
 
 
@@ -154,6 +177,9 @@ def stats() -> StatsResponse:
     # 파이프라인 단계 실패 doc 도 receive 자체는 성공한 유효 sample.
     slo_buckets = _compute_slo_buckets(all_docs)
 
+    # `/search` ring buffer — 외부 IO 0, 락 짧게 잡고 스냅샷만 계산.
+    search_slo = SearchSloStats(**search_metrics.get_search_slo())
+
     return StatsResponse(
         documents=DocumentsStats(
             total=len(docs),
@@ -173,6 +199,7 @@ def stats() -> StatsResponse:
         ),
         popular_tags=popular_tags,
         slo_buckets=slo_buckets,
+        search_slo=search_slo,
         generated_at=datetime.now(timezone.utc).isoformat(),
     )
 
