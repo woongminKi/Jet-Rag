@@ -31,7 +31,7 @@ from app.ingest import (
     run_pipeline,
 )
 from app.routers._input_gate import HEAD_BYTES, validate_magic
-from app.routers._url_gate import validate_url_safety
+from app.routers._url_gate import recheck_dns_consistency, validate_url_safety
 
 logger = logging.getLogger(__name__)
 
@@ -435,8 +435,8 @@ async def upload_url(
     """
     started_at = time.perf_counter()
 
-    # SSRF 검증
-    safe, reason = validate_url_safety(payload.url)
+    # SSRF 검증 (multi-IP round-robin 차단 포함). resolved IP 집합 캐시 → recheck 입력.
+    safe, reason, resolved_ips = validate_url_safety(payload.url)
     if not safe:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -463,6 +463,15 @@ async def upload_url(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"URL 조회 실패: {exc}",
         ) from exc
+
+    # DNS rebinding 방어 — fetch 사이에 DNS 가 사설 IP 로 회전됐는지 재검증.
+    # 검증 시점 (T1) → fetch (T2) 사이 IP 변경되면 fetch 결과 폐기.
+    rebind_ok, rebind_reason = recheck_dns_consistency(payload.url, resolved_ips)
+    if not rebind_ok:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"안전하지 않은 URL: {rebind_reason}",
+        )
 
     html_bytes = resp.content
     size = len(html_bytes)
