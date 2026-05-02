@@ -238,6 +238,9 @@ def _to_chunk_records(
         metadata: dict = {}
         if idx > 0:
             # 2차 분할 결과 인접 조각이 모두 overlap 대상 — 단순화를 위해 모든 i>0 에 표시
+            # TODO (W4 P3): 정확하게는 split 인접만 overlap, merge 결과 인접은 미적용.
+            # 현재는 idx>0 에 일괄 표시 (디버깅 가시성 우선). 정확화는 split 단계에서
+            # overlap 적용 여부를 ExtractedSection 메타에 전파 후 여기서 참조 권장.
             metadata["overlap_with_prev_chunk_idx"] = idx - 1
         records.append(
             ChunkRecord(

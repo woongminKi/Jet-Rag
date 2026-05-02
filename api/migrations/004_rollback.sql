@@ -139,6 +139,9 @@ $$;
 --    명시 — 본 SQL 은 DB 측만 책임.
 --
 --    임시 호환 RPC: 같은 시그니처로 simple FTS 사용. 라우터 변경 없이 즉시 작동.
+--    TODO (W3 P3 A-3): 함수명이 `..._pgroonga` 인 채로 simple FTS 를 사용하는 misleading 상태.
+--    rollback 적용 시점에만 의미 있는 호환 shim — 이후 라우터 003 경로 복원 commit 시
+--    `search_sparse_only` 로 rename 하거나 본 호환 RPC 제거 후 직접 호출 변경 권장.
 -- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION search_sparse_only_pgroonga(
     query_text   TEXT,

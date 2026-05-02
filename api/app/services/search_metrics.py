@@ -14,6 +14,11 @@
 future-proof:
     W6+ 사용자 자산이 누적되면 ring buffer → DB 영속화로 마이그레이션 (W4-Q-16).
     현재는 프로세스 재시작 시 휘발 — Day 2 의 PGroonga 마이그레이션 후 P95 측정에는 충분.
+
+알려진 한계 (W3 P3 F-4):
+    마이그레이션 적용 (003 → 004) 시점에 ring buffer 가 두 RPC 의 sample 을 혼재 측정.
+    p95/avg 에 003 잔존 sample 이 가중되어 PGroonga 효과 측정이 오염될 수 있음.
+    완화: uvicorn 재시작 시 자연 reset. 마이그레이션 직후 측정 시 서버 재시작 권장.
 """
 
 from __future__ import annotations
