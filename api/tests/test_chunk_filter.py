@@ -93,6 +93,69 @@ class ClassifyChunkTableNoiseTest(unittest.TestCase):
         self.assertIsNone(_classify_chunk(chunk, set()))
 
 
+class ClassifyChunkEmptyTest(unittest.TestCase):
+    """W4-Q-15 (c) — 빈 청크 마킹."""
+
+    def test_strip_empty_text_marked_as_empty(self) -> None:
+        """text.strip() == '' 인 청크 → empty 마킹."""
+        from app.adapters.vectorstore import ChunkRecord
+        from app.ingest.stages.chunk_filter import _classify_chunk
+
+        chunk = ChunkRecord(doc_id="d1", chunk_idx=0, text="   \n  \t  ")
+        self.assertEqual(_classify_chunk(chunk, set()), "empty")
+
+    def test_truly_empty_text_marked_as_empty(self) -> None:
+        """text == '' → empty 마킹."""
+        from app.adapters.vectorstore import ChunkRecord
+        from app.ingest.stages.chunk_filter import _classify_chunk
+
+        chunk = ChunkRecord(doc_id="d1", chunk_idx=0, text="")
+        self.assertEqual(_classify_chunk(chunk, set()), "empty")
+
+    def test_non_empty_text_not_marked_as_empty(self) -> None:
+        """비어있지 않은 텍스트는 empty 마킹 안 함 (다른 룰로 위임)."""
+        from app.adapters.vectorstore import ChunkRecord
+        from app.ingest.stages.chunk_filter import _classify_chunk
+
+        chunk = ChunkRecord(doc_id="d1", chunk_idx=0, text="짧은 텍스트")
+        self.assertIsNone(_classify_chunk(chunk, set()))
+
+    def test_empty_takes_priority_over_header_footer(self) -> None:
+        """빈 텍스트는 header_footer 마킹보다 empty 우선."""
+        from app.adapters.vectorstore import ChunkRecord
+        from app.ingest.stages.chunk_filter import _classify_chunk
+
+        chunk = ChunkRecord(doc_id="d1", chunk_idx=0, text="")
+        # 가설: header_footer 후보가 있어도 empty 가 먼저 분류
+        self.assertEqual(_classify_chunk(chunk, {"any text"}), "empty")
+
+
+class HeaderFooterClassifyTest(unittest.TestCase):
+    """W4-Q-15 (b) — header_footer 마킹의 _classify_chunk 단계 검증."""
+
+    def test_classify_marks_header_footer_when_text_in_set(self) -> None:
+        """후보 set 에 포함된 짧은 텍스트는 header_footer 마킹."""
+        from app.adapters.vectorstore import ChunkRecord
+        from app.ingest.stages.chunk_filter import _classify_chunk
+
+        chunk = ChunkRecord(doc_id="d1", chunk_idx=0, text="Page 1 of 10")
+        result = _classify_chunk(
+            chunk, header_footer_texts={"Page 1 of 10"}
+        )
+        self.assertEqual(result, "header_footer")
+
+    def test_classify_strips_text_before_lookup(self) -> None:
+        """공백 padding 된 텍스트도 strip 후 lookup."""
+        from app.adapters.vectorstore import ChunkRecord
+        from app.ingest.stages.chunk_filter import _classify_chunk
+
+        chunk = ChunkRecord(doc_id="d1", chunk_idx=0, text="  Page 1 of 10  \n")
+        result = _classify_chunk(
+            chunk, header_footer_texts={"Page 1 of 10"}
+        )
+        self.assertEqual(result, "header_footer")
+
+
 class HeaderFooterDetectionTest(unittest.TestCase):
     """header_footer 마킹 — 같은 doc 안 동일 짧은 텍스트 ≥ 3회."""
 

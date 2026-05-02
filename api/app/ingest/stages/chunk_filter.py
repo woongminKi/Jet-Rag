@@ -1,4 +1,4 @@
-"""Chunk 자동 필터링 룰 — G(3) 휴리스틱 마킹 (W3 v0.5 §3.G).
+"""Chunk 자동 필터링 룰 — G(3) 휴리스틱 마킹 (W3 v0.5 §3.G + W4-Q-15).
 
 배경 (work-log/2026-04-29 청킹 정책 검토.md)
 - chunk.py 본격 변경은 W4-Q-14 로 deferred. W3 안에서는 (1) 마이그레이션 004 의 flags
@@ -8,6 +8,8 @@
 휴리스틱 (G(1) 와 정합)
 - table_noise: 짧은 라인 ≥ _SHORT_LINE_RATIO_TH AND 숫자/특수문자 ≥ _DIGIT_PUNCT_RATIO_TH
 - header_footer: 같은 doc 안에서 동일 텍스트 ≥ _HEADER_FOOTER_REPEAT_TH 회 + len < _HEADER_FOOTER_MAX_LEN
+- empty: text.strip() == "" — W4-Q-15 (c) 추가, dead branch 보호 (chunk.py 가 빈 단락 skip 하지만
+  향후 DOCX/PPTX 등 새 파서에서 빈 청크 발생 가능성 대비 인프라)
 
 임계값 강화 (G(1) 대비 — 사용자 결정 2026-04-29)
 - short_line_ratio: 0.70 → 0.90 (G(1) 진단용은 0.70, 본 자동 마킹은 0.90)
@@ -15,8 +17,13 @@
 - 사유: 자동 마킹은 검색에서 제외되므로 false positive 비용이 진단보다 큼. 보수적으로.
 
 마킹 결과
-- chunk.flags["filtered_reason"] = "table_noise" | "header_footer"
+- chunk.flags["filtered_reason"] = "table_noise" | "header_footer" | "empty"
 - search_hybrid_rrf RPC 의 WHERE `flags->>'filtered_reason' IS NULL` 가 자동 제외.
+
+가시성 (W4-Q-15 G-2 보강)
+- stage 로그에 마킹 카테고리별 카운트 + 비율 노출 (W3 Day 4 ship)
+- W4-Q-15 추가: empty 카운트 노출 + 전체 마킹 비율 5% 초과 시 WARNING (false positive risk
+  early signal)
 
 위치 (파이프라인 내)
 - chunk → **chunk_filter** → content_gate → tag_summarize → ...
@@ -84,15 +91,24 @@ def run_chunk_filter_stage(
             filtered_count[reason] += 1
 
         total = len(chunks)
+        filter_ratio = (sum(filtered_count.values()) / total) if total else 0.0
         logger.info(
             "chunk_filter: doc=%s total=%d table_noise=%d header_footer=%d "
-            "filter_ratio=%.3f",
+            "empty=%d filter_ratio=%.3f",
             doc_id,
             total,
             filtered_count["table_noise"],
             filtered_count["header_footer"],
-            (sum(filtered_count.values()) / total) if total else 0.0,
+            filtered_count["empty"],
+            filter_ratio,
         )
+        # W4-Q-15 G-2 보강 — 5% 초과 시 false positive risk early signal
+        if filter_ratio > 0.05:
+            logger.warning(
+                "chunk_filter: doc=%s 마킹 비율 %.1f%% > 5%% — false positive risk 검토 필요",
+                doc_id,
+                filter_ratio * 100,
+            )
         return out
 
 
@@ -106,8 +122,13 @@ def _classify_chunk(
     text = chunk.text or ""
     stripped = text.strip()
 
+    # W4-Q-15 (c) — 빈 청크 마킹. chunk.py 가 빈 단락 skip 해 dead branch 이지만
+    # DOCX/PPTX 등 신규 파서 도입 시 빈 청크 발생 risk 대비 인프라.
+    if not stripped:
+        return "empty"
+
     # header_footer 우선 — 짧은 반복 텍스트는 표보다 헤더/푸터 의도가 강함.
-    if stripped and stripped in header_footer_texts:
+    if stripped in header_footer_texts:
         return "header_footer"
 
     # table_noise — 길이 0 / 너무 짧은 청크는 분류 의미 없음 (다른 단계에서 처리).
