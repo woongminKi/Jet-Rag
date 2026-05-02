@@ -54,6 +54,9 @@ class MatchedChunk(BaseModel):
     page: int | None
     section_title: str | None
     highlight: list[list[int]]
+    # W6 Day 5 추가 — 디버깅/투명성 가시성. backward compatible (기존 필드 변경 0).
+    rrf_score: float | None = None  # 본 청크의 RRF 점수 (검색 결과 ranking 근거)
+    metadata: dict | None = None  # chunk metadata (overlap_with_prev_chunk_idx 등)
 
 
 class SearchHit(BaseModel):
@@ -317,13 +320,19 @@ def search(
 
     chunks_resp = (
         client.table("chunks")
-        .select("id, doc_id, chunk_idx, page, section_title, text")
+        .select("id, doc_id, chunk_idx, page, section_title, text, metadata")
         .in_("id", selected_chunk_ids)
         .execute()
     )
     chunks_by_id: dict[str, dict] = {
         c["id"]: c for c in (chunks_resp.data or [])
     }
+    # chunk_id → rrf_score 매핑 (페이지 내 응답에서만 사용)
+    chunk_rrf: dict[str, float] = {}
+    for doc_id in page_doc_ids:
+        for cid, score in doc_chunk_scores[doc_id]:
+            # 같은 chunk_id 가 dense/sparse path 양쪽에 등장 시 max
+            chunk_rrf[cid] = max(chunk_rrf.get(cid, 0.0), score)
 
     # ------------------------------------------------------------------
     # 7) 응답 조립 (relevance 는 결과 집합 내 정규화 — top=1.0)
@@ -353,6 +362,7 @@ def search(
             snippet, highlights = _make_snippet_with_highlights(
                 c.get("text") or "", clean_q
             )
+            chunk_meta = c.get("metadata") or None
             matched_chunks.append(
                 MatchedChunk(
                     chunk_id=c["id"],
@@ -361,6 +371,8 @@ def search(
                     page=c.get("page"),
                     section_title=c.get("section_title"),
                     highlight=highlights,
+                    rrf_score=chunk_rrf.get(c["id"]),
+                    metadata=chunk_meta if chunk_meta else None,
                 )
             )
 
