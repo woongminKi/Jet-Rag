@@ -1,21 +1,20 @@
 """W4-Q-14 dry-run — 새 chunk.py 정책으로 재청킹 시뮬레이션.
 
 배경
-- W4-Q-14 (4.1·4.2·4.4·4.5) 적용 후 실제 인제스트 (DE-65 = 재인제스트) 전에
+- W4-Q-14 (4.1·4.2·4.4·4.5·4.3·4.6) 적용 후 실제 인제스트 (DE-65 = 재인제스트) 전에
   청크 수·평균 길이·section_title 채움 비율 변화를 측정해 사용자 confirm 게이트.
-- 본 스크립트는 **DB 변경 0** — 기존 documents.raw_text 를 단일 ExtractedSection
-  으로 취급해 새 chunk.py 를 통과시킨 결과를 현재 chunks 와 비교.
+- 본 스크립트는 **DB 변경 0**.
 
-한계
-- 실제 인제스트는 parser 가 다중 섹션으로 분할 → 본 dry-run 의 단일 섹션 시뮬레이션
-  은 파서 단계의 헤딩 정보를 잃음. 결과 청크 수는 실제보다 적게 추정될 수 있음
-  (single section 으로 처리해 _MIN_MERGE_SIZE 효과 약화). 방향성 신호로만 활용.
+모드 (W6 Day 4 추가)
+- `simulated` (기본, 빠름) — 기존 chunks 를 ExtractedSection 으로 변환 후 chunk policy 통과.
+  파서 raw 출력은 모름. 정상 시나리오 Δ ≈ 0% (chunks 가 이미 잘 분리된 상태).
+- `realistic` — Storage 에서 원본 파일 다운로드 + 파서 실행 → 실 인제스트와 동일한 입력
+  분포로 chunk policy 적용. DE-65 본 적용 결과를 사전 정확 예측. 비용 ↑ (Storage I/O + 파서).
 
 사용
-    cd api && uv run python scripts/dryrun_chunk_repolicy.py
-        # → stdout markdown 리포트
-    cd api && uv run python scripts/dryrun_chunk_repolicy.py \\
-        --output "../work-log/2026-05-02 W4-Q-14 dry-run 리포트.md"
+    cd api && uv run python scripts/dryrun_chunk_repolicy.py            # simulated
+    cd api && uv run python scripts/dryrun_chunk_repolicy.py --mode realistic
+    cd api && uv run python scripts/dryrun_chunk_repolicy.py --output ...
 """
 
 from __future__ import annotations
@@ -42,14 +41,14 @@ from app.ingest.stages.chunk import (  # noqa: E402
 
 
 def _fetch_documents(client: Any, user_id: str) -> list[dict]:
-    """user_id 의 모든 documents 메타 fetch."""
+    """user_id 의 모든 documents 메타 fetch (storage_path 포함 — realistic 모드용)."""
     docs: list[dict] = []
     page_size = 100
     offset = 0
     while True:
         resp = (
             client.table("documents")
-            .select("id, title, doc_type")
+            .select("id, title, doc_type, storage_path")
             .eq("user_id", user_id)
             .range(offset, offset + page_size - 1)
             .execute()
@@ -113,12 +112,54 @@ def _simulate_rechunk(chunks: list[dict]) -> list:
     return _to_chunk_records(doc_id="dryrun-doc", sections=merged)
 
 
+def _realistic_rechunk(doc: dict) -> tuple[list, str | None]:
+    """W6 Day 4 — Storage 에서 원본 파일 다운로드 + 파서 실행 → 실 인제스트와 동일한
+    입력 분포로 chunk policy 통과 (realistic 모드).
+
+    반환: (chunk records, error_msg or None). DocxParser·HwpxParser·PyMuPDFParser 등
+    실 파서 출력 sections 을 chunk policy 에 통과시켜 정확 예측.
+    """
+    from app.adapters.impl.hwpml_parser import is_hwpml_bytes  # noqa: E402
+    from app.adapters.impl.supabase_storage import SupabaseBlobStorage  # noqa: E402
+    from app.ingest.stages.extract import (  # noqa: E402
+        _PARSERS_BY_DOC_TYPE,
+        _hwpml_parser,
+    )
+
+    parser = _PARSERS_BY_DOC_TYPE.get(doc["doc_type"])
+    if parser is None:
+        return [], f"unsupported doc_type={doc['doc_type']}"
+    storage = SupabaseBlobStorage(bucket=get_settings().supabase_storage_bucket)
+    try:
+        data = storage.get(doc["storage_path"])
+    except Exception as exc:  # noqa: BLE001
+        return [], f"storage fetch fail: {exc}"
+    if doc["doc_type"] == "hwp" and is_hwpml_bytes(data[:4096]):
+        parser = _hwpml_parser
+    try:
+        extraction = parser.parse(data, file_name=doc.get("title") or doc["id"])
+    except Exception as exc:  # noqa: BLE001
+        return [], f"parse fail: {exc}"
+    sections = list(extraction.sections)
+    if not sections:
+        return [], "empty sections"
+    split = _split_long_sections(sections)
+    merged = _merge_short_sections(split)
+    return _to_chunk_records(doc_id="dryrun-doc", sections=merged), None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="W4-Q-14 chunk.py dry-run")
     parser.add_argument("--output", "-o", help="출력 markdown 파일 경로 (기본: stdout)")
     parser.add_argument(
         "--user-id",
         help="대상 user_id (기본: settings.default_user_id)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["simulated", "realistic"],
+        default="simulated",
+        help="simulated (기본, 빠름, chunks→resplit) / realistic (Storage+파서 실행, 정확)",
     )
     args = parser.parse_args()
 
@@ -132,16 +173,23 @@ def main() -> int:
     lines: list[str] = []
     lines.append("# W4-Q-14 dry-run 리포트 — 새 chunk.py 정책 재청킹 시뮬레이션")
     lines.append("")
-    lines.append(
-        "> chunks 변경 없이 기존 chunks 를 ExtractedSection 으로 변환 후 새 chunk.py 통과."
-        " section_title·page 메타가 보존되므로 실제 재인제스트 결과와 근사 (overlap 누적 risk 있음)."
-    )
+    if args.mode == "realistic":
+        lines.append(
+            "> **realistic 모드** (W6 Day 4) — Storage 에서 원본 다운로드 + 파서 실행 →"
+            " 실 인제스트와 동일한 입력 분포로 chunk policy 통과. DE-65 본 적용 결과 정확 예측."
+        )
+    else:
+        lines.append(
+            "> **simulated 모드** (기본, 빠름) — 기존 chunks 를 ExtractedSection 으로 변환"
+            " 후 chunk policy 통과. 정상 시나리오 Δ ≈ 0% (chunks 가 이미 잘 분리된 상태)."
+        )
     lines.append("")
     lines.append(f"- user_id: `{user_id}`")
     lines.append(f"- 분석 doc 수: {len(docs)}")
     lines.append(
         f"- 현재 총 chunks: {sum(len(v) for v in chunks_by_doc.values())}"
     )
+    lines.append(f"- 모드: `{args.mode}`")
     lines.append("")
 
     lines.append("## doc 별 비교")
@@ -168,7 +216,16 @@ def main() -> int:
             else 0
         )
 
-        new_records = _simulate_rechunk(current_chunks)
+        if args.mode == "realistic":
+            new_records, err = _realistic_rechunk(doc)
+            if err:
+                lines.append(
+                    f"| {name} | {doc_type} | {current_count} | err | err | err | err |"
+                )
+                print(f"[realistic] {name}: {err}", file=sys.stderr)
+                continue
+        else:
+            new_records = _simulate_rechunk(current_chunks)
         new_count = len(new_records)
         new_avg_len = (
             statistics.mean(len(r.text) for r in new_records)

@@ -43,7 +43,12 @@ GOLDEN: list[dict] = [
     {"id": "G-017", "type": "메타혼합", "q": "직제", "expect": "dd8c1fb0", "filters": {"doc_type": "hwpx"}},
     {"id": "G-018", "type": "메타혼합", "q": "변제충당", "expect": "49ef8d01", "filters": {"doc_type": "pdf"}},
     {"id": "G-019", "type": "메타혼합", "q": "AI 투자", "expect": "3970feab", "filters": {"doc_type": "pdf"}},
-    {"id": "G-020", "type": "메타혼합", "q": "샘플", "expect": "4d0ea2c4", "filters": {"doc_type": "pdf"}},
+    # G-020 — v0.2 → v0.3 추가 정정: 4d0ea2c4 (jet_rag_day4_sample) 의 chunks 가
+    # 손상 추출 ("···" dot 만) → 의미 있는 텍스트 매칭 불가. expected 를 sample-report 로
+    # 변경 + query 를 회귀 안전망 의도 유지하면서 자연어로.
+    {"id": "G-020", "type": "메타혼합", "q": "샘플 보고서", "expect": "3970feab", "filters": {"doc_type": "pdf"}},
+    # G-021 ~ G-025 (DOCX) — 사용자 DOCX 자료 업로드 후 expect 채워서 활성. 현재 placeholder.
+    # (golden 평가셋 v0.2 §3.2 참조)
 ]
 
 
