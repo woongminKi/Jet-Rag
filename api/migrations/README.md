@@ -8,6 +8,7 @@ Supabase SQL Editor에서 순서대로 실행.
 | 002 | `002_documents_received_ms.sql` | W2 Day 2 — `documents.received_ms INT NULL` 추가 (SLO 측정용, `/stats.slo_buckets` 집계 근거) |
 | 003 | `003_hybrid_search.sql` | W3 Day 1 — HNSW (chunks.dense_vec / documents.doc_embedding) + chunks.fts (simple FTS) + pg_trgm + RPC `search_hybrid_rrf` (RRF k=60) |
 | 004 | `004_pgroonga_korean_fts.sql` | W3 Day 2 v0.5 — PGroonga (Mecab) 로 sparse path 교체. chunks.fts/idx_chunks_fts DROP, idx_chunks_text_pgroonga 신설. chunks.flags JSONB 컬럼 추가 (DE-62). RPC `search_hybrid_rrf` 재작성 + `search_sparse_only_pgroonga` 신설 |
+| 004-rollback | `004_rollback.sql` | (옵션 안전망, 미적용) PGroonga 인덱스/RPC 제거 → 003 의 simple FTS 복구. 적용은 운영자 결정 게이트 (PGroonga 빌드 실패·sparse RPC 비정상·호스팅 미지원 통보 중 하나). 적용 후 sparse_hits 회귀 → 사용자 측 검색 품질 정성 점검 의무. |
 
 ## 실행 절차
 

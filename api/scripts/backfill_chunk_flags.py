@@ -21,6 +21,13 @@ dry-run vs execute
 주의
 - chunk_filter 의 휴리스틱과 임계값은 이 스크립트와 1:1 매칭 (모듈 import) → 정합성 보장.
 - 기존 flags 값은 보존 — filtered_reason 만 추가/덮어쓰기. 다른 마커는 건드리지 않음.
+
+마킹 되돌리기 (C-4 P2)
+- 전체 마킹 삭제: Supabase Studio SQL Editor 에서
+    UPDATE chunks
+    SET flags = flags - 'filtered_reason'
+    WHERE flags ? 'filtered_reason';
+- 사용자 한정: WHERE 절에 doc_id IN (SELECT id FROM documents WHERE user_id = '...')
 """
 
 from __future__ import annotations
@@ -151,6 +158,21 @@ def render_dry_run_report(
         for reason, count in reason_counter.most_common():
             ratio_pct = (count / total_chunks * 100) if total_chunks else 0.0
             lines.append(f"- {reason}: {count} ({ratio_pct:.1f}%)")
+        lines.append("")
+
+        lines.append("## doc 별 마킹 breakdown")
+        by_doc: dict[str, list[dict]] = defaultdict(list)
+        for t in targets:
+            by_doc[t["doc_id"]].append(t)
+        rows = sorted(by_doc.items(), key=lambda kv: -len(kv[1]))
+        for doc_id, items in rows:
+            sample = items[0]
+            doc_total_in_targets = len(items)
+            lines.append(
+                f"- doc={doc_id[:8]}… "
+                f"({sample['doc_type']}, {sample['doc_title'][:30]}) "
+                f"마킹 {doc_total_in_targets}건"
+            )
         lines.append("")
 
         lines.append(f"## sample (최대 {_SAMPLE_SIZE}건)")

@@ -23,6 +23,15 @@
 --      -- plan 에 idx_chunks_fts (GIN) 사용 확인
 --   3. SELECT * FROM pg_extension WHERE extname='pgroonga';  -- 0 row (제거됨)
 --
+-- 적용 후 사용자 측 후속 (운영자 게이트 G-3 강화):
+--   - sparse_hits 회복은 simple FTS 의 한국어 어절 AND 한계로 영향 → DE-60 결함 B 재발 가능.
+--     라이브 smoke ("판결" "대법원 판결" 등) 로 sparse_hits 비교 후 사용자에 알림.
+--   - 사용자 정성 검토: golden 20건 평가셋 (work-log/2026-05-02 golden 평가셋 v0.1.md) 으로
+--     top-3 hit 비율 비교. 5건 이상 회귀 시 PGroonga 재적용 또는 다른 sparse 경로 (W4-Q-11) 검토.
+--   - DROP EXTENSION pgroonga CASCADE 가 다른 객체에 의존돼 fail 시: 의존 객체 (RPC/인덱스)
+--     남아 있는 것 확인 후 개별 DROP. 실수로 다른 사용자 객체 영향 없도록 dry-run 추천:
+--       SELECT * FROM pg_depend WHERE refobjid = (SELECT oid FROM pg_extension WHERE extname='pgroonga');
+--
 -- ⚠️ pg_trgm 확장과 idx_documents_title_trgm 은 dedup Tier 3 에서 사용 → 유지.
 -- ⚠️ idx_chunks_dense / idx_documents_embed (HNSW) 는 003 그대로라 변경 없음.
 -- ============================================================
