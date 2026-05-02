@@ -20,6 +20,12 @@ W5 추가 (4.3 따옴표/괄호 보호 — W4 이월 회수):
 - `_MAX_SIZE` 위반 시 fallback (현재 동작 유지) — 강제 cut
 - 인용문 중간 분리 방지 (`대법원은 "...인정한다." 라고 판결했다.` 등)
 
+W5 Day 3 추가 (4.6 표 청크 격리 — 청킹 정책 검토 §4.6):
+- `_merge_short_sections` 에서 표 셀 의심 패턴 (짧고 숫자/특수문자 비율 ↑ 또는 ` | `
+  separator 포함) 감지 시 인접 본문과 병합 차단
+- 표 데이터가 일반 본문 의미와 섞이는 false positive 회피
+- chunk_filter 의 table_noise 룰과 책임 분리 — 본 단계는 분리, filter 는 검색 제외
+
 메타 보존: chunk_idx · doc_id · page · section_title · char_range · bbox · metadata
 """
 
@@ -233,11 +239,41 @@ def _apply_overlap(pieces: list[str]) -> list[str]:
 # ---------------------- 3차: 짧은 섹션 병합 ----------------------
 
 
+def _looks_like_table_cell(text: str) -> bool:
+    """W5 Day 3 4.6 — 표 셀로 의심되는 짧은 패턴 (병합 차단용).
+
+    판정 기준 (어느 하나라도 충족):
+    - DocxParser/MarkdownParser 의 표 텍스트 (` | ` separator) 포함
+    - 길이 < 30자 AND 숫자/특수문자 비율 ≥ 0.5 (표 셀 통상 패턴)
+
+    chunk_filter 의 table_noise 룰과 책임 분리 — 본 함수는 _merge_short_sections 에서
+    인접 본문과의 병합 차단용 (분리). table_noise 는 검색 제외용.
+    """
+    if " | " in text:
+        return True
+    stripped = text.strip()
+    if len(stripped) >= 30:
+        return False
+    non_ws = sum(1 for c in stripped if not c.isspace())
+    if non_ws == 0:
+        return False
+    digit_punct = sum(
+        1 for c in stripped
+        if c.isdigit() or (not c.isalnum() and not c.isspace())
+    )
+    return digit_punct / non_ws >= 0.5
+
+
 def _merge_short_sections(sections: list[ExtractedSection]) -> list[ExtractedSection]:
     merged: list[ExtractedSection] = []
     buf: ExtractedSection | None = None
     for section in sections:
         if buf is None:
+            buf = section
+            continue
+        # W5 Day 3 4.6 — 표 셀 의심 패턴은 병합 차단 (본문 의미 오염 방지)
+        if _looks_like_table_cell(buf.text) or _looks_like_table_cell(section.text):
+            merged.append(buf)
             buf = section
             continue
         can_merge = (

@@ -344,6 +344,66 @@ class SectionTitleSwapTest(unittest.TestCase):
 
 
 # =====================================================================
+# W5 Day 3 4.6 — 표 청크 격리 (병합 차단)
+# =====================================================================
+
+
+class TableCellIsolationTest(unittest.TestCase):
+    """W5 4.6 — 표 셀 의심 패턴은 인접 본문과 병합 차단."""
+
+    def test_pipe_separator_detected(self) -> None:
+        from app.ingest.stages.chunk import _looks_like_table_cell
+
+        self.assertTrue(_looks_like_table_cell("항목 A | 항목 B | 항목 C"))
+        self.assertTrue(_looks_like_table_cell("100 | 200"))
+
+    def test_short_digit_heavy_detected(self) -> None:
+        from app.ingest.stages.chunk import _looks_like_table_cell
+
+        self.assertTrue(_looks_like_table_cell("100, 200, 300"))
+        self.assertTrue(_looks_like_table_cell("12.5%"))
+
+    def test_normal_short_text_not_detected(self) -> None:
+        from app.ingest.stages.chunk import _looks_like_table_cell
+
+        self.assertFalse(_looks_like_table_cell("안녕하세요"))
+        self.assertFalse(_looks_like_table_cell("짧은 한국어"))
+
+    def test_long_text_not_detected(self) -> None:
+        """30자 이상은 표 셀 아님 (일반 본문 가능성)."""
+        from app.ingest.stages.chunk import _looks_like_table_cell
+
+        long_digit = "1234 5678 9012 3456 7890 1234 5678"  # >= 30, but no separator
+        self.assertFalse(_looks_like_table_cell(long_digit))
+
+    def test_table_cell_blocks_merge(self) -> None:
+        """표 셀과 인접 본문 병합 차단 — 둘 다 _MIN_MERGE_SIZE 미만이어도 분리."""
+        from app.adapters.parser import ExtractedSection
+        from app.ingest.stages.chunk import _merge_short_sections
+
+        sections = [
+            ExtractedSection(text="항목 A | 항목 B", page=1, section_title="표"),
+            ExtractedSection(text="이는 본문이다.", page=1, section_title="표"),
+        ]
+        merged = _merge_short_sections(sections)
+        self.assertEqual(len(merged), 2)  # 병합 X
+        self.assertIn("|", merged[0].text)
+        self.assertNotIn("|", merged[1].text)
+
+    def test_normal_short_sections_still_merged(self) -> None:
+        """일반 짧은 본문은 기존대로 병합 (4.6 회귀 0)."""
+        from app.adapters.parser import ExtractedSection
+        from app.ingest.stages.chunk import _merge_short_sections
+
+        sections = [
+            ExtractedSection(text="짧은 본문 하나.", page=1, section_title="t"),
+            ExtractedSection(text="짧은 본문 둘.", page=1, section_title="t"),
+        ]
+        merged = _merge_short_sections(sections)
+        self.assertEqual(len(merged), 1)
+
+
+# =====================================================================
 # 통합 — _to_chunk_records 의 overlap 메타 + 전체 파이프라인
 # =====================================================================
 
