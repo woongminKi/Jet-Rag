@@ -130,6 +130,57 @@ class ClassifyChunkEmptyTest(unittest.TestCase):
         self.assertEqual(_classify_chunk(chunk, {"any text"}), "empty")
 
 
+class ClassifyChunkExtremeShortTest(unittest.TestCase):
+    """W6 Day 3 — 단일 숫자/짧은 토큰 청크 마킹 (DE-65 후 G-015 fail 회수)."""
+
+    def test_single_digit_marked_as_extreme_short(self) -> None:
+        from app.adapters.vectorstore import ChunkRecord
+        from app.ingest.stages.chunk_filter import _classify_chunk
+
+        chunk = ChunkRecord(doc_id="d1", chunk_idx=0, text="2")
+        self.assertEqual(_classify_chunk(chunk, set()), "extreme_short")
+
+    def test_short_number_marked_as_extreme_short(self) -> None:
+        from app.adapters.vectorstore import ChunkRecord
+        from app.ingest.stages.chunk_filter import _classify_chunk
+
+        for short in ["22", "2.2", "2,800", "100"]:
+            with self.subTest(text=short):
+                chunk = ChunkRecord(doc_id="d1", chunk_idx=0, text=short)
+                self.assertEqual(_classify_chunk(chunk, set()), "extreme_short")
+
+    def test_korean_text_preserved_even_if_short(self) -> None:
+        """한국어 알파벳 1자라도 있으면 짧아도 마킹 안 함 (의미 있을 가능성)."""
+        from app.adapters.vectorstore import ChunkRecord
+        from app.ingest.stages.chunk_filter import _classify_chunk
+
+        for text in ["변제충당", "휴관", "안녕", "ABC", "변제 충당"]:
+            with self.subTest(text=text):
+                chunk = ChunkRecord(doc_id="d1", chunk_idx=0, text=text)
+                self.assertIsNone(
+                    _classify_chunk(chunk, set()),
+                    f"한국어/영문 보존 실패: {text}",
+                )
+
+    def test_long_number_not_marked(self) -> None:
+        """20자 이상은 숫자만이라도 보존 (긴 표 데이터 가능)."""
+        from app.adapters.vectorstore import ChunkRecord
+        from app.ingest.stages.chunk_filter import _classify_chunk
+
+        chunk = ChunkRecord(doc_id="d1", chunk_idx=0, text="123,456,789,000,000.00")
+        # 22 chars, no letter, but >= _EXTREME_SHORT_LEN → 보존
+        self.assertIsNone(_classify_chunk(chunk, set()))
+
+    def test_extreme_short_takes_priority_over_header_footer(self) -> None:
+        """extreme_short 가 header_footer 보다 우선."""
+        from app.adapters.vectorstore import ChunkRecord
+        from app.ingest.stages.chunk_filter import _classify_chunk
+
+        chunk = ChunkRecord(doc_id="d1", chunk_idx=0, text="2")
+        # header_footer 후보에 "2" 가 있어도 extreme_short 우선
+        self.assertEqual(_classify_chunk(chunk, {"2"}), "extreme_short")
+
+
 class HeaderFooterClassifyTest(unittest.TestCase):
     """W4-Q-15 (b) — header_footer 마킹의 _classify_chunk 단계 검증."""
 

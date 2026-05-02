@@ -10,6 +10,8 @@
 - header_footer: 같은 doc 안에서 동일 텍스트 ≥ _HEADER_FOOTER_REPEAT_TH 회 + len < _HEADER_FOOTER_MAX_LEN
 - empty: text.strip() == "" — W4-Q-15 (c) 추가, dead branch 보호 (chunk.py 가 빈 단락 skip 하지만
   향후 DOCX/PPTX 등 새 파서에서 빈 청크 발생 가능성 대비 인프라)
+- extreme_short: 1 ≤ len(text.strip()) < _EXTREME_SHORT_LEN — W6 Day 3 추가, 표 셀 격리 부작용
+  (단일 숫자/짧은 토큰 청크가 검색 ranking 차지) 회수. DE-65 본 적용 후 G-015 fail 분석 결과.
 
 임계값 강화 (G(1) 대비 — 사용자 결정 2026-04-29)
 - short_line_ratio: 0.70 → 0.90 (G(1) 진단용은 0.70, 본 자동 마킹은 0.90)
@@ -57,6 +59,11 @@ _DIGIT_PUNCT_RATIO_TH = 0.70
 _HEADER_FOOTER_REPEAT_TH = 3
 _HEADER_FOOTER_MAX_LEN = 100
 
+# W6 Day 3 — 표 셀 격리 부작용 청크 자동 마킹.
+# 한국어/영문 알파벳 0 + 길이 < _EXTREME_SHORT_LEN → 검색 결과로 의미 0 ("2", "2,800" 등).
+# 한국어/영문 1자라도 있으면 의미 있을 가능성 보존 ("변제충당" 4자 보존, "2,800원" 5자 보존).
+_EXTREME_SHORT_LEN = 20
+
 # 한국어/영문 글자 vs 숫자/특수문자 분류 (G(1) 동일 정규식).
 _DIGIT_PUNCT_PATTERN = re.compile(r"[\d\W_]", re.UNICODE)
 
@@ -94,12 +101,13 @@ def run_chunk_filter_stage(
         filter_ratio = (sum(filtered_count.values()) / total) if total else 0.0
         logger.info(
             "chunk_filter: doc=%s total=%d table_noise=%d header_footer=%d "
-            "empty=%d filter_ratio=%.3f",
+            "empty=%d extreme_short=%d filter_ratio=%.3f",
             doc_id,
             total,
             filtered_count["table_noise"],
             filtered_count["header_footer"],
             filtered_count["empty"],
+            filtered_count["extreme_short"],
             filter_ratio,
         )
         # W4-Q-15 G-2 보강 — 5% 초과 시 false positive risk early signal
@@ -127,6 +135,11 @@ def _classify_chunk(
     if not stripped:
         return "empty"
 
+    # W6 Day 3 — 표 셀 격리 부작용 회수. 한국어/영문 알파벳 0 + 짧은 청크 (단일 숫자/통화·표 셀 등)
+    # 이 검색 ranking 차지하는 케이스 (DE-65 본 적용 후 G-015 fail 분석) 차단.
+    if len(stripped) < _EXTREME_SHORT_LEN and not _has_meaningful_letter(stripped):
+        return "extreme_short"
+
     # header_footer 우선 — 짧은 반복 텍스트는 표보다 헤더/푸터 의도가 강함.
     if stripped in header_footer_texts:
         return "header_footer"
@@ -143,6 +156,11 @@ def _classify_chunk(
         return "table_noise"
 
     return None
+
+
+def _has_meaningful_letter(text: str) -> bool:
+    """한국어 음절 또는 영문 알파벳 1자라도 포함하면 True (의미 있는 단어 가능성)."""
+    return any(c.isalpha() or "\uAC00" <= c <= "\uD7A3" for c in text)
 
 
 def _line_metrics(text: str) -> tuple[float, float]:
