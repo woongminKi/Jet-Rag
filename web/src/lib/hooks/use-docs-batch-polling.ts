@@ -49,6 +49,10 @@ export function useDocsBatchPolling(
 
   useEffect(() => {
     if (!enabled || docIds.length === 0) {
+      // disabled / 빈 docIds — initial state 는 이미 loading=false 로 출발하지만,
+      // props 변경 (예: enabled true→false) 시 loading=true 잔존 가능 → 일회성 sync.
+      // cascading render 발생하지만 disabled 시 한 번만 → 성능 영향 0 (W7 Day 2 검토).
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setState((s) => ({ ...s, loading: false }));
       return;
     }
