@@ -44,6 +44,9 @@ _RPC_TOP_K = 50  # RPC 의 dense / sparse path 각각 상위 K
 # W19 Day 2 한계 #75 — mode=dense/sparse 응용 layer 필터 후 부족 방지 cap.
 # hybrid (default) 는 _RPC_TOP_K, mode 필터 시 2배 pre-allocate (latency 영향 미미).
 _RPC_TOP_K_ABLATION = 100
+# W19 Day 3 한계 #66 — doc_id 응용 layer 필터 시 부족 방지 cap (RPC 인자 추가 회피).
+# doc_id 가 지정된 경우 RPC 결과 N건 중 일치만 통과 → 4배 pre-allocate.
+_RPC_TOP_K_DOC_FILTER = 200
 # 001_init.sql 의 doc_type CHECK 제약과 동일 — 화이트리스트 검증용
 _DOC_TYPES = {"pdf", "hwp", "hwpx", "docx", "pptx", "image", "url", "txt", "md"}
 # 503 응답의 Retry-After 헤더 — RFC 7231. HF cold start (5~20s) + 안전 마진.
@@ -228,8 +231,14 @@ def search(
     # ------------------------------------------------------------------
     # 2) 검색 (dense 성공 시 RPC, 실패 시 sparse-only)
     # ------------------------------------------------------------------
-    # W19 Day 2 한계 #75 — mode=dense/sparse 응용 layer 필터 시 부족 방지 cap.
-    rpc_top_k = _RPC_TOP_K_ABLATION if mode in ("dense", "sparse") else _RPC_TOP_K
+    # W19 Day 2·3 — 응용 layer 필터 시 부족 방지 pre-allocate.
+    # 우선순위: doc_id 필터 (#66, 4배) > mode ablation (#75, 2배) > default.
+    if doc_id is not None:
+        rpc_top_k = _RPC_TOP_K_DOC_FILTER
+    elif mode in ("dense", "sparse"):
+        rpc_top_k = _RPC_TOP_K_ABLATION
+    else:
+        rpc_top_k = _RPC_TOP_K
     if dense_vec is not None:
         rpc_resp = client.rpc(
             "search_hybrid_rrf",

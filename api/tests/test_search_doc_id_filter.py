@@ -301,5 +301,52 @@ class RpcTopKAblationCapTest(unittest.TestCase):
         self.assertEqual(self._execute_with_mode("sparse"), _RPC_TOP_K_ABLATION)
 
 
+class RpcTopKDocFilterTest(unittest.TestCase):
+    """W19 Day 3 한계 #66 — doc_id 지정 시 RPC top_k 4배 (응용 layer 필터 부족 방지)."""
+
+    def _provider_mock(self):
+        provider_mock = MagicMock()
+        provider_mock.embed_query.return_value = [0.0] * 1024
+        provider_mock._last_cache_hit = False
+        return provider_mock
+
+    def _execute_with_doc_id(self, doc_id, mode="hybrid") -> int:
+        """doc_id (또는 None) 인자로 search 호출 후 RPC top_k 반환."""
+        from app.routers import search as search_module
+
+        client_mock = _client_with_rpc_rows([])
+        with patch.object(
+            search_module, "get_bgem3_provider", return_value=self._provider_mock()
+        ), patch.object(
+            search_module, "get_supabase_client", return_value=client_mock
+        ):
+            search_module.search(
+                q="t", limit=10, offset=0, tags=None, doc_type=None,
+                from_date=None, to_date=None, doc_id=doc_id, mode=mode,
+            )
+        call = client_mock.rpc.call_args
+        args, kwargs = call
+        rpc_args = args[1] if len(args) >= 2 else kwargs.get("params", {})
+        return int(rpc_args["top_k"])
+
+    def test_doc_id_filter_uses_doc_filter_top_k(self) -> None:
+        from app.routers.search import _RPC_TOP_K_DOC_FILTER
+        self.assertEqual(
+            self._execute_with_doc_id("doc-A"), _RPC_TOP_K_DOC_FILTER
+        )
+
+    def test_doc_id_filter_overrides_ablation_cap(self) -> None:
+        """doc_id + mode=dense 동시 — doc_id 가 우선 (4배), ablation (2배) 무관."""
+        from app.routers.search import _RPC_TOP_K_DOC_FILTER
+        self.assertEqual(
+            self._execute_with_doc_id("doc-A", mode="dense"),
+            _RPC_TOP_K_DOC_FILTER,
+        )
+
+    def test_doc_id_none_uses_default_top_k(self) -> None:
+        from app.routers.search import _RPC_TOP_K
+        self.assertEqual(self._execute_with_doc_id(None), _RPC_TOP_K)
+
+
 if __name__ == "__main__":
     unittest.main()
