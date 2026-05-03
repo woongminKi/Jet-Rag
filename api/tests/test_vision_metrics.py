@@ -390,6 +390,76 @@ class SourceTypeNormalizationTest(unittest.TestCase):
         self.assertIsNone(vision_metrics._normalize_source_type(None))
 
 
+class RecordCallTruncationDynamicTest(unittest.TestCase):
+    """W22 Day 4 — record_call 가 호출 시점의 env 값을 동적 적용 검증.
+
+    W16 Day 4 ErrorMsgTruncationTest 가 _error_msg_max_len() helper 직접 검증.
+    본 테스트는 record_call → _persist_to_db_sync 호출 시점에 truncate 적용 검증.
+    """
+
+    def setUp(self) -> None:
+        from app.services import vision_metrics
+        vision_metrics.reset()
+        self._orig_max_len = os.environ.pop("JET_RAG_VISION_ERROR_MSG_MAX_LEN", None)
+
+    def tearDown(self) -> None:
+        if self._orig_max_len is None:
+            os.environ.pop("JET_RAG_VISION_ERROR_MSG_MAX_LEN", None)
+        else:
+            os.environ["JET_RAG_VISION_ERROR_MSG_MAX_LEN"] = self._orig_max_len
+        os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "0"
+
+    def test_record_call_applies_env_truncate_at_call_time(self) -> None:
+        from app.services import vision_metrics
+        from unittest.mock import patch
+
+        captured: list[dict] = []
+
+        def fake_sync(**kwargs):
+            captured.append(kwargs)
+
+        os.environ["JET_RAG_VISION_ERROR_MSG_MAX_LEN"] = "10"
+        os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "1"
+        os.environ["JET_RAG_METRICS_PERSIST_ASYNC"] = "0"
+
+        with patch.object(vision_metrics, "_persist_to_db_sync", side_effect=fake_sync):
+            vision_metrics.record_call(
+                success=False,
+                error_msg="A" * 100,
+                source_type="image",
+            )
+
+        self.assertEqual(len(captured), 1)
+        # env=10 적용 → error_msg 10자 truncate
+        self.assertEqual(len(captured[0]["error_msg"]), 10)
+        self.assertEqual(captured[0]["error_msg"], "A" * 10)
+        # source_type 정상 normalize (image 는 valid)
+        self.assertEqual(captured[0]["source_type"], "image")
+
+    def test_record_call_applies_default_when_env_unset(self) -> None:
+        from app.services import vision_metrics
+        from unittest.mock import patch
+
+        captured: list[dict] = []
+
+        def fake_sync(**kwargs):
+            captured.append(kwargs)
+
+        # env 미설정 — default 200 적용
+        os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "1"
+        os.environ["JET_RAG_METRICS_PERSIST_ASYNC"] = "0"
+
+        with patch.object(vision_metrics, "_persist_to_db_sync", side_effect=fake_sync):
+            vision_metrics.record_call(
+                success=False,
+                error_msg="B" * 250,  # 250 chars
+                source_type="pdf_scan",
+            )
+
+        # default 200 truncate
+        self.assertEqual(len(captured[0]["error_msg"]), 200)
+
+
 class ErrorMsgTruncationTest(unittest.TestCase):
     """W16 Day 4 한계 #84 — JET_RAG_VISION_ERROR_MSG_MAX_LEN env override."""
 
