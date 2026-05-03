@@ -149,6 +149,7 @@ class SearchHybridRpcSignatureUnchangedTest(unittest.TestCase):
                 doc_type=None,
                 from_date=None,
                 to_date=None,
+                doc_id=None,
             )
 
         self.assertEqual(captured.get("name"), "search_hybrid_rrf")

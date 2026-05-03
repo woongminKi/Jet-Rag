@@ -128,6 +128,13 @@ def search(
         default=None,
         description="created_at 종료 ISO 8601 (포함)",
     ),
+    doc_id: str | None = Query(
+        default=None,
+        description=(
+            "단일 문서 스코프 자연어 QA — 해당 doc 의 chunks 만 검색 (US-08, W11 Day 4). "
+            "응용 layer 필터 (RPC 결과 후) — 마이그레이션 회피 trade-off."
+        ),
+    ),
 ) -> SearchResponse:
     start_t = time.monotonic()
     client = get_supabase_client()
@@ -145,6 +152,15 @@ def search(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"doc_type='{doc_type}' 가 유효하지 않습니다.",
         )
+    # W11 Day 4 — doc_id 형식 검증 (UUID v4 / 비어있지 않은 문자열).
+    # 잘못된 입력 보호 — 응용 layer 필터링이라 SQL injection 위험은 0.
+    if doc_id is not None:
+        doc_id = doc_id.strip()
+        if not doc_id or len(doc_id) > 64:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="doc_id 형식이 유효하지 않습니다.",
+            )
     from_dt = _parse_iso_date(from_date, "from_date")
     to_dt = _parse_iso_date(to_date, "to_date")
 
@@ -208,6 +224,11 @@ def search(
         rpc_rows = rpc_resp.data or []
     else:
         rpc_rows = _sparse_only_fallback(client, clean_q, user_id, _RPC_TOP_K)
+
+    # W11 Day 4 — 단일 문서 스코프 (US-08): RPC 결과 중 해당 doc_id 만 보존.
+    # 응용 layer 필터 — RPC 결과 N 개 중 doc_id 일치만 통과 → 자연스럽게 dense·sparse·fused 카운트도 갱신.
+    if doc_id is not None:
+        rpc_rows = [r for r in rpc_rows if r.get("doc_id") == doc_id]
 
     dense_hits = sum(1 for r in rpc_rows if r.get("dense_rank") is not None)
     sparse_hits = sum(1 for r in rpc_rows if r.get("sparse_rank") is not None)

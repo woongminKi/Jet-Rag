@@ -86,7 +86,7 @@ class HttpExceptionHeadersUnitTest(unittest.TestCase):
             with self.assertRaises(HTTPException) as ctx:
                 search_module.search(
                     q="테스트", limit=10, offset=0,
-                    tags=None, doc_type=None, from_date=None, to_date=None,
+                    tags=None, doc_type=None, from_date=None, to_date=None, doc_id=None,
                 )
 
         # status / detail 은 기존 테스트와 중복이지만 self-contained 보장.
@@ -126,7 +126,7 @@ class HttpExceptionHeadersUnitTest(unittest.TestCase):
         ):
             resp = search_module.search(
                 q="테스트", limit=10, offset=0,
-                tags=None, doc_type=None, from_date=None, to_date=None,
+                tags=None, doc_type=None, from_date=None, to_date=None, doc_id=None,
             )
 
         # 정상 200 응답 — SearchResponse 모델. fallback_reason 만 marker.
