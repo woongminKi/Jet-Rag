@@ -21,6 +21,60 @@ Supabase SQL Editor에서 순서대로 실행.
 3. Run
 4. 완료 후 **Table Editor**에서 4개 테이블 생성 확인
 
+## W15+ 일괄 적용 가이드 (005·006·007·008)
+
+W15·W16·W20 누적 마이그레이션 — 한 번에 일괄 적용 권장.
+
+**선결 조건**: 001~004 가 이미 적용된 상태.
+
+**순차 적용** (각 파일 별도 Run, 트랜잭션 분리):
+
+```
+1. SQL Editor → New query → 005_vision_usage_log.sql 전체 paste → Run
+2. SQL Editor → New query → 006_search_metrics_log.sql 전체 paste → Run
+3. SQL Editor → New query → 007_metrics_trend_rpc.sql 전체 paste → Run
+4. SQL Editor → New query → 008_search_mode_split_rpc.sql 전체 paste → Run
+```
+
+**검증 SQL** (각 파일 헤더에도 명시, 통합 확인용):
+
+```sql
+-- 005 vision_usage_log 테이블
+SELECT count(*) FROM vision_usage_log;  -- 0 (미사용 시) 또는 누적 호출 수
+
+-- 006 search_metrics_log 테이블
+SELECT count(*) FROM search_metrics_log;
+
+-- 007 추세 RPC 2개
+SELECT count(*) FROM get_search_metrics_trend('24h', 'all');  -- 25 (1h × 24 + 시작 boundary)
+SELECT count(*) FROM get_vision_usage_trend('24h');  -- 25
+
+-- 008 split RPC 2개 — 정상 schema 확인
+SELECT proname FROM pg_proc WHERE proname IN ('search_dense_only', 'search_sparse_only');
+-- 2 row 반환 기대
+```
+
+**적용 후 활성화**:
+
+1. `uvicorn` 재시작 (env 재로드)
+2. 홈 dashboard 진입 → "검색 응답 추세" + "Vision API 호출 추세" 카드 자동 노출 (005·006·007 적용 후)
+3. 검색 시 `mode=dense` / `mode=sparse` 토글 → 진정 ablation RPC 직접 호출 (008 적용 후)
+4. `/stats` endpoint 응답 시점에 `vision_usage_log` / `search_metrics_log` 가 누적되기 시작
+
+**graceful 보호** (005~008 미적용 환경):
+- Python 코드가 try/except 로 RPC 부재 catch → 기존 in-memory metrics 만 사용
+- `error_code='migrations_pending'` 응답 → frontend 안내 카드
+- 미적용 → 적용 시점 사이의 데이터 손실 없음 (in-memory ring buffer 그대로 유지)
+
+**운영 환경 변수** (W15~W18 누적 — `.env` 또는 systemd 등):
+
+| env | default | 효과 |
+|---|---|---|
+| `JET_RAG_METRICS_PERSIST_ENABLED` | `"1"` | DB write-through 활성/비활성 |
+| `JET_RAG_METRICS_PERSIST_ASYNC` | `"1"` | ThreadPoolExecutor fire-and-forget vs sync |
+| `JET_RAG_VISION_ERROR_MSG_MAX_LEN` | `"200"` | error_msg DB row 크기 제한 |
+| `JET_RAG_QUERY_TEXT_HASH` | `"0"` | search_metrics_log.query_text SHA256 hash (멀티 유저 PII 보호) |
+
 ## RLS 정책
 
 현재는 모든 테이블 RLS 활성화 + 정책 없음 상태. `anon`·`authenticated` 키로는 접근 불가,
