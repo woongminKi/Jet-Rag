@@ -18,6 +18,7 @@ W15 Day 3 — DB write-through (한계 #34 회수).
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import threading
@@ -42,7 +43,11 @@ _persist_executor_lock = threading.Lock()
 
 
 def _get_persist_executor() -> ThreadPoolExecutor:
-    """lazy init — 첫 비동기 persist 시점에만 worker 생성."""
+    """lazy init — 첫 비동기 persist 시점에만 worker 생성.
+
+    W18 Day 3 — atexit hook 등록: 운영 종료 시 cancel_futures + 실행 중 task wait.
+    DB hang 회피 위해 cancel_futures=True (Python 3.9+).
+    """
     global _persist_executor
     if _persist_executor is None:
         with _persist_executor_lock:
@@ -50,7 +55,26 @@ def _get_persist_executor() -> ThreadPoolExecutor:
                 _persist_executor = ThreadPoolExecutor(
                     max_workers=2, thread_name_prefix="vision-persist"
                 )
+                atexit.register(_shutdown_persist_executor)
     return _persist_executor
+
+
+def _shutdown_persist_executor() -> None:
+    """atexit hook — vision-persist 풀 graceful shutdown.
+
+    cancel_futures=True: 미실행 task 취소 (DB hang 회피),
+                        실행 중인 task 만 wait.
+    호출 안전성: atexit 가 swallow 하므로 raise 무관, 단 logger 호출 가능.
+    """
+    global _persist_executor
+    if _persist_executor is None:
+        return
+    try:
+        _persist_executor.shutdown(wait=True, cancel_futures=True)
+    except Exception as exc:  # noqa: BLE001 — atexit swallow
+        logger.debug("vision-persist shutdown 중 예외: %s", exc)
+    finally:
+        _persist_executor = None
 
 _lock = threading.Lock()
 _total_calls: int = 0

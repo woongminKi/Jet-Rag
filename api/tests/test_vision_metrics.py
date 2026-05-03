@@ -275,6 +275,27 @@ class PersistGracefulTest(unittest.TestCase):
             os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "0"
 
 
+class PersistExecutorShutdownTest(unittest.TestCase):
+    """W18 Day 3 — _shutdown_persist_executor graceful 동작."""
+
+    def test_shutdown_when_executor_uninitialized_is_noop(self) -> None:
+        from app.services import vision_metrics
+        # 이전 테스트에서 이미 init 됐을 수 있으므로 강제 reset
+        vision_metrics._shutdown_persist_executor()
+        # raise 없이 통과 — None 상태에서 noop
+        vision_metrics._shutdown_persist_executor()
+
+    def test_shutdown_after_init_clears_executor(self) -> None:
+        from app.services import vision_metrics
+        # lazy init 강제
+        ex = vision_metrics._get_persist_executor()
+        self.assertIsNotNone(ex)
+        self.assertIs(vision_metrics._persist_executor, ex)
+        # shutdown — None 으로 reset
+        vision_metrics._shutdown_persist_executor()
+        self.assertIsNone(vision_metrics._persist_executor)
+
+
 class FirstWarnPatternTest(unittest.TestCase):
     """W17 Day 3 한계 #85 — _persist_to_db 첫 실패만 warn, 이후는 debug."""
 

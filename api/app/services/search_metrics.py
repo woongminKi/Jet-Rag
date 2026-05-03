@@ -23,6 +23,7 @@ future-proof:
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import statistics
@@ -69,6 +70,7 @@ _persist_executor_lock = threading.Lock()
 
 
 def _get_persist_executor() -> ThreadPoolExecutor:
+    """lazy init + atexit graceful shutdown (W18 Day 3)."""
     global _persist_executor
     if _persist_executor is None:
         with _persist_executor_lock:
@@ -76,7 +78,24 @@ def _get_persist_executor() -> ThreadPoolExecutor:
                 _persist_executor = ThreadPoolExecutor(
                     max_workers=2, thread_name_prefix="search-persist"
                 )
+                atexit.register(_shutdown_persist_executor)
     return _persist_executor
+
+
+def _shutdown_persist_executor() -> None:
+    """atexit hook — search-persist 풀 graceful shutdown.
+
+    cancel_futures=True: 미실행 task 취소 (DB hang 회피).
+    """
+    global _persist_executor
+    if _persist_executor is None:
+        return
+    try:
+        _persist_executor.shutdown(wait=True, cancel_futures=True)
+    except Exception as exc:  # noqa: BLE001 — atexit swallow
+        logger.debug("search-persist shutdown 중 예외: %s", exc)
+    finally:
+        _persist_executor = None
 
 # 운영 부하 단일 사용자 환경 — 최근 500건이면 5분 분량 (10 QPS 가정).
 # 늘릴 때는 메모리 영향 검토 (이벤트 1건 ≈ 200B → 500건 ≈ 100KB).
