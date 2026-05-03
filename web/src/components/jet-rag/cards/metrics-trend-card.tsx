@@ -11,14 +11,16 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 interface MetricsTrendCardProps {
-  /** Server Component 가 초기 fetch 한 trend (default range='7d').
-   *  토글 시 client refetch — initialTrend.range 와 동일 range 면 fetch 생략. */
+  /** Server Component 가 초기 fetch 한 trend (default range='7d', mode='all').
+   *  토글 시 client refetch — initialTrend 의 (range, mode) 와 동일 시 fetch 생략. */
   initialTrend: TrendResponse;
   metric?: TrendMetric;
+  /** initialTrend.mode 와 동기화된 default mode. metric=vision 시 무시 (UI 비활성). */
   mode?: TrendMode;
 }
 
 const RANGE_OPTIONS: TrendRange[] = ['24h', '7d', '30d'];
+const MODE_OPTIONS: TrendMode[] = ['all', 'hybrid', 'dense', 'sparse'];
 
 // SVG sparkline canvas — 의존성 회피 (recharts/visx 미도입).
 const SVG_WIDTH = 280;
@@ -28,16 +30,22 @@ const SVG_PADDING = 4;
 export function MetricsTrendCard({
   initialTrend,
   metric = 'search',
-  mode = 'all',
+  mode: initialMode = 'all',
 }: MetricsTrendCardProps) {
   const [range, setRange] = useState<TrendRange>(initialTrend.range);
+  // metric=search 만 mode 토글 의미. metric=vision 시 'all' 고정 (백엔드도 무시).
+  const [mode, setMode] = useState<TrendMode>(initialMode);
   const [fetchedTrend, setFetchedTrend] = useState<TrendResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
+  // (range, mode) 가 initialTrend 와 일치 하는지 — fetch 생략 조건.
+  const isInitialQuery =
+    range === initialTrend.range &&
+    (metric !== 'search' || mode === (initialTrend.mode ?? 'all'));
+
   useEffect(() => {
-    // 초기 range 면 SSR 데이터 그대로 — fetch 생략 (isLoading 은 handler 가 false 유지)
-    if (range === initialTrend.range) return;
+    if (isInitialQuery) return;
     let cancelled = false;
     getStatsTrend(range, metric, mode)
       .then((next) => {
@@ -59,30 +67,43 @@ export function MetricsTrendCard({
     return () => {
       cancelled = true;
     };
-  }, [range, metric, mode, initialTrend]);
+  }, [range, metric, mode, isInitialQuery]);
 
-  // range 토글 — fetch 시작 시점의 동기 state (isLoading=true / fetchError reset) 는
-  // handler 에서 처리. useEffect 안에서 동기 setState 금지 (React 19 lint).
   const handleRangeChange = (next: TrendRange) => {
     if (next === range) return;
     setRange(next);
-    if (next !== initialTrend.range) {
-      setIsLoading(true);
-      setFetchError(null);
-    } else {
-      // SSR 데이터로 즉시 복귀 — fetch 안 함
-      setIsLoading(false);
-      setFetchError(null);
-    }
+    triggerLoadingForToggle({
+      isInitialNext:
+        next === initialTrend.range &&
+        (metric !== 'search' || mode === (initialTrend.mode ?? 'all')),
+      setIsLoading,
+      setFetchError,
+    });
   };
 
-  // derived — range 가 initialTrend.range 면 SSR 데이터, 아니면 fetched (range 일치 시) or null
-  const trend: TrendResponse | null =
-    range === initialTrend.range
-      ? initialTrend
-      : fetchedTrend?.range === range
-        ? fetchedTrend
-        : null;
+  const handleModeChange = (next: TrendMode) => {
+    if (next === mode) return;
+    setMode(next);
+    triggerLoadingForToggle({
+      isInitialNext:
+        range === initialTrend.range &&
+        next === (initialTrend.mode ?? 'all'),
+      setIsLoading,
+      setFetchError,
+    });
+  };
+
+  // (range, mode) 일치 시에만 fetched 사용. metric=vision 시 mode 비교 생략.
+  const matchesQuery = (t: TrendResponse | null): boolean =>
+    t != null &&
+    t.range === range &&
+    (metric !== 'search' || (t.mode ?? 'all') === mode);
+
+  const trend: TrendResponse | null = matchesQuery(initialTrend)
+    ? initialTrend
+    : matchesQuery(fetchedTrend)
+      ? fetchedTrend
+      : null;
 
   const buckets = trend?.buckets ?? [];
   const errorCode = trend?.error_code ?? null;
@@ -163,6 +184,15 @@ export function MetricsTrendCard({
               </svg>
             </div>
 
+            {/* W18 Day 1 — search 카드만 mode 토글 (ablation 비교) */}
+            {metric === 'search' && (
+              <ModeToggle
+                value={mode}
+                onChange={handleModeChange}
+                disabled={isLoading}
+              />
+            )}
+
             <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
               <Stat label="총 샘플" value={`${totalSamples.toLocaleString()}건`} />
               <Stat
@@ -177,12 +207,31 @@ export function MetricsTrendCard({
 
             <div className="border-t border-border pt-2 text-[10px] text-muted-foreground">
               {buckets.length} 개 bucket · 시리즈: {seriesLabel}
+              {metric === 'search' && ` · mode: ${mode}`}
             </div>
           </>
         )}
       </CardContent>
     </Card>
   );
+}
+
+function triggerLoadingForToggle({
+  isInitialNext,
+  setIsLoading,
+  setFetchError,
+}: {
+  isInitialNext: boolean;
+  setIsLoading: (v: boolean) => void;
+  setFetchError: (v: string | null) => void;
+}) {
+  if (isInitialNext) {
+    setIsLoading(false);
+    setFetchError(null);
+  } else {
+    setIsLoading(true);
+    setFetchError(null);
+  }
 }
 
 function RangeToggle({
@@ -214,6 +263,45 @@ function RangeToggle({
               active
                 ? 'bg-foreground/10 font-semibold text-foreground'
                 : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {opt}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ModeToggle({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: TrendMode;
+  onChange: (next: TrendMode) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="검색 mode"
+      className="inline-flex flex-wrap gap-1 text-[10px] font-normal"
+    >
+      {MODE_OPTIONS.map((opt) => {
+        const active = opt === value;
+        return (
+          <button
+            key={opt}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            disabled={disabled}
+            onClick={() => onChange(opt)}
+            className={`rounded border border-border px-2 py-0.5 transition-colors disabled:opacity-50 ${
+              active
+                ? 'border-foreground/40 bg-foreground/10 font-semibold text-foreground'
+                : 'bg-background/40 text-muted-foreground hover:text-foreground'
             }`}
           >
             {opt}
