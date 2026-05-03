@@ -1,17 +1,91 @@
-import type { TrendResponse } from '@/lib/api';
+'use client';
+
+import { useEffect, useState } from 'react';
+import {
+  getStatsTrend,
+  type TrendMetric,
+  type TrendMode,
+  type TrendRange,
+  type TrendResponse,
+} from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 interface MetricsTrendCardProps {
-  trend: TrendResponse;
+  /** Server Component 가 초기 fetch 한 trend (default range='7d').
+   *  토글 시 client refetch — initialTrend.range 와 동일 range 면 fetch 생략. */
+  initialTrend: TrendResponse;
+  metric?: TrendMetric;
+  mode?: TrendMode;
 }
+
+const RANGE_OPTIONS: TrendRange[] = ['24h', '7d', '30d'];
 
 // SVG sparkline canvas — 의존성 회피 (recharts/visx 미도입).
 const SVG_WIDTH = 280;
 const SVG_HEIGHT = 48;
 const SVG_PADDING = 4;
 
-export function MetricsTrendCard({ trend }: MetricsTrendCardProps) {
-  const { metric, range, buckets, error_code: errorCode } = trend;
+export function MetricsTrendCard({
+  initialTrend,
+  metric = 'search',
+  mode = 'all',
+}: MetricsTrendCardProps) {
+  const [range, setRange] = useState<TrendRange>(initialTrend.range);
+  const [fetchedTrend, setFetchedTrend] = useState<TrendResponse | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // 초기 range 면 SSR 데이터 그대로 — fetch 생략 (isLoading 은 handler 가 false 유지)
+    if (range === initialTrend.range) return;
+    let cancelled = false;
+    getStatsTrend(range, metric, mode)
+      .then((next) => {
+        if (cancelled) return;
+        setFetchedTrend(next);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setFetchError(
+          err instanceof Error
+            ? err.message
+            : '추세 데이터를 불러오지 못했습니다.',
+        );
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setIsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [range, metric, mode, initialTrend]);
+
+  // range 토글 — fetch 시작 시점의 동기 state (isLoading=true / fetchError reset) 는
+  // handler 에서 처리. useEffect 안에서 동기 setState 금지 (React 19 lint).
+  const handleRangeChange = (next: TrendRange) => {
+    if (next === range) return;
+    setRange(next);
+    if (next !== initialTrend.range) {
+      setIsLoading(true);
+      setFetchError(null);
+    } else {
+      // SSR 데이터로 즉시 복귀 — fetch 안 함
+      setIsLoading(false);
+      setFetchError(null);
+    }
+  };
+
+  // derived — range 가 initialTrend.range 면 SSR 데이터, 아니면 fetched (range 일치 시) or null
+  const trend: TrendResponse | null =
+    range === initialTrend.range
+      ? initialTrend
+      : fetchedTrend?.range === range
+        ? fetchedTrend
+        : null;
+
+  const buckets = trend?.buckets ?? [];
+  const errorCode = trend?.error_code ?? null;
   const totalSamples = buckets.reduce((sum, b) => sum + b.sample_count, 0);
   const hasSamples = totalSamples > 0;
 
@@ -22,7 +96,6 @@ export function MetricsTrendCard({ trend }: MetricsTrendCardProps) {
       : buckets.map((b) => b.sample_count);
   const seriesMax = Math.max(...series, 1);
 
-  // sparkline path — viewBox 좌상단 = 가장 오래된 bucket
   const points = series.map((v, i) => {
     const x =
       SVG_PADDING +
@@ -38,22 +111,26 @@ export function MetricsTrendCard({ trend }: MetricsTrendCardProps) {
 
   const titleText =
     metric === 'search' ? '검색 응답 추세' : 'Vision API 호출 추세';
-  const seriesLabel =
-    metric === 'search' ? 'p95 (ms)' : '호출 수';
-  const rangeLabel = RANGE_LABELS[range];
+  const seriesLabel = metric === 'search' ? 'p95 (ms)' : '호출 수';
 
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-base font-semibold">
-          {titleText}
-          <span className="ml-2 text-[10px] font-normal text-muted-foreground">
-            {rangeLabel} 기준
-          </span>
+        <CardTitle className="flex items-center justify-between text-base font-semibold">
+          <span>{titleText}</span>
+          <RangeToggle
+            value={range}
+            onChange={handleRangeChange}
+            disabled={isLoading}
+          />
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        {errorCode === 'migrations_pending' ? (
+        {fetchError ? (
+          <p className="text-sm text-destructive">{fetchError}</p>
+        ) : trend === null ? (
+          <p className="text-sm text-muted-foreground">데이터 불러오는 중…</p>
+        ) : errorCode === 'migrations_pending' ? (
           <p className="text-sm text-muted-foreground">
             마이그레이션 005·006·007 적용 후 자동 활성됩니다.
           </p>
@@ -63,10 +140,15 @@ export function MetricsTrendCard({ trend }: MetricsTrendCardProps) {
           </p>
         ) : (
           <>
-            <div className="rounded border border-border bg-background/40 p-2">
+            <div
+              className="rounded border border-border bg-background/40 p-2"
+              aria-busy={isLoading}
+            >
               <svg
                 viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`}
-                className="h-12 w-full"
+                className={`h-12 w-full transition-opacity ${
+                  isLoading ? 'opacity-50' : 'opacity-100'
+                }`}
                 preserveAspectRatio="none"
                 role="img"
                 aria-label={`${seriesLabel} 시계열 sparkline`}
@@ -103,6 +185,45 @@ export function MetricsTrendCard({ trend }: MetricsTrendCardProps) {
   );
 }
 
+function RangeToggle({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: TrendRange;
+  onChange: (next: TrendRange) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="시간 범위"
+      className="inline-flex rounded border border-border bg-background/40 text-[10px] font-normal"
+    >
+      {RANGE_OPTIONS.map((opt) => {
+        const active = opt === value;
+        return (
+          <button
+            key={opt}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            disabled={disabled}
+            onClick={() => onChange(opt)}
+            className={`px-2 py-1 transition-colors disabled:opacity-50 ${
+              active
+                ? 'bg-foreground/10 font-semibold text-foreground'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {opt}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center justify-between rounded border border-border bg-background/40 px-2 py-1.5">
@@ -120,9 +241,3 @@ function recentNonZero(values: number[]): number {
   }
   return 0;
 }
-
-const RANGE_LABELS: Record<string, string> = {
-  '24h': '최근 24시간',
-  '7d': '최근 7일',
-  '30d': '최근 30일',
-};

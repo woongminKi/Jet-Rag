@@ -28,7 +28,7 @@ export function HomeGrid({ stats, recentDocuments, searchTrend }: HomeGridProps)
           <MyDocStatsCard stats={stats} />
           <ChunksStatsCard stats={stats} />
           <SearchSloCard stats={stats} />
-          {searchTrend && <MetricsTrendCard trend={searchTrend} />}
+          {searchTrend && <MetricsTrendCard initialTrend={searchTrend} />}
           <VisionUsageCard stats={stats} />
           <SearchTipsCard />
         </div>
