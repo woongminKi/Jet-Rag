@@ -25,6 +25,7 @@ from app.adapters.impl.hwp_parser import Hwp5Parser
 from app.adapters.impl.hwpml_parser import HwpmlParser, is_hwpml_bytes
 from app.adapters.impl.hwpx_parser import HwpxParser
 from app.adapters.impl.image_parser import ImageParser
+from app.adapters.impl.pptx_parser import PptxParser
 from app.adapters.impl.pymupdf_parser import PyMuPDFParser
 from app.adapters.impl.supabase_storage import SupabaseBlobStorage
 from app.adapters.impl.url_parser import UrlParser
@@ -43,9 +44,10 @@ _url_parser = UrlParser()
 _hwp_parser = Hwp5Parser()
 _hwpml_parser = HwpmlParser()
 _docx_parser = DocxParser()
+_pptx_parser = PptxParser()
 
-# doc_type → DocumentParser 디스패처. W5 DE-67 — DOCX 추가.
-# PPTX 는 W5 후속 (DE-68 평가 후 결정).
+# doc_type → DocumentParser 디스패처.
+# W5 DE-67 — DOCX 추가. W7 후속 — DE-68 PPTX ship (사용자 자료 업로드 시점).
 _PARSERS_BY_DOC_TYPE: dict[str, DocumentParser] = {
     "pdf": _pdf_parser,
     "hwpx": _hwpx_parser,
@@ -53,6 +55,7 @@ _PARSERS_BY_DOC_TYPE: dict[str, DocumentParser] = {
     "url": _url_parser,
     "hwp": _hwp_parser,
     "docx": _docx_parser,
+    "pptx": _pptx_parser,
 }
 
 # 스캔 PDF 감지 임계값 — PyMuPDFParser raw_text 가 이 이하면 텍스트 레이어 부재로 간주

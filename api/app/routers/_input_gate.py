@@ -30,11 +30,18 @@ _EXT_TO_MIMES: dict[str, set[str]] = {
     ".jpg":  {"image/jpeg"},
     ".jpeg": {"image/jpeg"},
     ".heic": {"image/heic", "image/heif"},
-    # ZIP 컨테이너 (DOCX/HWPX/PPTX) — filetype 은 'application/zip' 까지만 식별.
-    # 깊이 구분은 확장자가 담당, 본 게이트 목적은 "exe 가 .docx 위장" 차단.
-    ".docx": {"application/zip"},
+    # ZIP 컨테이너 (DOCX/HWPX/PPTX) — filetype 1.2.0+ 가 buf prefix 에 따라
+    # 'application/zip' 또는 deep MIME (vnd.openxmlformats-…) 둘 다 반환 가능.
+    # 양쪽 모두 허용 — 본 게이트 목적은 "exe 가 .docx 위장" 차단이지 deep 분류가 아님.
+    ".docx": {
+        "application/zip",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    },
     ".hwpx": {"application/zip"},
-    ".pptx": {"application/zip"},
+    ".pptx": {
+        "application/zip",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    },
     # OLE2 (HWP 5.x) — filetype 미인식이라 _OLE2_PREFIX 로 별도 검증
     ".hwp":  set(),
     # 평문 — 시그니처 없음, 매직바이트 검증 스킵
