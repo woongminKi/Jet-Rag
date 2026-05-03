@@ -25,6 +25,8 @@ interface SearchSubheaderProps {
   debug?: boolean;
   /** W12 Day 1 — 단일 문서 스코프 (US-08). 지정 시 "이 문서 내 검색" 라벨 + 전체 검색 링크 노출. */
   docId?: string | null;
+  /** W14 Day 1 — ablation mode (hybrid | dense | sparse). KPI '하이브리드 +5pp' 비교 인프라. */
+  mode?: 'hybrid' | 'dense' | 'sparse';
 }
 
 export function SearchSubheader({
@@ -34,19 +36,27 @@ export function SearchSubheader({
   queryParsed,
   debug = false,
   docId = null,
+  mode = 'hybrid',
 }: SearchSubheaderProps) {
   const router = useRouter();
   const [query, setQuery] = useState(initialQuery);
+
+  // W14 Day 1 — URL 빌더 (모든 상태 보존). mode 만 새 값으로 override 가능.
+  const buildUrl = (overrides: { q?: string; mode?: string } = {}) => {
+    const next = new URLSearchParams();
+    next.set('q', overrides.q ?? initialQuery);
+    if (debug) next.set('debug', '1');
+    if (docId) next.set('doc_id', docId);
+    const m = overrides.mode ?? mode;
+    if (m && m !== 'hybrid') next.set('mode', m);
+    return `/search?${next.toString()}`;
+  };
 
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const trimmed = query.trim();
     if (!trimmed) return;
-    const next = new URLSearchParams();
-    next.set('q', trimmed);
-    if (debug) next.set('debug', '1');
-    if (docId) next.set('doc_id', docId);  // 검색어 변경해도 doc 스코프 유지
-    router.push(`/search?${next.toString()}`);
+    router.push(buildUrl({ q: trimmed }));
   };
 
   const toggleDebug = () => {
@@ -54,7 +64,13 @@ export function SearchSubheader({
     next.set('q', initialQuery);
     if (!debug) next.set('debug', '1');
     if (docId) next.set('doc_id', docId);
+    if (mode !== 'hybrid') next.set('mode', mode);
     router.push(`/search?${next.toString()}`);
+  };
+
+  const switchMode = (next: 'hybrid' | 'dense' | 'sparse') => {
+    if (next === mode) return;
+    router.push(buildUrl({ mode: next }));
   };
 
   return (
@@ -130,6 +146,27 @@ export function SearchSubheader({
             </Badge>
           </div>
         )}
+        {/* W14 Day 1 — ablation mode 3-state 토글 (md+ 노출, 좁은 폭 보호) */}
+        <div
+          className="hidden h-7 items-center rounded-md border border-border bg-card md:inline-flex"
+          title="ablation 모드 — hybrid (기본) / dense / sparse 비교"
+        >
+          {(['hybrid', 'dense', 'sparse'] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => switchMode(m)}
+              className={
+                mode === m
+                  ? 'h-full rounded-sm bg-primary px-2 text-[10px] font-semibold text-primary-foreground'
+                  : 'h-full px-2 text-[10px] text-muted-foreground hover:text-foreground'
+              }
+              aria-pressed={mode === m}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
         <Button
           type="button"
           variant={debug ? 'default' : 'ghost'}

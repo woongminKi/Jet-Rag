@@ -8,21 +8,39 @@ import { ResultCard } from '@/components/jet-rag/result-card';
 import { Badge } from '@/components/ui/badge';
 
 interface SearchPageProps {
-  searchParams: Promise<{ q?: string; debug?: string; doc_id?: string }>;
+  searchParams: Promise<{
+    q?: string;
+    debug?: string;
+    doc_id?: string;
+    mode?: string;
+  }>;
+}
+
+type ValidMode = 'hybrid' | 'dense' | 'sparse';
+
+function parseMode(raw: string | undefined): ValidMode {
+  if (raw === 'dense' || raw === 'sparse') return raw;
+  return 'hybrid';
 }
 
 export default async function SearchPage({ searchParams }: SearchPageProps) {
-  const { q, debug: debugParam, doc_id: docIdParam } = await searchParams;
+  const {
+    q,
+    debug: debugParam,
+    doc_id: docIdParam,
+    mode: modeParam,
+  } = await searchParams;
   const query = (q ?? '').trim();
   const debug = debugParam === '1';
   const docId = docIdParam?.trim() || null;
+  const mode = parseMode(modeParam);
 
   if (!query) {
     redirect('/');
   }
 
   const [response, stats] = await Promise.all([
-    searchDocuments(query, 10, 0, docId),
+    searchDocuments(query, 10, 0, docId, mode),
     getStats().catch(() => null),
   ]);
 
@@ -35,6 +53,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
         queryParsed={response.query_parsed}
         debug={debug}
         docId={docId}
+        mode={mode}
       />
       <div className="container mx-auto px-4 py-6 md:px-6">
         <div className="grid gap-6 lg:grid-cols-[260px_1fr]">

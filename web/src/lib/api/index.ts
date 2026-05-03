@@ -19,12 +19,17 @@ export const getStats = () => apiGet<Stats>('/stats');
 export const listDocuments = (limit = 20, offset = 0) =>
   apiGet<DocumentListResponse>(`/documents?limit=${limit}&offset=${offset}`);
 
-/** W11 Day 4 / W12 Day 1 — `docId` 지정 시 단일 문서 스코프 자연어 QA (US-08). */
+export type SearchMode = 'hybrid' | 'dense' | 'sparse';
+
+/** W11 Day 4 / W12 Day 1 / W14 Day 1 — docId / mode 지원
+ *  · docId: 단일 문서 스코프 자연어 QA (US-08)
+ *  · mode: hybrid (default) / dense / sparse — ablation (KPI '하이브리드 +5pp 우세') */
 export const searchDocuments = (
   q: string,
   limit = 10,
   offset = 0,
   docId?: string | null,
+  mode?: SearchMode,
 ) => {
   const qs = new URLSearchParams({
     q,
@@ -32,6 +37,7 @@ export const searchDocuments = (
     offset: String(offset),
   });
   if (docId) qs.set('doc_id', docId);
+  if (mode && mode !== 'hybrid') qs.set('mode', mode);
   return apiGet<SearchResponse>(`/search?${qs.toString()}`);
 };
 
