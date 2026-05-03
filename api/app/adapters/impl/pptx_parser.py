@@ -281,7 +281,6 @@ def _vision_ocr_largest_picture(
     try:
         result = image_parser.parse(blob, file_name=pseudo_name)
     except Exception as exc:  # noqa: BLE001 — Vision API 실패 graceful
-        msg = str(exc)
         warnings.append(
             f"PPTX slide {slide_idx + 1} Vision OCR 실패 (graceful): {exc}"
         )
@@ -289,8 +288,9 @@ def _vision_ocr_largest_picture(
             "PPTX Vision OCR 실패 (file=%s slide=%d): %s",
             file_name, slide_idx + 1, exc,
         )
-        # W9 Day 4 — quota 초과 감지 시 fast-fail (한계 #49). W9 Day 6 — 공통 유틸로 이전.
-        if is_quota_exhausted(msg):
+        # W9 Day 4 — quota 초과 감지 시 fast-fail (한계 #49).
+        # W9 Day 7 — exc 객체 자체 전달 → class name + status code 정확 검사 (한계 #50).
+        if is_quota_exhausted(exc):
             return None, True
         return None, False
 

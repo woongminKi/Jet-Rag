@@ -52,7 +52,8 @@ def run_tag_summarize_stage(
     except Exception as exc:  # noqa: BLE001
         logger.warning("태그 호출 실패 (doc=%s): %s", doc_id, exc)
         errors.append(f"tags: {exc}")
-        if is_quota_exhausted(str(exc)):
+        # W9 Day 7 — exc 객체 자체 전달 → class name + status code 정확 검사 (한계 #50).
+        if is_quota_exhausted(exc):
             quota_exhausted = True
 
     if quota_exhausted:
