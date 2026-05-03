@@ -28,6 +28,7 @@ from PIL import Image, ImageOps
 from app.adapters.impl.gemini_vision import GeminiVisionCaptioner
 from app.adapters.parser import ExtractedSection, ExtractionResult
 from app.adapters.vision import VisionCaptioner
+from app.services import vision_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,15 @@ class ImageParser:
             normalized_bytes, normalized_mime, norm_warnings = _normalize(data, guessed_mime)
             warnings.extend(norm_warnings)
 
-        caption = self._captioner.caption(normalized_bytes, mime_type=normalized_mime)
+        # W8 Day 4 — Vision 호출 카운트 (한계 #29). raise 도 error 로 기록 후 재 raise.
+        try:
+            caption = self._captioner.caption(
+                normalized_bytes, mime_type=normalized_mime
+            )
+        except Exception:
+            vision_metrics.record_call(success=False)
+            raise
+        vision_metrics.record_call(success=True)
 
         sections: list[ExtractedSection] = []
         # caption section — 분류 + 한국어 한 줄 요약

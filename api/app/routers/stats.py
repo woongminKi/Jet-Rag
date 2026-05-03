@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from app.config import get_settings
 from app.db import get_supabase_client
-from app.services import search_metrics
+from app.services import search_metrics, vision_metrics
 
 router = APIRouter(tags=["stats"])
 
@@ -88,6 +88,18 @@ class SearchSloStats(BaseModel):
     cache_hit_rate: float | None = None
 
 
+class VisionUsageStats(BaseModel):
+    """W8 Day 4 — Vision API 호출 누적 카운트 (한계 #29).
+
+    in-memory counter (vision_metrics 모듈) 의 스냅샷. 프로세스 재시작 시 휘발.
+    Gemini Flash RPD 20 무료 티어 cap 모니터링 기준.
+    """
+    total_calls: int
+    success_calls: int
+    error_calls: int
+    last_called_at: str | None
+
+
 class ChunksStats(BaseModel):
     """W7 Day 3 — chunks 단위 가시성 (DE-65 후 1256 환경 + chunk_filter 마킹 추적).
 
@@ -110,6 +122,7 @@ class StatsResponse(BaseModel):
     popular_tags: list[TagCount]  # 사용 빈도 top-10
     slo_buckets: dict[str, SloBucketStats]  # W2 §3.A: pdf_50p · image · pdf_scan · hwp · url
     search_slo: SearchSloStats  # W3 Day 2 Phase 3 — `/search` p50/p95/fallback 분포
+    vision_usage: VisionUsageStats  # W8 Day 4 — Gemini Vision 호출 카운트 (한계 #29)
     generated_at: str
 
 
@@ -202,6 +215,9 @@ def stats() -> StatsResponse:
     # `/search` ring buffer — 외부 IO 0, 락 짧게 잡고 스냅샷만 계산.
     search_slo = SearchSloStats(**search_metrics.get_search_slo())
 
+    # W8 Day 4 — Vision 호출 누적 (in-memory counter, 외부 IO 0).
+    vision_usage = VisionUsageStats(**vision_metrics.get_usage())
+
     return StatsResponse(
         documents=DocumentsStats(
             total=len(docs),
@@ -223,6 +239,7 @@ def stats() -> StatsResponse:
         popular_tags=popular_tags,
         slo_buckets=slo_buckets,
         search_slo=search_slo,
+        vision_usage=vision_usage,
         generated_at=datetime.now(timezone.utc).isoformat(),
     )
 
