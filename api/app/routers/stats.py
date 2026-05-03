@@ -6,15 +6,19 @@
 
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.config import get_settings
 from app.db import get_supabase_client
 from app.services import search_metrics, vision_metrics
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["stats"])
 
@@ -401,3 +405,120 @@ def _parse_created_at_kst(value: str | None) -> datetime | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(KST)
+
+
+# ============================================================
+# W16 Day 2 — `/stats/trend` 추세 분석 endpoint
+# ============================================================
+# 마이그레이션 007 의 RPC 2개 (`get_search_metrics_trend` / `get_vision_usage_trend`)
+# 호출. 005·006·007 미적용 시 graceful — 빈 배열 + error_code='migrations_pending'.
+
+_VALID_RANGES: tuple[str, ...] = ("24h", "7d", "30d")
+_VALID_MODES: tuple[str, ...] = ("all", "hybrid", "dense", "sparse")
+_VALID_METRICS: tuple[str, ...] = ("search", "vision")
+
+
+class TrendBucket(BaseModel):
+    """`/stats/trend` 의 단일 시간 bucket.
+
+    공통 필드 (bucket_start / sample_count) + metric 별 부가 필드.
+    metric=search 시 p50_ms / p95_ms / fallback_count 채움.
+    metric=vision 시 success_count / quota_exhausted_count 채움.
+    빈 bucket (sample_count=0) 도 row 유지 — frontend 시계열 그래프 zero-fill.
+    """
+    bucket_start: str  # ISO timestamp (UTC)
+    sample_count: int
+    # metric=search
+    p50_ms: int | None = None
+    p95_ms: int | None = None
+    fallback_count: int | None = None
+    # metric=vision
+    success_count: int | None = None
+    quota_exhausted_count: int | None = None
+
+
+class TrendResponse(BaseModel):
+    """`/stats/trend` 응답.
+
+    - error_code='migrations_pending': 005·006·007 미적용 환경에서 graceful 응답.
+      buckets 가 빈 배열. frontend 가 안내 카드로 분기.
+    - error_code=None: RPC 호출 성공 — buckets 에 zero-fill 된 시계열.
+    """
+    metric: Literal["search", "vision"]
+    range: Literal["24h", "7d", "30d"]
+    mode: Literal["all", "hybrid", "dense", "sparse"] | None  # metric=vision 시 None
+    buckets: list[TrendBucket]
+    error_code: str | None = None
+    generated_at: str
+
+
+@router.get("/stats/trend", response_model=TrendResponse)
+def stats_trend(
+    range: Literal["24h", "7d", "30d"] = Query("7d", description="시간 범위"),
+    mode: Literal["all", "hybrid", "dense", "sparse"] = Query(
+        "all", description="metric=search 만 적용. metric=vision 시 무시."
+    ),
+    metric: Literal["search", "vision"] = Query(
+        "search", description="search: 검색 성능 / vision: Vision API 호출"
+    ),
+) -> TrendResponse:
+    """W16 Day 2 — 마이그레이션 007 RPC 호출 → 시계열 aggregate 응답.
+
+    마이그레이션 미적용 시 graceful: 빈 buckets + error_code='migrations_pending'.
+    """
+    generated_at = datetime.now(timezone.utc).isoformat()
+    response_mode: str | None = mode if metric == "search" else None
+
+    try:
+        supabase = get_supabase_client()
+        if metric == "search":
+            rpc_resp = supabase.rpc(
+                "get_search_metrics_trend",
+                {"range_label": range, "mode_label": mode},
+            ).execute()
+        else:
+            rpc_resp = supabase.rpc(
+                "get_vision_usage_trend",
+                {"range_label": range},
+            ).execute()
+        rows = rpc_resp.data or []
+    except Exception as exc:  # noqa: BLE001 — 마이그레이션 미적용 graceful
+        logger.warning("stats_trend RPC graceful skip: %s", exc)
+        return TrendResponse(
+            metric=metric,
+            range=range,
+            mode=response_mode,
+            buckets=[],
+            error_code="migrations_pending",
+            generated_at=generated_at,
+        )
+
+    buckets = [_row_to_bucket(metric, row) for row in rows]
+    return TrendResponse(
+        metric=metric,
+        range=range,
+        mode=response_mode,
+        buckets=buckets,
+        error_code=None,
+        generated_at=generated_at,
+    )
+
+
+def _row_to_bucket(metric: str, row: dict) -> TrendBucket:
+    """RPC row → TrendBucket. metric 별 부가 필드 매핑."""
+    bucket_start = row.get("bucket_start") or ""
+    sample_count = int(row.get("sample_count") or 0)
+    if metric == "search":
+        return TrendBucket(
+            bucket_start=str(bucket_start),
+            sample_count=sample_count,
+            p50_ms=int(row.get("p50_ms") or 0),
+            p95_ms=int(row.get("p95_ms") or 0),
+            fallback_count=int(row.get("fallback_count") or 0),
+        )
+    return TrendBucket(
+        bucket_start=str(bucket_start),
+        sample_count=sample_count,
+        success_count=int(row.get("success_count") or 0),
+        quota_exhausted_count=int(row.get("quota_exhausted_count") or 0),
+    )
