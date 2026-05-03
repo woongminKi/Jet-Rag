@@ -1,10 +1,13 @@
 """W7 Day 2 — /stats.search_slo 모니터링 + 운영 가시성.
+W14 Day 3 — by_mode 분리 측정 (한계 #77).
+W22 Day 3 — by_mode rendering + DB 영속화 baseline 갱신.
 
 배경
 - W6 Day 2 (DE-65) 후 chunks 555 → 1256 (×2.3) — HNSW 인덱스 부담 ↑.
 - W4-Q-3 embedding cache 효과 (cache hit p95 159~169ms) 가 누적 자료에서도 유지되는지 추적 필요.
-- search_metrics ring buffer 는 in-memory (재시작 시 reset, W3 P3 F-4) — 본 스크립트는 임시 snapshot
-  + work-log 기록 패턴.
+- search_metrics ring buffer 는 in-memory (재시작 시 reset, W3 P3 F-4)
+- W15 Day 2·3 — search_metrics_log 테이블 + write-through 영속화 ship. 본 스크립트는 여전히
+  in-memory ring buffer snapshot 기반 (운영 시점 빠른 가시성). 장기 추세는 /stats/trend RPC 활용.
 
 사용
     cd api && uv run python scripts/monitor_search_slo.py            # 1회 snapshot
@@ -76,6 +79,29 @@ def _render_markdown(slo: dict, warm_took_ms: list[int] | None) -> str:
     )
     lines.append("")
 
+    # W22 Day 3 — by_mode 분리 측정 (W14 Day 3 한계 #77 회수, W20 Day 1 008 split RPC ship)
+    by_mode = slo.get("by_mode") or {}
+    if any(by_mode.get(m, {}).get("sample_count", 0) > 0 for m in ("hybrid", "dense", "sparse")):
+        lines.append("## by_mode (ablation 비교)")
+        lines.append("")
+        lines.append("| mode | sample | p50 | p95 | avg fused | cache hit |")
+        lines.append("|---|---:|---:|---:|---:|---:|")
+        for m in ("hybrid", "dense", "sparse"):
+            entry = by_mode.get(m) or {}
+            sc = entry.get("sample_count", 0)
+            if sc == 0:
+                continue
+            p50 = entry.get("p50_ms") or 0
+            p95 = entry.get("p95_ms") or 0
+            avg_fused = entry.get("avg_fused")
+            chr_ = entry.get("cache_hit_rate")
+            lines.append(
+                f"| {m} | {sc} | {p50}ms | {p95}ms | "
+                f"{avg_fused:.1f} | "
+                f"{(chr_ or 0):.2f} |"
+            )
+        lines.append("")
+
     if warm_took_ms:
         lines.append("## warmup batch (cache miss + cache hit 혼합)")
         lines.append("")
@@ -100,7 +126,10 @@ def _render_markdown(slo: dict, warm_took_ms: list[int] | None) -> str:
     lines.append("")
     lines.append("- in-memory ring buffer (maxlen=500) — uvicorn 재시작 시 reset (W3 P3 F-4)")
     lines.append("- 누적 자료 (50+ doc) 시 HNSW 인덱스 부담 ↑ → p95 추적 필요")
-    lines.append("- 본 스크립트는 단일 snapshot — 트렌드 추적은 W4-Q-16 (DB 영속화) 후")
+    lines.append(
+        "- 장기 추세 추적: 마이그레이션 005·006·007 적용 + `/stats/trend` RPC 활용 "
+        "(W15·W16 ship). 본 스크립트는 운영 시점 빠른 가시성 (in-memory snapshot) 용도."
+    )
 
     return "\n".join(lines)
 
