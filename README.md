@@ -6,8 +6,16 @@
 >
 > "정리하지 않아도, 기억의 단편으로 꺼내 쓰는 앱."
 
-**상태**: v0.1 MVP 개발 중 (W7 Day 6 완료, 2026-05-03 기준 / 6주 일정 + W7 추가 6일 / W4·W5·W6 ship 마감, W7 가성비 sprint 진행 중)
+**상태**: v0.1 MVP — **유저 스토리 8/8 완성** (2026-05-03 W21 마감) / 단위 테스트 **273/273 PASS** / 한계 회수 누적 **43건** / 마이그레이션 **8개** / 자율 진행 v2 **45 day** 정착.
 **목적**: 포트폴리오 프로젝트. 공공·대기업 비IT 실무자가 일상적으로 받는 HWP/HWPX·PDF·DOCX·이미지·URL 자료를 자연어로 역검색.
+
+**진척 현황** (W21 마감 시점):
+- ✅ 9 stage 인제스트 파이프라인 (extract→chunk→chunk_filter→content_gate→tag_summarize→load→embed→doc_embed→dedup)
+- ✅ 하이브리드 검색 (PGroonga sparse + pgvector dense + RRF k=60) + 진정 ablation RPC (008 split RPC)
+- ✅ 시계열 추세 시각화 (range/mode/metric 토글 + zero-fill sparkline + by_mode ablation bar)
+- ✅ metrics 영속화 (vision_usage_log + search_metrics_log + ThreadPoolExecutor 비동기 + atexit graceful shutdown)
+- ✅ 두 단계 quota 보호 (Vision cap + fast-fail + class-based + tag_summarize summary skip)
+- 🟡 사용자 액션 대기: 마이그레이션 005~008 적용 (`api/migrations/README.md`) + Ragas + 평가 데이터셋 45건 + Golden Path 영상 + 4 플랫폼 QA
 
 ---
 
@@ -23,22 +31,33 @@
 4. **쿼리 라우팅** — "지난달"·"이 파일만" 같은 자연어 제약을 스코프/필터로 변환
 5. **Ragas 평가 루프** — "잘 되는 척"이 아니라 수치로 증명
 
-## 기술 스택 (MVP, 2026-05-03 W7 Day 6 기준)
+## 기술 스택 (MVP, 2026-05-03 W21 마감 기준)
 
 | 레이어 | 선택 |
 |---|---|
 | Backend | FastAPI (Python 3.12, uv) |
-| Frontend | Next.js 16 + Tailwind v4 + shadcn/ui (new-york, neutral) + Noto Sans KR |
-| DB / Storage | Supabase (Postgres + pgvector HNSW + Storage) |
-| Sparse FTS | **PGroonga** TokenBigram (W3 Day 4) — 한국어 어절 sparse 검색, simple FTS 대체 |
-| 임베딩 | BGE-M3 via Hugging Face Inference Providers (dense 1024) + **in-process LRU cache** (W4 Day 1, maxsize=512) |
-| 생성 LLM | Gemini 2.5 Flash (무료 티어 RPD 20) |
-| Vision / OCR | Gemini 2.5 Flash 내장 (W2 도입 완료) |
-| 평가 | golden 평가셋 v0.3 (W6 Day 4 — G-020 정정) — top-1/top-3 모두 20/20 (100%) |
-| 어댑터 스텁 | OpenAI (LLM / Embedding / Vision 각 1개, W6 스왑 시연) |
-| 호스팅 | Railway (BE) · Vercel (FE) — 배포는 W6 |
+| Frontend | Next.js 16 + Tailwind v4 + shadcn/ui (new-york, neutral) + Noto Sans KR + **'use client' Server initial / Client refetch 패턴** (W17 Day 1) |
+| DB / Storage | Supabase (Postgres + pgvector HNSW + Storage) — 마이그레이션 8개 (`api/migrations/`) |
+| Sparse FTS | **PGroonga** TokenBigram (W3 Day 4) — 한국어 어절 sparse 검색 |
+| 임베딩 | BGE-M3 via HF Inference Providers (dense 1024) + LRU cache (maxsize=512) |
+| 생성 LLM | Gemini 2.5 Flash (RPD 20) — Vision 통합 + class-based quota 감지 (W9~) |
+| 검색 RPC | `search_hybrid_rrf` (W3 Day 1) + `search_dense_only` / `search_sparse_only` (W20 Day 1, 진정 ablation) |
+| 시각화 | SVG sparkline (의존성 0) + range/mode/metric 토글 (W16~W18) + by_mode bar (W20 Day 4) |
+| 영속화 | vision_usage_log + search_metrics_log + 추세 RPC (W15~W16) + ThreadPoolExecutor 비동기 + atexit graceful shutdown (W17~W18) |
+| 평가 | golden 평가셋 v0.3 — top-1/top-3 모두 20/20 (100%) + `golden_batch_smoke.py --mode all --require-top1-min` CI gate (W21 Day 1) |
+| 어댑터 스텁 | OpenAI (LLM / Embedding / Vision 각 1개, DoD ④ — 사용자 보류 해제 시 ship) |
+| 호스팅 | Railway (BE) · Vercel (FE) |
 
 **어댑터 레이어 설계** (`api/app/adapters/`) 로 Cloud→Local 전환 경로 확보. v2 는 Ollama + LanceDB 로컬 전환.
+
+### 운영 환경 변수 (W15~W18 누적)
+
+| env | default | 효과 |
+|---|---|---|
+| `JET_RAG_METRICS_PERSIST_ENABLED` | `"1"` | DB write-through 활성/비활성 |
+| `JET_RAG_METRICS_PERSIST_ASYNC` | `"1"` | ThreadPoolExecutor fire-and-forget vs sync |
+| `JET_RAG_VISION_ERROR_MSG_MAX_LEN` | `"200"` | error_msg DB row 크기 |
+| `JET_RAG_QUERY_TEXT_HASH` | `"0"` | search_metrics_log.query_text SHA256 (멀티 유저 PII) |
 
 ## 레포 구조
 
@@ -56,13 +75,11 @@ Jet-Rag/
 | 문서 | 목적 |
 |---|---|
 | `work-log/2026-04-22 개인 지식 에이전트 기획서 v0.1.md` | 마스터 (페르소나·KPI·아키텍처) |
-| `work-log/2026-04-29 W3 스프린트 명세 v0.5.md` | W3 마스터 명세 (CONFIRMED) |
-| `work-log/2026-05-02 W4 스프린트 명세 v0.1.md` | W4 마스터 명세 (CONFIRMED) |
-| `work-log/2026-05-03 작업 이어가기 핸드오프.md` | **W7 진입 핸드오프** — W4·W5·W6 종합 + W7 Day 1~3 |
-| `work-log/2026-05-03 W7 Day 4 — 홈 chunks 분포 + 검색 디버그 모드.md` | W7 Day 4 |
-| `work-log/2026-05-03 W7 Day 5 — e2e 인제스트 mock 4-stage.md` | W7 Day 5 |
-| `work-log/2026-05-02 golden 평가셋 v0.2.md` | 회귀 base + DOCX placeholder |
-| `work-log/2026-05-02 W4 Day 5 마감 + W4 종합.md` | W4 종합 + DE 매트릭스 |
+| **`work-log/2026-05-03 W21 종합 + W22 진입 핸드오프.md`** | **즉시 진입 자료** (W21 마감 시점) |
+| `work-log/2026-05-03 W{n} 종합 + W{n+1} 진입 핸드오프.md` | W14~W21 매주 핸드오프 (직전 W 으로 거슬러 올라가며 컨텍스트 회복) |
+| `api/migrations/README.md` | 마이그레이션 적용 가이드 (W15+ 일괄 적용 절차 + 운영 env 표) |
+| `api/scripts/README.md` | 운영·진단·백필 스크립트 entry-point (golden_batch_smoke / monitor 등) |
+| `/Users/kiwoongmin/Desktop/piLab/CLAUDE.md` | 자율 진행 v2 (W19 정책 갱신: W 단위 자동 진입) |
 | `work-log/YYYY-MM-DD W{n} Day{n} 마감 …md` | 일자별 작업 로그 |
 
 ---
