@@ -79,14 +79,21 @@ export function SearchSubheader({
         <Badge variant="secondary" className="hidden whitespace-nowrap sm:inline-flex">
           {total}개 결과 · {(tookMs / 1000).toFixed(2)}초
         </Badge>
+        {/* W9 Day 8 — fallback badge 는 사용자 알람 성격이라 mobile 도 노출 (한계 #33).
+            dense/sparse 진단 badge 는 좁은 폭 보호로 md+ 만 유지. */}
+        {queryParsed?.fallback_reason && (
+          <Badge
+            variant="destructive"
+            className="h-5 whitespace-nowrap px-1.5 text-[10px]"
+            title={`fallback: ${queryParsed.fallback_reason}`}
+          >
+            {queryParsed.fallback_reason}
+          </Badge>
+        )}
         {queryParsed && (
           <div
             className="hidden items-center gap-1 md:inline-flex"
-            title={
-              queryParsed.fallback_reason
-                ? `fallback: ${queryParsed.fallback_reason}`
-                : `dense ${queryParsed.dense_hits} · sparse ${queryParsed.sparse_hits} → fused ${queryParsed.fused}`
-            }
+            title={`dense ${queryParsed.dense_hits} · sparse ${queryParsed.sparse_hits} → fused ${queryParsed.fused}`}
           >
             <Badge
               variant={queryParsed.has_dense ? 'outline' : 'destructive'}
@@ -100,11 +107,6 @@ export function SearchSubheader({
             >
               sparse {queryParsed.sparse_hits}
             </Badge>
-            {queryParsed.fallback_reason && (
-              <Badge variant="destructive" className="h-5 px-1.5 text-[10px]">
-                {queryParsed.fallback_reason}
-              </Badge>
-            )}
           </div>
         )}
         <Button
