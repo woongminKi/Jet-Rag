@@ -133,6 +133,7 @@ class SearchUserIsolationTest(unittest.TestCase):
                 from_date=None,
                 to_date=None,
                 doc_id=None,
+                mode="hybrid",
             )
 
         synthetic_appearances = [

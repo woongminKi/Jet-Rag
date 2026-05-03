@@ -135,6 +135,13 @@ def search(
             "응용 layer 필터 (RPC 결과 후) — 마이그레이션 회피 trade-off."
         ),
     ),
+    mode: str = Query(
+        default="hybrid",
+        description=(
+            "검색 모드 — hybrid (default, dense + sparse RRF) / dense / sparse. "
+            "ablation 측정용 (W13 Day 2 — KPI '하이브리드 +5pp 우세' 비교 인프라)."
+        ),
+    ),
 ) -> SearchResponse:
     start_t = time.monotonic()
     client = get_supabase_client()
@@ -161,6 +168,12 @@ def search(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="doc_id 형식이 유효하지 않습니다.",
             )
+    # W13 Day 2 — mode 화이트리스트 (hybrid/dense/sparse) 검증
+    if mode not in ("hybrid", "dense", "sparse"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"mode='{mode}' 가 유효하지 않습니다 (hybrid/dense/sparse).",
+        )
     from_dt = _parse_iso_date(from_date, "from_date")
     to_dt = _parse_iso_date(to_date, "to_date")
 
@@ -229,6 +242,16 @@ def search(
     # 응용 layer 필터 — RPC 결과 N 개 중 doc_id 일치만 통과 → 자연스럽게 dense·sparse·fused 카운트도 갱신.
     if doc_id is not None:
         rpc_rows = [r for r in rpc_rows if r.get("doc_id") == doc_id]
+
+    # W13 Day 2 — ablation mode 응용 layer 처리 (KPI '하이브리드 +5pp 우세' 비교 인프라)
+    #   · hybrid (default): RPC 결과 그대로 (dense + sparse RRF)
+    #   · dense: dense_rank 가 있는 row 만 보존 (sparse-only 매칭 row 제외)
+    #   · sparse: sparse_rank 가 있는 row 만 보존 (dense-only 매칭 row 제외)
+    # dense_vec 이 None 이면 (sparse-only fallback path) mode 무관하게 sparse-only 동작 — 기존 동작 보존.
+    if mode == "dense":
+        rpc_rows = [r for r in rpc_rows if r.get("dense_rank") is not None]
+    elif mode == "sparse":
+        rpc_rows = [r for r in rpc_rows if r.get("sparse_rank") is not None]
 
     dense_hits = sum(1 for r in rpc_rows if r.get("dense_rank") is not None)
     sparse_hits = sum(1 for r in rpc_rows if r.get("sparse_rank") is not None)

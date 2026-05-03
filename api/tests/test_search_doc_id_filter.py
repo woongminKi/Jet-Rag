@@ -85,7 +85,7 @@ class DocIdFilterTest(unittest.TestCase):
             resp = search_module.search(
                 q="test", limit=10, offset=0, tags=None, doc_type=None,
                 from_date=None, to_date=None,
-                doc_id="doc-A",
+                doc_id="doc-A", mode="hybrid",
             )
 
         # doc-A 의 chunks 만 통과 (2개 — c1, c3)
@@ -117,7 +117,7 @@ class DocIdFilterTest(unittest.TestCase):
         ):
             resp = search_module.search(
                 q="test", limit=10, offset=0, tags=None, doc_type=None,
-                from_date=None, to_date=None, doc_id=None,
+                from_date=None, to_date=None, doc_id=None, mode="hybrid",
             )
 
         self.assertEqual(resp.query_parsed.fused, 2, "기존 동작 보존")
@@ -144,7 +144,7 @@ class DocIdFilterTest(unittest.TestCase):
             resp = search_module.search(
                 q="test", limit=10, offset=0, tags=None, doc_type=None,
                 from_date=None, to_date=None,
-                doc_id="doc-Z",  # RPC 결과 와 일치 안 함
+                doc_id="doc-Z", mode="hybrid",  # RPC 결과 와 일치 안 함
             )
 
         self.assertEqual(resp.total, 0)
@@ -162,7 +162,7 @@ class DocIdValidationTest(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             search_module.search(
                 q="x", limit=10, offset=0, tags=None, doc_type=None,
-                from_date=None, to_date=None, doc_id="   ",  # 공백만
+                from_date=None, to_date=None, doc_id="   ", mode="hybrid",  # 공백만
             )
         self.assertEqual(ctx.exception.status_code, 400)
 
@@ -173,7 +173,88 @@ class DocIdValidationTest(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             search_module.search(
                 q="x", limit=10, offset=0, tags=None, doc_type=None,
-                from_date=None, to_date=None, doc_id="x" * 100,  # > 64
+                from_date=None, to_date=None, doc_id="x" * 100, mode="hybrid",  # > 64
+            )
+        self.assertEqual(ctx.exception.status_code, 400)
+
+
+class SearchModeAblationTest(unittest.TestCase):
+    """W13 Day 2 — mode=hybrid|dense|sparse ablation 인프라 (KPI '하이브리드 우세' 비교)."""
+
+    def _provider_mock(self):
+        provider_mock = MagicMock()
+        provider_mock.embed_query.return_value = [0.0] * 1024
+        provider_mock._last_cache_hit = False
+        return provider_mock
+
+    def _make_rows(self):
+        # 3 rows: dense+sparse 둘 다 / dense-only / sparse-only
+        return [
+            {"chunk_id": "c1", "doc_id": "doc-A", "rrf_score": 0.5,
+             "dense_rank": 1, "sparse_rank": 1},
+            {"chunk_id": "c2", "doc_id": "doc-B", "rrf_score": 0.4,
+             "dense_rank": 2, "sparse_rank": None},
+            {"chunk_id": "c3", "doc_id": "doc-C", "rrf_score": 0.3,
+             "dense_rank": None, "sparse_rank": 2},
+        ]
+
+    def test_mode_hybrid_keeps_all_rows(self) -> None:
+        from app.routers import search as search_module
+
+        client_mock = _client_with_rpc_rows(self._make_rows())
+        with patch.object(
+            search_module, "get_bgem3_provider", return_value=self._provider_mock()
+        ), patch.object(
+            search_module, "get_supabase_client", return_value=client_mock
+        ):
+            resp = search_module.search(
+                q="t", limit=10, offset=0, tags=None, doc_type=None,
+                from_date=None, to_date=None, doc_id=None, mode="hybrid",
+            )
+        self.assertEqual(resp.query_parsed.fused, 3)
+
+    def test_mode_dense_filters_sparse_only_rows(self) -> None:
+        from app.routers import search as search_module
+
+        client_mock = _client_with_rpc_rows(self._make_rows())
+        with patch.object(
+            search_module, "get_bgem3_provider", return_value=self._provider_mock()
+        ), patch.object(
+            search_module, "get_supabase_client", return_value=client_mock
+        ):
+            resp = search_module.search(
+                q="t", limit=10, offset=0, tags=None, doc_type=None,
+                from_date=None, to_date=None, doc_id=None, mode="dense",
+            )
+        # dense_rank 있는 c1, c2 만
+        self.assertEqual(resp.query_parsed.fused, 2)
+        self.assertEqual(resp.query_parsed.sparse_hits, 1)  # c1 만 sparse_rank 동시 보유
+
+    def test_mode_sparse_filters_dense_only_rows(self) -> None:
+        from app.routers import search as search_module
+
+        client_mock = _client_with_rpc_rows(self._make_rows())
+        with patch.object(
+            search_module, "get_bgem3_provider", return_value=self._provider_mock()
+        ), patch.object(
+            search_module, "get_supabase_client", return_value=client_mock
+        ):
+            resp = search_module.search(
+                q="t", limit=10, offset=0, tags=None, doc_type=None,
+                from_date=None, to_date=None, doc_id=None, mode="sparse",
+            )
+        # sparse_rank 있는 c1, c3 만
+        self.assertEqual(resp.query_parsed.fused, 2)
+        self.assertEqual(resp.query_parsed.dense_hits, 1)  # c1 만 dense_rank 동시 보유
+
+    def test_invalid_mode_rejected(self) -> None:
+        from fastapi import HTTPException
+        from app.routers import search as search_module
+
+        with self.assertRaises(HTTPException) as ctx:
+            search_module.search(
+                q="t", limit=10, offset=0, tags=None, doc_type=None,
+                from_date=None, to_date=None, doc_id=None, mode="bogus",
             )
         self.assertEqual(ctx.exception.status_code, 400)
 

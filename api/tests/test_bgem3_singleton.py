@@ -151,6 +151,7 @@ class SearchRouterFallbackBranchingTest(unittest.TestCase):
             from_date=None,
             to_date=None,
             doc_id=None,
+            mode="hybrid",
         )
 
     def test_permanent_4xx_raises_503(self) -> None:
