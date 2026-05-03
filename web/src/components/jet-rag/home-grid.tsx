@@ -5,6 +5,7 @@ import { NewArrivalsCard } from './cards/new-arrivals-card';
 import { PopularTagsCard } from './cards/popular-tags-card';
 import { RecentlyViewedCard } from './cards/recently-viewed-card';
 import { SearchTipsCard } from './cards/search-tips-card';
+import { VisionUsageCard } from './cards/vision-usage-card';
 
 interface HomeGridProps {
   stats: Stats;
@@ -23,6 +24,7 @@ export function HomeGrid({ stats, recentDocuments }: HomeGridProps) {
           <PopularTagsCard tags={stats.popular_tags} />
           <MyDocStatsCard stats={stats} />
           <ChunksStatsCard stats={stats} />
+          <VisionUsageCard stats={stats} />
           <SearchTipsCard />
         </div>
       </div>

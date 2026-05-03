@@ -87,6 +87,16 @@ export interface ChunksStats {
   filtered_ratio: number;
 }
 
+/** W8 Day 4 — Vision API 호출 누적 카운트 (Gemini Flash RPD 20 cap 모니터링).
+ *  in-memory counter (vision_metrics 모듈) 의 스냅샷. 프로세스 재시작 시 휘발. */
+export interface VisionUsageStats {
+  total_calls: number;
+  success_calls: number;
+  error_calls: number;
+  /** UTC ISO 8601, 미호출 시 null */
+  last_called_at: string | null;
+}
+
 export interface Stats {
   documents: {
     total: number;
@@ -100,6 +110,8 @@ export interface Stats {
   chunks_total: number;
   /** W7 Day 3 백엔드 신규 — effective vs filtered breakdown 가시성. */
   chunks: ChunksStats;
+  /** W8 Day 4 백엔드 신규 — Gemini Vision RPD 20 cap 모니터링. */
+  vision_usage: VisionUsageStats;
   jobs: {
     total: number;
     by_status: Record<string, number>;
