@@ -37,6 +37,11 @@ logger = logging.getLogger(__name__)
 # Vision OCR rerouting cap — Gemini Flash RPD 20 + 디자인 PPT 첫 5장이 보통 표지·요약
 _MAX_VISION_SLIDES = 5
 
+# 텍스트 풍부도 임계값 (W9 Day 1 — 한계 #28).
+# 슬라이드 텍스트가 본 임계값 미만이면 image OCR 추가 결합 — 짧은 제목 + 큰 이미지
+# 디자인 PPT 케이스 회수. 일반 텍스트 풍부 슬라이드는 OCR skip 으로 RPD 절약.
+_VISION_AUGMENT_TEXT_THRESHOLD = 50
+
 
 class PptxParser:
     source_type = "pptx"
@@ -72,26 +77,37 @@ class PptxParser:
                 slide_title = _extract_slide_title(slide)
                 slide_text_parts = _extract_slide_text(slide, warnings=warnings)
 
-                # W8 Day 2 — 텍스트 부재 + Vision 가용 + cap 안 → Picture rerouting
-                if not slide_text_parts:
-                    if (
-                        self._image_parser is not None
-                        and vision_slides_used < _MAX_VISION_SLIDES
-                    ):
-                        ocr_text = _vision_ocr_largest_picture(
-                            slide,
-                            slide_idx=slide_idx,
-                            file_name=file_name,
-                            image_parser=self._image_parser,
-                            warnings=warnings,
-                        )
-                        if ocr_text:
-                            vision_slides_used += 1
+                # W8 Day 2 — 텍스트 부재 시 Vision rerouting (rerouting mode)
+                # W9 Day 1 — 텍스트 짧으면 Vision augment (한계 #28, augment mode)
+                #   · rerouting: 텍스트 0 → OCR 만 사용
+                #   · augment: 텍스트 < 50자 → 기존 텍스트 + OCR 결합
+                current_text_len = sum(len(p) for p in slide_text_parts)
+                needs_ocr = (
+                    self._image_parser is not None
+                    and vision_slides_used < _MAX_VISION_SLIDES
+                    and current_text_len < _VISION_AUGMENT_TEXT_THRESHOLD
+                )
+                if needs_ocr:
+                    ocr_text = _vision_ocr_largest_picture(
+                        slide,
+                        slide_idx=slide_idx,
+                        file_name=file_name,
+                        image_parser=self._image_parser,
+                        warnings=warnings,
+                    )
+                    if ocr_text:
+                        vision_slides_used += 1
+                        if not slide_text_parts:
+                            # rerouting mode — 텍스트 0
                             if not slide_title:
                                 slide_title = f"p.{slide_idx + 1} (Vision OCR)"
                             slide_text_parts = [ocr_text]
-                    if not slide_text_parts:
-                        continue
+                        else:
+                            # augment mode — 기존 텍스트 + OCR 결합
+                            slide_text_parts = [*slide_text_parts, ocr_text]
+
+                if not slide_text_parts:
+                    continue
 
                 slide_text = "\n".join(slide_text_parts)
                 sections.append(

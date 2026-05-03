@@ -354,5 +354,130 @@ class PptxVisionReroutingTest(unittest.TestCase):
         self.assertEqual(result.sections, [])
 
 
+class PptxVisionAugmentTest(unittest.TestCase):
+    """W9 Day 1 — 한계 #28 회수: 짧은 텍스트 + Picture 슬라이드 OCR 결합 (augment mode)."""
+
+    def _make_pptx(self, text: str) -> bytes:
+        """텍스트 박스 1개 + Picture 1개 슬라이드 합성."""
+        from io import BytesIO
+        from PIL import Image
+        from pptx import Presentation
+        from pptx.util import Inches
+
+        png_buf = BytesIO()
+        Image.new("RGB", (200, 100), color="white").save(png_buf, format="PNG")
+        png_bytes = png_buf.getvalue()
+
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        # 텍스트 박스
+        tx = slide.shapes.add_textbox(
+            Inches(1), Inches(0.5), Inches(6), Inches(1)
+        )
+        tx.text_frame.text = text
+        # Picture
+        slide.shapes.add_picture(
+            BytesIO(png_bytes),
+            Inches(1), Inches(2), Inches(4), Inches(3),
+        )
+        out = BytesIO()
+        prs.save(out)
+        return out.getvalue()
+
+    def _make_ocr_image_parser(self, ocr_text: str = "OCR로 회수한 본문 텍스트입니다."):
+        """OCR 결과를 mock — ExtractionResult 1 section."""
+        from app.adapters.parser import ExtractedSection, ExtractionResult
+
+        parse_calls: list[bytes] = []
+
+        class _Mock:
+            def parse(self, blob: bytes, *, file_name: str) -> ExtractionResult:
+                parse_calls.append(blob)
+                return ExtractionResult(
+                    source_type="image",
+                    sections=[
+                        ExtractedSection(
+                            text=ocr_text, page=None, section_title="OCR"
+                        )
+                    ],
+                    raw_text=ocr_text,
+                    warnings=[],
+                )
+
+        return _Mock(), parse_calls
+
+    def test_short_text_triggers_augment(self) -> None:
+        """텍스트 < 50자 + Picture 있음 → OCR 결합 (텍스트 + OCR 모두 보존)."""
+        from app.adapters.impl.pptx_parser import PptxParser
+
+        # 18자 — threshold 50 미만
+        data = self._make_pptx("디자인 컨셉 표지 슬라이드")
+        mock_ip, parse_calls = self._make_ocr_image_parser(
+            ocr_text="OCR 회수: 본문 추가 정보"
+        )
+
+        parser = PptxParser(image_parser=mock_ip)
+        result = parser.parse(data, file_name="short.pptx")
+
+        self.assertEqual(len(parse_calls), 1, "augment 모드에서 OCR 1회 호출")
+        self.assertEqual(len(result.sections), 1)
+        text = result.sections[0].text
+        # 기존 텍스트 + OCR 모두 포함
+        self.assertIn("디자인 컨셉 표지 슬라이드", text)
+        self.assertIn("OCR 회수: 본문 추가 정보", text)
+
+    def test_long_text_skips_augment(self) -> None:
+        """텍스트 ≥ 50자 → OCR skip (RPD 절약)."""
+        from app.adapters.impl.pptx_parser import PptxParser
+
+        long_text = (
+            "이 슬라이드는 충분히 긴 본문 텍스트를 가지고 있어서 image OCR 추가 결합이 "
+            "필요하지 않은 케이스입니다 — Vision RPD 절약 정책."
+        )
+        self.assertGreaterEqual(len(long_text), 50)
+        data = self._make_pptx(long_text)
+        mock_ip, parse_calls = self._make_ocr_image_parser()
+
+        parser = PptxParser(image_parser=mock_ip)
+        result = parser.parse(data, file_name="long.pptx")
+
+        self.assertEqual(parse_calls, [], "텍스트 풍부 슬라이드는 OCR 호출 0회")
+        self.assertEqual(len(result.sections), 1)
+        self.assertIn("충분히 긴 본문", result.sections[0].text)
+
+    def test_augment_respects_max_cap(self) -> None:
+        """6 슬라이드 모두 짧은 텍스트 + Picture → 첫 5개만 augment (cap)."""
+        from app.adapters.impl.pptx_parser import PptxParser
+        from io import BytesIO
+        from PIL import Image
+        from pptx import Presentation
+        from pptx.util import Inches
+
+        png_buf = BytesIO()
+        Image.new("RGB", (100, 50), color="white").save(png_buf, format="PNG")
+        png_bytes = png_buf.getvalue()
+
+        prs = Presentation()
+        for i in range(6):
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+            tx = slide.shapes.add_textbox(
+                Inches(1), Inches(0.5), Inches(6), Inches(1)
+            )
+            tx.text_frame.text = f"짧은 제목 {i + 1}"  # 항상 < 50
+            slide.shapes.add_picture(
+                BytesIO(png_bytes),
+                Inches(1), Inches(2), Inches(2), Inches(1),
+            )
+        buf = BytesIO()
+        prs.save(buf)
+
+        mock_ip, parse_calls = self._make_ocr_image_parser()
+        parser = PptxParser(image_parser=mock_ip)
+        result = parser.parse(buf.getvalue(), file_name="cap.pptx")
+
+        self.assertEqual(len(parse_calls), 5, "augment 도 max 5 cap 적용")
+        self.assertEqual(len(result.sections), 6, "6 슬라이드 모두 section 생성 (텍스트만)")
+
+
 if __name__ == "__main__":
     unittest.main()
