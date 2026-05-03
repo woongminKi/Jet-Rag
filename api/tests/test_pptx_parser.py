@@ -344,6 +344,49 @@ class PptxVisionReroutingTest(unittest.TestCase):
             f"warnings 에 graceful 메시지 — got {result.warnings}",
         )
 
+    def test_failure_respects_cap_quota_protection(self) -> None:
+        """W9 Day 3 한계 #47 회수 — Vision 실패 시에도 cap (시도 기준) 적용.
+
+        이전 버그: cap 이 *성공* 만 카운트 → 11 slides 모두 호출 → quota 초과 누적.
+        fix 후: cap 이 *시도* 기준 → quota 보호 의도 보존.
+        """
+        from app.adapters.impl.pptx_parser import PptxParser
+        from io import BytesIO
+        from PIL import Image
+        from pptx import Presentation
+        from pptx.util import Inches
+
+        png_buf = BytesIO()
+        Image.new("RGB", (100, 50), color="white").save(png_buf, format="PNG")
+        png_bytes = png_buf.getvalue()
+
+        # 11 슬라이드 모두 picture-only — 모든 Vision 호출이 실패하더라도 cap 5 적용
+        prs = Presentation()
+        for _ in range(11):
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+            slide.shapes.add_picture(
+                BytesIO(png_bytes),
+                Inches(1), Inches(1), Inches(2), Inches(1),
+            )
+        buf = BytesIO()
+        prs.save(buf)
+
+        parse_calls: list[int] = []
+
+        class _AlwaysFail:
+            def parse(self, blob: bytes, *, file_name: str):
+                parse_calls.append(1)
+                raise RuntimeError("Quota exhausted")
+
+        parser = PptxParser(image_parser=_AlwaysFail())
+        result = parser.parse(buf.getvalue(), file_name="all_fail.pptx")
+
+        self.assertEqual(
+            len(parse_calls), 5,
+            f"실패 시에도 cap 5 적용 (시도 기준) — got {len(parse_calls)} (이전 버그: 11)",
+        )
+        self.assertEqual(result.sections, [], "모두 실패라 section 0")
+
     def test_no_image_parser_disables_vision(self) -> None:
         """image_parser=None (기본) → Vision 비활성, picture-only 슬라이드는 skip."""
         from app.adapters.impl.pptx_parser import PptxParser

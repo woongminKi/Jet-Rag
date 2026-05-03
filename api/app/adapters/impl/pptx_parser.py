@@ -70,7 +70,12 @@ class PptxParser:
                 f"PPTX 파서 초기화 실패: {file_name}: {exc}"
             ) from exc
 
-        vision_slides_used = 0
+        # W9 Day 3 — cap 정책 fix (한계 #47).
+        # 이전 (Day 1·2): cap 이 *성공* 슬라이드만 카운트 → 실패 시 모든 슬라이드 시도
+        #                  → quota 초과로 10회 이상 헛 호출 케이스 발견 (W9 Day 3 PPTX reingest)
+        # 현재: cap 이 *시도* 기준 → quota 보호 의도 보존
+        vision_slides_attempted = 0
+        vision_slides_success = 0
 
         for slide_idx, slide in enumerate(prs.slides):
             try:
@@ -84,10 +89,12 @@ class PptxParser:
                 current_text_len = sum(len(p) for p in slide_text_parts)
                 needs_ocr = (
                     self._image_parser is not None
-                    and vision_slides_used < _MAX_VISION_SLIDES
+                    and vision_slides_attempted < _MAX_VISION_SLIDES
                     and current_text_len < _VISION_AUGMENT_TEXT_THRESHOLD
                 )
                 if needs_ocr:
+                    # cap 카운트는 시도 시점 — 결과 무관 (quota 보호)
+                    vision_slides_attempted += 1
                     ocr_text = _vision_ocr_largest_picture(
                         slide,
                         slide_idx=slide_idx,
@@ -96,7 +103,7 @@ class PptxParser:
                         warnings=warnings,
                     )
                     if ocr_text:
-                        vision_slides_used += 1
+                        vision_slides_success += 1
                         if not slide_text_parts:
                             # rerouting mode — 텍스트 0
                             if not slide_title:
@@ -125,10 +132,11 @@ class PptxParser:
                 logger.warning("%s (file=%s)", msg, file_name)
                 continue
 
-        if vision_slides_used > 0:
+        if vision_slides_attempted > 0:
             logger.info(
-                "PPTX Vision OCR rerouting: %d slides 처리 (file=%s, cap=%d)",
-                vision_slides_used,
+                "PPTX Vision OCR: attempted=%d success=%d (file=%s, cap=%d)",
+                vision_slides_attempted,
+                vision_slides_success,
                 file_name,
                 _MAX_VISION_SLIDES,
             )
