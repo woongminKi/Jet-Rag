@@ -9,6 +9,8 @@ Supabase SQL Editor에서 순서대로 실행.
 | 003 | `003_hybrid_search.sql` | W3 Day 1 — HNSW (chunks.dense_vec / documents.doc_embedding) + chunks.fts (simple FTS) + pg_trgm + RPC `search_hybrid_rrf` (RRF k=60) |
 | 004 | `004_pgroonga_korean_fts.sql` | W3 Day 2 v0.5 — PGroonga (Mecab) 로 sparse path 교체. chunks.fts/idx_chunks_fts DROP, idx_chunks_text_pgroonga 신설. chunks.flags JSONB 컬럼 추가 (DE-62). RPC `search_hybrid_rrf` 재작성 + `search_sparse_only_pgroonga` 신설 |
 | 004-rollback | `004_rollback.sql` | (옵션 안전망, 미적용) PGroonga 인덱스/RPC 제거 → 003 의 simple FTS 복구. 적용은 운영자 결정 게이트 (PGroonga 빌드 실패·sparse RPC 비정상·호스팅 미지원 통보 중 하나). 적용 후 sparse_hits 회귀 → 사용자 측 검색 품질 정성 점검 의무. |
+| 005 | `005_vision_usage_log.sql` | W15 Day 2 — `vision_usage_log` 테이블 + 인덱스 + RLS. Vision API 호출 1건당 row 1건 영구 저장 (휘발성 한계 #34·#62 회수 준비). Python write-through 는 W15 Day 3+. |
+| 006 | `006_search_metrics_log.sql` | W15 Day 2 — `search_metrics_log` 테이블 + mode/fallback 인덱스 + RLS. 검색 호출 1건당 row 1건 (한계 #61·#76·#81 회수 준비). |
 
 ## 실행 절차
 
