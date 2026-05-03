@@ -4,6 +4,7 @@ import { MyDocStatsCard } from './cards/my-doc-stats-card';
 import { NewArrivalsCard } from './cards/new-arrivals-card';
 import { PopularTagsCard } from './cards/popular-tags-card';
 import { RecentlyViewedCard } from './cards/recently-viewed-card';
+import { SearchSloCard } from './cards/search-slo-card';
 import { SearchTipsCard } from './cards/search-tips-card';
 import { VisionUsageCard } from './cards/vision-usage-card';
 
@@ -24,6 +25,7 @@ export function HomeGrid({ stats, recentDocuments }: HomeGridProps) {
           <PopularTagsCard tags={stats.popular_tags} />
           <MyDocStatsCard stats={stats} />
           <ChunksStatsCard stats={stats} />
+          <SearchSloCard stats={stats} />
           <VisionUsageCard stats={stats} />
           <SearchTipsCard />
         </div>
