@@ -1,13 +1,19 @@
 """W4 Day 5 — golden 20건 batch 라이브 smoke (W3 baseline 비교).
+W21 Day 1 — mode 인자 + threshold 검증 + exit code (회귀 보호 강화).
 
 목적
 - W3 Day 5 마감 5/5 top-1 hit baseline → W4 후 회귀 측정
 - top-3 hit 율 + p95 latency + cache_hit 효과 측정
+- W21+: mode=all 시 hybrid/dense/sparse ablation 비교 — KPI '하이브리드 +5pp 우세'
+- exit code 1: --require-top1-min 미달 시 (CI 통합 가능)
 
 사용
     cd api && uv run python scripts/golden_batch_smoke.py
-        # → stdout markdown
-    cd api && uv run python scripts/golden_batch_smoke.py --output ../work-log/...md
+        # → stdout markdown (mode=hybrid)
+    cd api && uv run python scripts/golden_batch_smoke.py --mode all --output ../work-log/...md
+        # → 3 mode ablation
+    cd api && uv run python scripts/golden_batch_smoke.py --require-top1-min 0.7
+        # → top-1 hit 율 < 70% 시 exit 1
 """
 
 from __future__ import annotations
@@ -52,9 +58,11 @@ GOLDEN: list[dict] = [
 ]
 
 
-def _fetch_search(q: str, filters: dict, limit: int = 10) -> dict:
+def _fetch_search(q: str, filters: dict, limit: int = 10, mode: str = "hybrid") -> dict:
     params: dict = {"q": q, "limit": str(limit)}
     params.update(filters)
+    if mode != "hybrid":
+        params["mode"] = mode
     qs = urllib.parse.urlencode(params)
     url = f"{_BASE}/search?{qs}"
     with urllib.request.urlopen(url, timeout=30) as resp:
@@ -66,18 +74,15 @@ def _is_match(doc_id: str, short: str) -> bool:
     return doc_id.lower().startswith(short.lower())
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--output", "-o", help="markdown 출력 경로")
-    args = parser.parse_args()
-
+def _run_mode(mode: str) -> list[dict]:
+    """mode 별 golden batch 1회 실행 — results 리스트 반환."""
     results: list[dict] = []
     for g in GOLDEN:
         try:
-            r = _fetch_search(g["q"], g["filters"], limit=10)
+            r = _fetch_search(g["q"], g["filters"], limit=10, mode=mode)
         except Exception as exc:  # noqa: BLE001
-            print(f"[ERROR] {g['id']} {exc}", file=sys.stderr)
-            results.append({**g, "error": str(exc)})
+            print(f"[ERROR] {g['id']} mode={mode} {exc}", file=sys.stderr)
+            results.append({**g, "mode": mode, "error": str(exc)})
             continue
         items = r.get("items", [])
         top_doc_ids = [it.get("doc_id", "") for it in items[:3]]
@@ -88,6 +93,7 @@ def main() -> int:
             "type": g["type"],
             "q": g["q"],
             "expect": g["expect"],
+            "mode": mode,
             "top1": top1,
             "top3": top3,
             "took_ms": r.get("took_ms"),
@@ -95,23 +101,73 @@ def main() -> int:
             "query_parsed": r.get("query_parsed"),
             "top_doc_ids": top_doc_ids,
         })
+    return results
 
-    # 집계
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", "-o", help="markdown 출력 경로")
+    parser.add_argument(
+        "--mode",
+        choices=["hybrid", "dense", "sparse", "all"],
+        default="hybrid",
+        help="검색 mode (all 시 hybrid/dense/sparse 3 mode ablation)",
+    )
+    parser.add_argument(
+        "--require-top1-min",
+        type=float,
+        default=None,
+        help="top-1 hit 비율 최소 임계값 (0.0~1.0). 미달 시 exit 1 (CI gate).",
+    )
+    args = parser.parse_args()
+
+    if args.mode == "all":
+        modes = ["hybrid", "dense", "sparse"]
+        results: list[dict] = []
+        for m in modes:
+            results.extend(_run_mode(m))
+    else:
+        results = _run_mode(args.mode)
+
+    # mode 별 집계 — args.mode='all' 시 3 mode, 그 외 1 mode
+    by_mode: dict[str, list[dict]] = {}
+    for r in results:
+        by_mode.setdefault(r.get("mode", args.mode), []).append(r)
+
+    lines: list[str] = []
+    lines.append(f"# golden {len(GOLDEN)}건 batch — 라이브 smoke (mode={args.mode})")
+    lines.append("")
+
+    # mode 별 요약 — ablation 비교
+    if args.mode == "all":
+        lines.append("## mode 별 ablation 비교")
+        lines.append("")
+        lines.append("| mode | top-1 | top-3 | avg ms |")
+        lines.append("|---|---:|---:|---:|")
+        for m in ("hybrid", "dense", "sparse"):
+            ms = [r for r in by_mode.get(m, []) if "error" not in r]
+            if not ms:
+                continue
+            t1 = sum(1 for r in ms if r["top1"])
+            t3 = sum(1 for r in ms if r["top3"])
+            avg = statistics.mean(r["took_ms"] for r in ms if r["took_ms"])
+            lines.append(f"| {m} | {t1}/{len(ms)} ({t1/len(ms)*100:.0f}%) | {t3}/{len(ms)} | {avg:.0f} |")
+        lines.append("")
+
+    # 종합 (단일 mode 또는 mode='all' 종합)
     successful = [r for r in results if "error" not in r]
     top1_count = sum(1 for r in successful if r["top1"])
     top3_count = sum(1 for r in successful if r["top3"])
     took_ms_list = [r["took_ms"] for r in successful if r["took_ms"]]
 
-    by_type: dict[str, list[dict]] = {}
-    for r in successful:
-        by_type.setdefault(r["type"], []).append(r)
-
-    lines: list[str] = []
-    lines.append("# golden 20건 batch — W4 라이브 smoke 결과")
+    lines.append("## 종합")
     lines.append("")
     lines.append(f"- 총 {len(results)} 건 — 성공 {len(successful)} / 에러 {len(results) - len(successful)}")
-    lines.append(f"- top-1 hit: **{top1_count}/{len(successful)}** ({top1_count / len(successful) * 100:.1f}%)")
-    lines.append(f"- top-3 hit: **{top3_count}/{len(successful)}** ({top3_count / len(successful) * 100:.1f}%)")
+    if successful:
+        top1_pct = top1_count / len(successful) * 100
+        top3_pct = top3_count / len(successful) * 100
+        lines.append(f"- top-1 hit: **{top1_count}/{len(successful)}** ({top1_pct:.1f}%)")
+        lines.append(f"- top-3 hit: **{top3_count}/{len(successful)}** ({top3_pct:.1f}%)")
     if took_ms_list:
         lines.append(
             f"- latency: avg {statistics.mean(took_ms_list):.0f}ms · "
@@ -121,7 +177,10 @@ def main() -> int:
         )
     lines.append("")
 
-    lines.append("## 카테고리별")
+    by_type: dict[str, list[dict]] = {}
+    for r in successful:
+        by_type.setdefault(r["type"], []).append(r)
+    lines.append("## 카테고리별 (종합)")
     lines.append("")
     lines.append("| type | top-1 | top-3 | avg ms |")
     lines.append("|---|---:|---:|---:|")
@@ -134,17 +193,18 @@ def main() -> int:
 
     lines.append("## 상세")
     lines.append("")
-    lines.append("| id | type | query | expected | top1 | top3 | took_ms | total | top doc |")
-    lines.append("|---|---|---|---|:---:|:---:|---:|---:|---|")
+    lines.append("| mode | id | type | query | expected | top1 | top3 | took_ms | total | top doc |")
+    lines.append("|---|---|---|---|---|:---:|:---:|---:|---:|---|")
     for r in results:
+        m = r.get("mode", args.mode)
         if "error" in r:
-            lines.append(f"| {r['id']} | {r['type']} | `{r['q']}` | {r['expect']} | ⚠️ | ⚠️ | err | - | - |")
+            lines.append(f"| {m} | {r['id']} | {r['type']} | `{r['q']}` | {r['expect']} | ⚠️ | ⚠️ | err | - | - |")
             continue
         t1 = "✓" if r["top1"] else "✗"
         t3 = "✓" if r["top3"] else "✗"
         top_short = r["top_doc_ids"][0][:8] if r["top_doc_ids"] else "(none)"
         lines.append(
-            f"| {r['id']} | {r['type']} | `{r['q']}` | {r['expect']} | {t1} | {t3} | "
+            f"| {m} | {r['id']} | {r['type']} | `{r['q']}` | {r['expect']} | {t1} | {t3} | "
             f"{r['took_ms']} | {r['total']} | {top_short} |"
         )
 
@@ -154,6 +214,21 @@ def main() -> int:
         print(f"[OK] {args.output}", file=sys.stderr)
     else:
         print(out)
+
+    # W21 Day 1 — threshold gate (CI 통합 가능)
+    if args.require_top1_min is not None and successful:
+        top1_rate = top1_count / len(successful)
+        if top1_rate < args.require_top1_min:
+            print(
+                f"[FAIL] top-1 hit 율 {top1_rate:.2%} < 임계 {args.require_top1_min:.2%} "
+                f"({top1_count}/{len(successful)})",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"[OK] top-1 hit 율 {top1_rate:.2%} ≥ 임계 {args.require_top1_min:.2%}",
+            file=sys.stderr,
+        )
     return 0
 
 
