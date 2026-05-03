@@ -12,6 +12,7 @@ Supabase SQL Editor에서 순서대로 실행.
 | 005 | `005_vision_usage_log.sql` | W15 Day 2 — `vision_usage_log` 테이블 + 인덱스 + RLS. Vision API 호출 1건당 row 1건 영구 저장 (휘발성 한계 #34·#62 회수 준비). Python write-through 는 W15 Day 3+. |
 | 006 | `006_search_metrics_log.sql` | W15 Day 2 — `search_metrics_log` 테이블 + mode/fallback 인덱스 + RLS. 검색 호출 1건당 row 1건 (한계 #61·#76·#81 회수 준비). |
 | 007 | `007_metrics_trend_rpc.sql` | W16 Day 1 — 추세 분석 RPC 2개 (`get_search_metrics_trend(range, mode)` + `get_vision_usage_trend(range)`). epoch floor 기반 24h/7d/30d 시간 버킷 + zero-fill (generate_series). SECURITY DEFINER + service_role GRANT. frontend 시계열 그래프 (W16 Day 3) 의 데이터 소스. |
+| 008 | `008_search_mode_split_rpc.sql` | W20 Day 1 — `search_dense_only(query_dense, k_rrf, top_k, user_id_arg)` + `search_sparse_only(query_text, k_rrf, top_k, user_id_arg)` 신규. 기존 `search_hybrid_rrf` 와 schema 100% 동일 (chunk_id·doc_id·rrf_score·dense_rank·sparse_rank). 진정 ablation 측정 — 응용 layer 필터링 제거 (한계 #74 회수). backward compat — search_hybrid_rrf / search_sparse_only_pgroonga 유지. |
 
 ## 실행 절차
 
