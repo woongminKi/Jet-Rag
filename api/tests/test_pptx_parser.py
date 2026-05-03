@@ -183,5 +183,176 @@ class PptxCanParseTest(unittest.TestCase):
         self.assertFalse(p.can_parse("a.pdf", None))
 
 
+class PptxVisionReroutingTest(unittest.TestCase):
+    """W8 Day 2 — 슬라이드 텍스트 0 + Picture 있음 → image_parser.parse() 위임.
+
+    mock ImageParser 로 Vision API 호출 차단 — 외부 의존성 0.
+    """
+
+    def _make_pptx_with_picture(self, picture_count: int = 1) -> bytes:
+        """슬라이드 1장에 Picture N개 (텍스트 박스 0). PIL 합성 PNG 사용."""
+        from io import BytesIO
+        from PIL import Image
+        from pptx import Presentation
+        from pptx.util import Inches
+
+        # 단색 PNG 합성 (테스트용 — 실 OCR 결과는 mock 으로 대체)
+        png_buf = BytesIO()
+        Image.new("RGB", (200, 100), color="white").save(png_buf, format="PNG")
+        png_bytes = png_buf.getvalue()
+
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+        for i in range(picture_count):
+            slide.shapes.add_picture(
+                BytesIO(png_bytes),
+                left=Inches(1 + i),
+                top=Inches(1),
+                width=Inches(2),
+                height=Inches(1.5),
+            )
+        out = BytesIO()
+        prs.save(out)
+        return out.getvalue()
+
+    def test_picture_only_slide_invokes_image_parser(self) -> None:
+        from app.adapters.impl.pptx_parser import PptxParser
+        from app.adapters.parser import ExtractedSection, ExtractionResult
+
+        data = self._make_pptx_with_picture(picture_count=1)
+
+        # mock ImageParser — parse() 호출 횟수 + blob 인자 검증
+        parse_calls: list[bytes] = []
+
+        class _FakeImageParser:
+            def parse(self, blob: bytes, *, file_name: str) -> ExtractionResult:
+                parse_calls.append(blob)
+                return ExtractionResult(
+                    source_type="image",
+                    sections=[
+                        ExtractedSection(
+                            text="[표지] 모의 OCR 결과",
+                            page=None,
+                            section_title="이미지 분류: 표지",
+                        ),
+                        ExtractedSection(
+                            text="모의 OCR 결과", page=None, section_title="OCR 텍스트"
+                        ),
+                    ],
+                    raw_text="[표지] 모의 OCR 결과\n\n모의 OCR 결과",
+                    warnings=[],
+                )
+
+        parser = PptxParser(image_parser=_FakeImageParser())
+        result = parser.parse(data, file_name="picture.pptx")
+
+        self.assertEqual(len(parse_calls), 1, "Vision OCR 1회 호출")
+        self.assertGreater(len(parse_calls[0]), 100, "image blob 전달")
+        self.assertEqual(len(result.sections), 1)
+        self.assertIn("모의 OCR 결과", result.sections[0].text)
+        self.assertEqual(result.sections[0].page, 1)
+        self.assertEqual(result.sections[0].section_title, "p.1 (Vision OCR)")
+
+    def test_text_slide_skips_image_parser(self) -> None:
+        from app.adapters.impl.pptx_parser import PptxParser
+        from pptx import Presentation
+        from pptx.util import Inches
+
+        # 텍스트 박스만 있는 슬라이드 — Vision 호출 0회 기대
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        tx = slide.shapes.add_textbox(
+            Inches(1), Inches(1), Inches(6), Inches(2)
+        )
+        tx.text_frame.text = "텍스트가 있는 슬라이드"
+        buf = io.BytesIO()
+        prs.save(buf)
+
+        parse_calls: list[bytes] = []
+
+        class _SpyImageParser:
+            def parse(self, blob: bytes, *, file_name: str):
+                parse_calls.append(blob)
+                raise AssertionError("텍스트 슬라이드는 Vision 호출 X")
+
+        parser = PptxParser(image_parser=_SpyImageParser())
+        result = parser.parse(buf.getvalue(), file_name="text.pptx")
+
+        self.assertEqual(parse_calls, [], "텍스트 슬라이드는 Vision 호출 0회")
+        self.assertEqual(len(result.sections), 1)
+        self.assertIn("텍스트가 있는 슬라이드", result.sections[0].text)
+
+    def test_max_5_slides_cap(self) -> None:
+        """6 픽처 슬라이드 → 첫 5개만 Vision rerouting (cap)."""
+        from app.adapters.impl.pptx_parser import PptxParser
+        from app.adapters.parser import ExtractedSection, ExtractionResult
+        from io import BytesIO
+        from PIL import Image
+        from pptx import Presentation
+        from pptx.util import Inches
+
+        png_buf = BytesIO()
+        Image.new("RGB", (100, 50), color="white").save(png_buf, format="PNG")
+        png_bytes = png_buf.getvalue()
+
+        prs = Presentation()
+        for _ in range(6):  # 6 슬라이드 (cap=5 검증)
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+            slide.shapes.add_picture(
+                BytesIO(png_bytes),
+                Inches(1), Inches(1), Inches(2), Inches(1),
+            )
+        buf = BytesIO()
+        prs.save(buf)
+
+        parse_calls: list[int] = []
+
+        class _Counting:
+            def parse(self, blob: bytes, *, file_name: str) -> ExtractionResult:
+                parse_calls.append(1)
+                return ExtractionResult(
+                    source_type="image",
+                    sections=[
+                        ExtractedSection(text="[표지] OCR", page=None, section_title="t")
+                    ],
+                    raw_text="[표지] OCR",
+                    warnings=[],
+                )
+
+        parser = PptxParser(image_parser=_Counting())
+        result = parser.parse(buf.getvalue(), file_name="cap.pptx")
+
+        self.assertEqual(len(parse_calls), 5, "max 5 cap")
+        self.assertEqual(len(result.sections), 5, "6번째는 텍스트도 OCR도 없어 skip")
+
+    def test_vision_failure_graceful(self) -> None:
+        """Vision API 실패 시 RuntimeError 흡수, 슬라이드는 skip + warnings."""
+        from app.adapters.impl.pptx_parser import PptxParser
+
+        data = self._make_pptx_with_picture(picture_count=1)
+
+        class _BrokenImageParser:
+            def parse(self, blob: bytes, *, file_name: str):
+                raise RuntimeError("Gemini API down")
+
+        parser = PptxParser(image_parser=_BrokenImageParser())
+        result = parser.parse(data, file_name="broken.pptx")
+
+        self.assertEqual(result.sections, [], "OCR 실패 슬라이드는 section 미생성")
+        self.assertTrue(
+            any("Vision OCR 실패" in w for w in result.warnings),
+            f"warnings 에 graceful 메시지 — got {result.warnings}",
+        )
+
+    def test_no_image_parser_disables_vision(self) -> None:
+        """image_parser=None (기본) → Vision 비활성, picture-only 슬라이드는 skip."""
+        from app.adapters.impl.pptx_parser import PptxParser
+
+        data = self._make_pptx_with_picture(picture_count=1)
+        parser = PptxParser(image_parser=None)
+        result = parser.parse(data, file_name="no_vision.pptx")
+        self.assertEqual(result.sections, [])
+
+
 if __name__ == "__main__":
     unittest.main()

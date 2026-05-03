@@ -1,22 +1,25 @@
-"""python-pptx 기반 PPTX 프레젠테이션 파서 (W7 후속 — DE-68).
+"""python-pptx 기반 PPTX 프레젠테이션 파서 (DE-68).
 
 배경
-- W4-Q-9 sniff (`work-log/2026-05-02 W4-Q-9 sniff DOCX·PPTX 라이브러리 평가.md`) 결과
-  python-pptx 1.x 의 `Presentation.slides` + `shape.has_text_frame` 으로 충분 판정.
-- 페르소나 A 의 회의 발표·교육 자료 빈도 ↑ → 사용자 자료 업로드 시점에 ship.
+- W4-Q-9 sniff 결과 python-pptx 1.x 의 `Presentation.slides` + `shape.has_text_frame` 으로 충분 판정.
+- 페르소나 A 의 회의 발표·교육 자료 빈도 ↑ → 사용자 자료 업로드 시점에 ship (W7 후속, W8 Day 1).
 
 설계
 - 슬라이드 1개 = `ExtractedSection` 1개 (raw_text 는 슬라이드 내부 모든 텍스트 join)
-  · DOCX 와 달리 슬라이드 단위 스토리텔링 — chunking 직전 단계에서 슬라이드 경계 보존이
-    검색 품질에 유리 (W3 청킹 정책의 page 분할 효과 동일)
 - `page` = slide_index + 1 (1-based, search UI 의 "p.N" 표기와 호환)
 - `section_title` = title placeholder 우선 → 첫 번째 텍스트 shape fallback
 - 표 (Shape with `has_table`): DocxParser `_table_to_text` 와 동일 ` | ` separator
-- 그림(picture) / chart 의 caption 텍스트는 추출 X — Vision 어댑터 스코프 (DE-68 후속)
+- GroupShape: `.shapes` 재귀 — 디자인 PPT 흔한 그룹 구조
+
+W8 Day 2 — Vision OCR rerouting (한계 #23 회수)
+- 슬라이드 텍스트 0 이고 Picture 가 있으면 가장 큰 Picture 의 image_bytes 를 ImageParser 에 위임
+- max 5 슬라이드 cap (PyMuPDF 스캔 PDF rerouting 의 `_MAX_SCAN_PAGES` 패턴 일치, Vision RPD 20 제약)
+- ImageParser composition — 직접 Gemini 호출 X, 모든 경로 통일
+- 디자인 카탈로그 (Picture 100%) 같은 PPTX 자료의 텍스트 회수
 
 graceful degrade
 - python-pptx 가 corrupted PPTX 에서 raise → RuntimeError wrap (DocxParser 패턴)
-- 슬라이드/shape 단위 부분 실패는 warnings 누적, 다음 슬라이드 계속
+- 슬라이드/shape/Vision 단위 부분 실패는 warnings 누적, 다음 슬라이드 계속
 """
 
 from __future__ import annotations
@@ -26,15 +29,25 @@ import logging
 from pathlib import PurePosixPath
 
 from pptx import Presentation
-from pptx.util import Inches  # noqa: F401 — 향후 bbox 계산 시 사용
 
 from app.adapters.parser import ExtractedSection, ExtractionResult
 
 logger = logging.getLogger(__name__)
 
+# Vision OCR rerouting cap — Gemini Flash RPD 20 + 디자인 PPT 첫 5장이 보통 표지·요약
+_MAX_VISION_SLIDES = 5
+
 
 class PptxParser:
     source_type = "pptx"
+
+    def __init__(self, image_parser=None) -> None:
+        """`image_parser` 는 텍스트 0 슬라이드의 가장 큰 Picture rerouting 용 (W8 Day 2).
+
+        None 이면 Vision OCR 기능 비활성 — 단위 테스트 / 외부 의존성 회피 케이스.
+        extract.py 가 production 에서 `ImageParser()` 인스턴스 주입.
+        """
+        self._image_parser = image_parser
 
     def can_parse(self, file_name: str, mime_type: str | None) -> bool:
         ext = PurePosixPath(file_name).suffix.lower()
@@ -52,12 +65,34 @@ class PptxParser:
                 f"PPTX 파서 초기화 실패: {file_name}: {exc}"
             ) from exc
 
+        vision_slides_used = 0
+
         for slide_idx, slide in enumerate(prs.slides):
             try:
                 slide_title = _extract_slide_title(slide)
                 slide_text_parts = _extract_slide_text(slide, warnings=warnings)
+
+                # W8 Day 2 — 텍스트 부재 + Vision 가용 + cap 안 → Picture rerouting
                 if not slide_text_parts:
-                    continue
+                    if (
+                        self._image_parser is not None
+                        and vision_slides_used < _MAX_VISION_SLIDES
+                    ):
+                        ocr_text = _vision_ocr_largest_picture(
+                            slide,
+                            slide_idx=slide_idx,
+                            file_name=file_name,
+                            image_parser=self._image_parser,
+                            warnings=warnings,
+                        )
+                        if ocr_text:
+                            vision_slides_used += 1
+                            if not slide_title:
+                                slide_title = f"p.{slide_idx + 1} (Vision OCR)"
+                            slide_text_parts = [ocr_text]
+                    if not slide_text_parts:
+                        continue
+
                 slide_text = "\n".join(slide_text_parts)
                 sections.append(
                     ExtractedSection(
@@ -73,6 +108,14 @@ class PptxParser:
                 warnings.append(msg)
                 logger.warning("%s (file=%s)", msg, file_name)
                 continue
+
+        if vision_slides_used > 0:
+            logger.info(
+                "PPTX Vision OCR rerouting: %d slides 처리 (file=%s, cap=%d)",
+                vision_slides_used,
+                file_name,
+                _MAX_VISION_SLIDES,
+            )
 
         return ExtractionResult(
             source_type=self.source_type,
@@ -165,3 +208,73 @@ def _table_to_text(table) -> str:
         except Exception:  # noqa: BLE001 — 행 단위 실패 허용
             continue
     return "\n".join(rows_text)
+
+
+def _vision_ocr_largest_picture(
+    slide,
+    *,
+    slide_idx: int,
+    file_name: str,
+    image_parser,
+    warnings: list[str],
+) -> str | None:
+    """슬라이드 내 가장 큰 Picture 의 image_bytes → ImageParser.parse() 결과 OCR 텍스트.
+
+    "가장 큰" 기준 — `width * height` (pptx EMU 단위, 비교용으로 충분).
+    GroupShape 내부 Picture 까지 재귀 수집.
+
+    반환: OCR 텍스트 (caption section + ocr section 의 raw_text join). Picture 없거나
+    Vision 호출 실패 시 None — caller 가 빈 슬라이드로 처리.
+    """
+    pictures = _collect_pictures(slide.shapes)
+    if not pictures:
+        return None
+
+    # 가장 큰 picture 1장만 — Vision 비용·시간 cap
+    largest = max(pictures, key=lambda p: _picture_area(p))
+    try:
+        image = largest.image  # python-pptx Image namedtuple-like
+        blob = image.blob
+        ext = (image.ext or "png").lower()
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"PPTX slide {slide_idx + 1} picture blob 추출 실패: {exc}")
+        return None
+
+    pseudo_name = f"{file_name}#slide{slide_idx + 1}.{ext}"
+    try:
+        result = image_parser.parse(blob, file_name=pseudo_name)
+    except Exception as exc:  # noqa: BLE001 — Vision API 실패 graceful
+        warnings.append(
+            f"PPTX slide {slide_idx + 1} Vision OCR 실패 (graceful): {exc}"
+        )
+        logger.warning(
+            "PPTX Vision OCR 실패 (file=%s slide=%d): %s",
+            file_name, slide_idx + 1, exc,
+        )
+        return None
+
+    text = (result.raw_text or "").strip()
+    return text or None
+
+
+def _collect_pictures(shapes_iter) -> list:
+    """shape 컬렉션에서 Picture shape 만 재귀 수집 (GroupShape 내부 포함)."""
+    out: list = []
+    for shape in shapes_iter:
+        if hasattr(shape, "shapes"):
+            out.extend(_collect_pictures(shape.shapes))
+            continue
+        # MSO_SHAPE_TYPE.PICTURE = 13 — 라이브러리 import 회피 위해 .image 속성 duck-typing
+        if hasattr(shape, "image"):
+            out.append(shape)
+    return out
+
+
+def _picture_area(shape) -> int:
+    """`width * height` (EMU 단위). 일부 shape은 None 가능 → 0 fallback."""
+    w = getattr(shape, "width", None) or 0
+    h = getattr(shape, "height", None) or 0
+    try:
+        return int(w) * int(h)
+    except Exception:  # noqa: BLE001
+        return 0

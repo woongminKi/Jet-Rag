@@ -44,7 +44,9 @@ _url_parser = UrlParser()
 _hwp_parser = Hwp5Parser()
 _hwpml_parser = HwpmlParser()
 _docx_parser = DocxParser()
-_pptx_parser = PptxParser()
+# W8 Day 2 — PPTX Vision OCR rerouting: 텍스트 0 슬라이드의 가장 큰 Picture 를
+# ImageParser 에 위임. max 5 슬라이드 cap (Gemini Flash RPD 20 제약).
+_pptx_parser = PptxParser(image_parser=_image_parser)
 
 # doc_type → DocumentParser 디스패처.
 # W5 DE-67 — DOCX 추가. W7 후속 — DE-68 PPTX ship (사용자 자료 업로드 시점).
