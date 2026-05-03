@@ -92,32 +92,61 @@ export function SearchSloCard({ stats }: SearchSloCardProps) {
               </ul>
             )}
 
-            {/* W14 Day 4 (한계 #83) — by_mode 분리 측정 (ablation 비교) */}
+            {/* W14 Day 4 (한계 #83) — by_mode 분리 측정 (ablation 비교)
+                W20 Day 4 — p50 비교 bar 추가 (직관적 ablation 시각) */}
             {slo.by_mode &&
               Object.values(slo.by_mode).some((m) => m.sample_count > 0) && (
-                <div className="space-y-1 border-t border-border pt-2">
+                <div className="space-y-1.5 border-t border-border pt-2">
                   <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                     mode 별 비교 (ablation)
                   </div>
-                  <ul className="space-y-1">
-                    {(['hybrid', 'dense', 'sparse'] as const).map((m) => {
-                      const entry = slo.by_mode?.[m];
-                      if (!entry || entry.sample_count === 0) return null;
-                      return (
-                        <li
-                          key={m}
-                          className="flex items-center justify-between text-xs"
-                        >
-                          <span className="font-mono text-muted-foreground">
-                            {m}
-                          </span>
-                          <span className="font-mono tabular-nums text-foreground">
-                            p50 {entry.p50_ms}ms · n {entry.sample_count}
-                          </span>
-                        </li>
-                      );
-                    })}
-                  </ul>
+                  {(() => {
+                    const entries = (['hybrid', 'dense', 'sparse'] as const)
+                      .map((m) => ({ mode: m, entry: slo.by_mode?.[m] }))
+                      .filter((x) => x.entry && x.entry.sample_count > 0);
+                    if (entries.length === 0) return null;
+                    const maxP50 = Math.max(
+                      ...entries.map((x) => x.entry!.p50_ms ?? 0),
+                      1,
+                    );
+                    return (
+                      <ul className="space-y-1">
+                        {entries.map(({ mode: m, entry }) => {
+                          if (!entry) return null;
+                          const p50 = entry.p50_ms ?? 0;
+                          const widthPct = Math.max(
+                            (p50 / maxP50) * 100,
+                            4, // 0% 시 보이지 않으므로 최소 4% 보장
+                          );
+                          return (
+                            <li key={m} className="space-y-0.5">
+                              <div className="flex items-center justify-between text-xs">
+                                <span className="font-mono text-muted-foreground">
+                                  {m}
+                                </span>
+                                <span className="font-mono tabular-nums text-foreground">
+                                  p50 {p50}ms · n {entry.sample_count}
+                                </span>
+                              </div>
+                              <div
+                                className="h-1 overflow-hidden rounded-sm bg-border"
+                                role="progressbar"
+                                aria-valuenow={p50}
+                                aria-valuemin={0}
+                                aria-valuemax={maxP50}
+                                aria-label={`${m} p50 ${p50}ms`}
+                              >
+                                <div
+                                  className="h-full bg-foreground/60"
+                                  style={{ width: `${widthPct}%` }}
+                                />
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    );
+                  })()}
                 </div>
               )}
 
