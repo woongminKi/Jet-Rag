@@ -36,7 +36,41 @@ _error_calls: int = 0
 _last_called_at: datetime | None = None
 _last_quota_exhausted_at: datetime | None = None  # W11 Day 1 — 한계 #38 lite
 
-_ERROR_MSG_MAX_LEN = 200  # W15 Day 3 한계 #84 — DB row 크기 보호
+# W16 Day 4 한계 #84 — DB row 크기 보호. env 로 override 가능.
+_ERROR_MSG_MAX_LEN_ENV_KEY = "JET_RAG_VISION_ERROR_MSG_MAX_LEN"
+_ERROR_MSG_MAX_LEN_DEFAULT = 200
+
+# W16 Day 4 한계 #90 — source_type enum 강제. 잘못된 값은 None 으로 fallback.
+# 005 schema 의 source_type 컬럼은 자유 TEXT 이나, DB row 의미 일관성 유지 위해 모듈 레벨 검증.
+_VALID_SOURCE_TYPES: frozenset[str] = frozenset(
+    {"image", "pdf_scan", "pptx_rerouting", "pptx_augment"}
+)
+
+
+def _error_msg_max_len() -> int:
+    """env var 우선 — 잘못된 값 (음수 / 비숫자) 시 default 반환."""
+    raw = os.environ.get(_ERROR_MSG_MAX_LEN_ENV_KEY)
+    if raw is None:
+        return _ERROR_MSG_MAX_LEN_DEFAULT
+    try:
+        n = int(raw)
+        return n if n > 0 else _ERROR_MSG_MAX_LEN_DEFAULT
+    except ValueError:
+        return _ERROR_MSG_MAX_LEN_DEFAULT
+
+
+def _normalize_source_type(value: str | None) -> str | None:
+    """잘못된 source_type → None fallback + warn log (한계 #90 회수)."""
+    if value is None:
+        return None
+    if value in _VALID_SOURCE_TYPES:
+        return value
+    logger.warning(
+        "vision_metrics.record_call source_type=%r 무효 — None 으로 fallback. "
+        "허용값: %s",
+        value, sorted(_VALID_SOURCE_TYPES),
+    )
+    return None
 
 
 def record_call(
@@ -52,8 +86,11 @@ def record_call(
         True 시 last_quota_exhausted_at 갱신.
 
     `error_msg` / `source_type` (W15 Day 3 — DB write-through):
-        - error_msg: success=False 시 Exception str (200자 truncate)
-        - source_type: 'image' / 'pdf_scan' / 'pptx_rerouting' / 'pptx_augment' (선택)
+        - error_msg: success=False 시 Exception str.
+          기본 200자 truncate, env JET_RAG_VISION_ERROR_MSG_MAX_LEN 으로 override (W16 Day 4 #84).
+        - source_type (W16 Day 4 #90 — enum 강제):
+          'image' / 'pdf_scan' / 'pptx_rerouting' / 'pptx_augment'.
+          잘못된 값은 None 으로 fallback + warn log.
         - 둘 다 in-memory 카운터에는 영향 X, DB row 에만 보존.
     """
     global _total_calls, _success_calls, _error_calls
@@ -70,12 +107,13 @@ def record_call(
             _last_quota_exhausted_at = now
 
     # W15 Day 3 — DB write-through (Lock 해제 후, graceful)
+    truncate_len = _error_msg_max_len()
     _persist_to_db(
         called_at=now,
         success=success,
-        error_msg=(error_msg or "")[:_ERROR_MSG_MAX_LEN] or None,
+        error_msg=(error_msg or "")[:truncate_len] or None,
         quota_exhausted=quota_exhausted,
-        source_type=source_type,
+        source_type=_normalize_source_type(source_type),
     )
 
 

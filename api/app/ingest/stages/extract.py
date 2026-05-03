@@ -205,6 +205,7 @@ def _reroute_pdf_to_image(
                 page_result = image_parser.parse(
                     png_bytes,
                     file_name=f"{file_name}#page{page_num + 1}.png",
+                    source_type="pdf_scan",  # W16 Day 4 #90 — vision_usage_log 명시
                 )
                 for sec in page_result.sections:
                     base_title = sec.section_title or ""

@@ -81,7 +81,7 @@ export function MetricsTrendCard({ trend }: MetricsTrendCardProps) {
               </svg>
             </div>
 
-            <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
               <Stat label="총 샘플" value={`${totalSamples.toLocaleString()}건`} />
               <Stat
                 label={metric === 'search' ? '최근 p95' : '최근 quota 초과'}

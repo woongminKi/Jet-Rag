@@ -225,7 +225,7 @@ class PptxVisionReroutingTest(unittest.TestCase):
         parse_calls: list[bytes] = []
 
         class _FakeImageParser:
-            def parse(self, blob: bytes, *, file_name: str) -> ExtractionResult:
+            def parse(self, blob: bytes, *, file_name: str, source_type: str | None = None) -> ExtractionResult:
                 parse_calls.append(blob)
                 return ExtractionResult(
                     source_type="image",
@@ -271,7 +271,7 @@ class PptxVisionReroutingTest(unittest.TestCase):
         parse_calls: list[bytes] = []
 
         class _SpyImageParser:
-            def parse(self, blob: bytes, *, file_name: str):
+            def parse(self, blob: bytes, *, file_name: str, source_type: str | None = None):
                 parse_calls.append(blob)
                 raise AssertionError("텍스트 슬라이드는 Vision 호출 X")
 
@@ -308,7 +308,7 @@ class PptxVisionReroutingTest(unittest.TestCase):
         parse_calls: list[int] = []
 
         class _Counting:
-            def parse(self, blob: bytes, *, file_name: str) -> ExtractionResult:
+            def parse(self, blob: bytes, *, file_name: str, source_type: str | None = None) -> ExtractionResult:
                 parse_calls.append(1)
                 return ExtractionResult(
                     source_type="image",
@@ -332,7 +332,7 @@ class PptxVisionReroutingTest(unittest.TestCase):
         data = self._make_pptx_with_picture(picture_count=1)
 
         class _BrokenImageParser:
-            def parse(self, blob: bytes, *, file_name: str):
+            def parse(self, blob: bytes, *, file_name: str, source_type: str | None = None):
                 raise RuntimeError("Gemini API down")
 
         parser = PptxParser(image_parser=_BrokenImageParser())
@@ -375,7 +375,7 @@ class PptxVisionReroutingTest(unittest.TestCase):
 
         # 메시지에 quota 키워드 미포함 — fast-fail (한계 #49) 분기 회피하고 cap 만 검증
         class _AlwaysFail:
-            def parse(self, blob: bytes, *, file_name: str):
+            def parse(self, blob: bytes, *, file_name: str, source_type: str | None = None):
                 parse_calls.append(1)
                 raise RuntimeError("Service temporarily unavailable")
 
@@ -417,7 +417,7 @@ class PptxVisionReroutingTest(unittest.TestCase):
         parse_calls: list[int] = []
 
         class _QuotaExhausted:
-            def parse(self, blob: bytes, *, file_name: str):
+            def parse(self, blob: bytes, *, file_name: str, source_type: str | None = None):
                 parse_calls.append(1)
                 # Gemini SDK 의 google.api_core.exceptions.ResourceExhausted str 형식 모방
                 raise RuntimeError(
@@ -448,7 +448,7 @@ class PptxVisionReroutingTest(unittest.TestCase):
         parse_calls: list[int] = []
 
         class _Code429:
-            def parse(self, blob: bytes, *, file_name: str):
+            def parse(self, blob: bytes, *, file_name: str, source_type: str | None = None):
                 parse_calls.append(1)
                 raise RuntimeError("HTTP 429 Too Many Requests from upstream")
 
@@ -506,7 +506,7 @@ class PptxVisionAugmentTest(unittest.TestCase):
         parse_calls: list[bytes] = []
 
         class _Mock:
-            def parse(self, blob: bytes, *, file_name: str) -> ExtractionResult:
+            def parse(self, blob: bytes, *, file_name: str, source_type: str | None = None) -> ExtractionResult:
                 parse_calls.append(blob)
                 return ExtractionResult(
                     source_type="image",

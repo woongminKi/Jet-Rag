@@ -1673,7 +1673,7 @@ class ExtractScanPdfReroutingTest(E2EBaseTest):
         # ImageParser.parse mock — page 단위 호출 카운트
         parse_calls: list[str] = []
 
-        def _mock_image_parse(self_unused, data, *, file_name):
+        def _mock_image_parse(self_unused, data, *, file_name, source_type=None):
             parse_calls.append(file_name)
             return ExtractionResult(
                 source_type="image",
@@ -1748,7 +1748,7 @@ class ExtractScanPdfReroutingTest(E2EBaseTest):
 
         parse_calls: list[str] = []
 
-        def _mock_image_parse(self_unused, data, *, file_name):
+        def _mock_image_parse(self_unused, data, *, file_name, source_type=None):
             parse_calls.append(file_name)
             return ExtractionResult(
                 source_type="image",

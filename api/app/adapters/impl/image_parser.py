@@ -58,10 +58,24 @@ class ImageParser:
             return True
         return bool(mime_type and mime_type.startswith("image/"))
 
-    def parse(self, data: bytes, *, file_name: str) -> ExtractionResult:
+    def parse(
+        self,
+        data: bytes,
+        *,
+        file_name: str,
+        source_type: str | None = None,
+    ) -> ExtractionResult:
+        """이미지 → ExtractionResult.
+
+        `source_type` (W16 Day 4 #90):
+            None 시 cls.source_type ('image') 사용. 호출자 (PDF 스캔 rerouting /
+            PPTX rerouting / PPTX augment) 가 'pdf_scan' / 'pptx_rerouting' /
+            'pptx_augment' 명시 → vision_usage_log 의 source_type 컬럼에 정확 기록.
+        """
         ext = PurePosixPath(file_name).suffix.lower()
         guessed_mime = _EXT_TO_MIME.get(ext, "image/jpeg")
         warnings: list[str] = []
+        effective_source_type = source_type or self.source_type
 
         # HEIC/HEIF → Gemini 직접 전달 (Pillow 디코드 회피)
         if ext in (".heic", ".heif"):
@@ -73,6 +87,8 @@ class ImageParser:
 
         # W8 Day 4 — Vision 호출 카운트 (한계 #29). raise 도 error 로 기록 후 재 raise.
         # W11 Day 1 — quota 시점 추적 (한계 #38 lite) — fast-fail 시점만 정확 capture.
+        # W15 Day 3 — DB write-through (vision_usage_log).
+        # W16 Day 4 — source_type 명시 (한계 #90).
         try:
             caption = self._captioner.caption(
                 normalized_bytes, mime_type=normalized_mime
@@ -81,9 +97,14 @@ class ImageParser:
             vision_metrics.record_call(
                 success=False,
                 quota_exhausted=is_quota_exhausted(exc),
+                error_msg=str(exc),
+                source_type=effective_source_type,
             )
             raise
-        vision_metrics.record_call(success=True)
+        vision_metrics.record_call(
+            success=True,
+            source_type=effective_source_type,
+        )
 
         sections: list[ExtractedSection] = []
         # caption section — 분류 + 한국어 한 줄 요약

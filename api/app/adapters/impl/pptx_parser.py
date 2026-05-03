@@ -99,12 +99,17 @@ class PptxParser:
                 if needs_ocr:
                     # cap 카운트는 시도 시점 — 결과 무관 (quota 보호)
                     vision_slides_attempted += 1
+                    # W16 Day 4 #90 — 텍스트 0=rerouting, 1~49=augment (vision_usage_log 명시)
+                    vision_source_type = (
+                        "pptx_rerouting" if current_text_len == 0 else "pptx_augment"
+                    )
                     ocr_text, quota_exhausted = _vision_ocr_largest_picture(
                         slide,
                         slide_idx=slide_idx,
                         file_name=file_name,
                         image_parser=self._image_parser,
                         warnings=warnings,
+                        vision_source_type=vision_source_type,
                     )
                     if quota_exhausted:
                         # 첫 quota 감지 직후 flag — 이후 슬라이드 skip (한계 #49)
@@ -251,6 +256,7 @@ def _vision_ocr_largest_picture(
     file_name: str,
     image_parser,
     warnings: list[str],
+    vision_source_type: str = "pptx_rerouting",
 ) -> tuple[str | None, bool]:
     """슬라이드 내 가장 큰 Picture 의 image_bytes → ImageParser.parse() 결과 OCR 텍스트.
 
@@ -279,7 +285,11 @@ def _vision_ocr_largest_picture(
 
     pseudo_name = f"{file_name}#slide{slide_idx + 1}.{ext}"
     try:
-        result = image_parser.parse(blob, file_name=pseudo_name)
+        result = image_parser.parse(
+            blob,
+            file_name=pseudo_name,
+            source_type=vision_source_type,  # W16 Day 4 #90
+        )
     except Exception as exc:  # noqa: BLE001 — Vision API 실패 graceful
         warnings.append(
             f"PPTX slide {slide_idx + 1} Vision OCR 실패 (graceful): {exc}"

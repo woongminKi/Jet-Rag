@@ -268,5 +268,63 @@ class PersistGracefulTest(unittest.TestCase):
             os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "0"
 
 
+class SourceTypeNormalizationTest(unittest.TestCase):
+    """W16 Day 4 한계 #90 — source_type enum 강제."""
+
+    def test_valid_source_types_pass_through(self) -> None:
+        from app.services import vision_metrics
+
+        for valid in ("image", "pdf_scan", "pptx_rerouting", "pptx_augment"):
+            self.assertEqual(
+                vision_metrics._normalize_source_type(valid), valid,
+                f"valid source_type={valid!r} 가 그대로 통과해야 함",
+            )
+
+    def test_invalid_source_type_falls_back_to_none(self) -> None:
+        from app.services import vision_metrics
+        self.assertIsNone(vision_metrics._normalize_source_type("typo"))
+        self.assertIsNone(vision_metrics._normalize_source_type(""))
+
+    def test_none_passes_through(self) -> None:
+        from app.services import vision_metrics
+        self.assertIsNone(vision_metrics._normalize_source_type(None))
+
+
+class ErrorMsgTruncationTest(unittest.TestCase):
+    """W16 Day 4 한계 #84 — JET_RAG_VISION_ERROR_MSG_MAX_LEN env override."""
+
+    def setUp(self) -> None:
+        self._original = os.environ.pop(
+            "JET_RAG_VISION_ERROR_MSG_MAX_LEN", None
+        )
+
+    def tearDown(self) -> None:
+        if self._original is None:
+            os.environ.pop("JET_RAG_VISION_ERROR_MSG_MAX_LEN", None)
+        else:
+            os.environ["JET_RAG_VISION_ERROR_MSG_MAX_LEN"] = self._original
+
+    def test_default_is_200(self) -> None:
+        from app.services import vision_metrics
+        self.assertEqual(vision_metrics._error_msg_max_len(), 200)
+
+    def test_env_override_int(self) -> None:
+        from app.services import vision_metrics
+        os.environ["JET_RAG_VISION_ERROR_MSG_MAX_LEN"] = "500"
+        self.assertEqual(vision_metrics._error_msg_max_len(), 500)
+
+    def test_invalid_env_falls_back_to_default(self) -> None:
+        from app.services import vision_metrics
+        os.environ["JET_RAG_VISION_ERROR_MSG_MAX_LEN"] = "abc"
+        self.assertEqual(vision_metrics._error_msg_max_len(), 200)
+
+    def test_zero_or_negative_falls_back_to_default(self) -> None:
+        from app.services import vision_metrics
+        os.environ["JET_RAG_VISION_ERROR_MSG_MAX_LEN"] = "0"
+        self.assertEqual(vision_metrics._error_msg_max_len(), 200)
+        os.environ["JET_RAG_VISION_ERROR_MSG_MAX_LEN"] = "-10"
+        self.assertEqual(vision_metrics._error_msg_max_len(), 200)
+
+
 if __name__ == "__main__":
     unittest.main()
