@@ -1,4 +1,5 @@
 import type { Document, Stats } from '@/lib/api';
+import { ChunksStatsCard } from './cards/chunks-stats-card';
 import { MyDocStatsCard } from './cards/my-doc-stats-card';
 import { NewArrivalsCard } from './cards/new-arrivals-card';
 import { PopularTagsCard } from './cards/popular-tags-card';
@@ -21,6 +22,7 @@ export function HomeGrid({ stats, recentDocuments }: HomeGridProps) {
         <div className="space-y-6">
           <PopularTagsCard tags={stats.popular_tags} />
           <MyDocStatsCard stats={stats} />
+          <ChunksStatsCard stats={stats} />
           <SearchTipsCard />
         </div>
       </div>

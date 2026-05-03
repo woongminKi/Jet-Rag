@@ -77,6 +77,16 @@ export interface SearchSloStats {
   fallback_breakdown: Record<string, number>;
 }
 
+/** W7 Day 3 — chunks 단위 가시성 (DE-65 후 1256 환경 + chunk_filter 마킹 추적).
+ *  filtered_breakdown 키는 chunks.flags.filtered_reason 의 값
+ *  (table_noise · header_footer · empty · extreme_short 등). */
+export interface ChunksStats {
+  total: number;
+  effective: number;
+  filtered_breakdown: Record<string, number>;
+  filtered_ratio: number;
+}
+
 export interface Stats {
   documents: {
     total: number;
@@ -88,6 +98,8 @@ export interface Stats {
     added_last_7d: number;
   };
   chunks_total: number;
+  /** W7 Day 3 백엔드 신규 — effective vs filtered breakdown 가시성. */
+  chunks: ChunksStats;
   jobs: {
     total: number;
     by_status: Record<string, number>;
