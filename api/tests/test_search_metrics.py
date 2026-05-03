@@ -163,6 +163,48 @@ class ByModeSplitTest(unittest.TestCase):
         self.assertIsNone(slo["by_mode"]["sparse"]["cache_hit_rate"])
 
 
+class QueryTextHashTest(unittest.TestCase):
+    """W18 Day 2 한계 #87 — env JET_RAG_QUERY_TEXT_HASH 토글."""
+
+    def setUp(self) -> None:
+        import os as _os
+        self._original = _os.environ.pop("JET_RAG_QUERY_TEXT_HASH", None)
+
+    def tearDown(self) -> None:
+        import os as _os
+        if self._original is None:
+            _os.environ.pop("JET_RAG_QUERY_TEXT_HASH", None)
+        else:
+            _os.environ["JET_RAG_QUERY_TEXT_HASH"] = self._original
+
+    def test_default_returns_plaintext(self) -> None:
+        self.assertEqual(
+            search_metrics._maybe_hash_query("안녕하세요"), "안녕하세요"
+        )
+
+    def test_hash_env_returns_sha256_hex(self) -> None:
+        import os as _os
+        _os.environ["JET_RAG_QUERY_TEXT_HASH"] = "1"
+        result = search_metrics._maybe_hash_query("안녕하세요")
+        # SHA256 hex = 64자, 16진수
+        self.assertEqual(len(result), 64)
+        self.assertTrue(all(c in "0123456789abcdef" for c in result))
+        # 동일 입력 동일 hash (deterministic)
+        self.assertEqual(result, search_metrics._maybe_hash_query("안녕하세요"))
+        # 다른 입력 다른 hash
+        self.assertNotEqual(result, search_metrics._maybe_hash_query("hello"))
+
+    def test_none_passes_through(self) -> None:
+        import os as _os
+        _os.environ["JET_RAG_QUERY_TEXT_HASH"] = "1"
+        self.assertIsNone(search_metrics._maybe_hash_query(None))
+
+    def test_empty_string_passes_through(self) -> None:
+        import os as _os
+        _os.environ["JET_RAG_QUERY_TEXT_HASH"] = "1"
+        self.assertEqual(search_metrics._maybe_hash_query(""), "")
+
+
 class SearchMetricsFirstWarnPatternTest(unittest.TestCase):
     """W17 Day 3 한계 #85 — search_metrics _persist_to_db 첫 실패만 warn."""
 

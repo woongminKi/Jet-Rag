@@ -40,6 +40,25 @@ _PERSIST_ENV_KEY = "JET_RAG_METRICS_PERSIST_ENABLED"
 # W17 Day 4 한계 #88 — search 응답 latency 보호. async fire-and-forget.
 _PERSIST_ASYNC_ENV_KEY = "JET_RAG_METRICS_PERSIST_ASYNC"
 
+# W18 Day 2 한계 #87 — query_text hash 화 사전 wiring (DE-21 멀티 유저 대비).
+# default '0' (평문 — 단일 사용자 MVP). '1' 시 SHA256 hex 64자 저장.
+# 멀티 유저 도입 시 env '1' 변경만으로 PII 보호 활성.
+_QUERY_TEXT_HASH_ENV_KEY = "JET_RAG_QUERY_TEXT_HASH"
+
+
+def _maybe_hash_query(query_text: str | None) -> str | None:
+    """env JET_RAG_QUERY_TEXT_HASH='1' 시 SHA256 hex 변환.
+
+    None / 빈 문자열은 그대로 통과 (hash 의미 없음).
+    """
+    if not query_text:
+        return query_text
+    if os.environ.get(_QUERY_TEXT_HASH_ENV_KEY, "0") != "1":
+        return query_text
+    import hashlib
+
+    return hashlib.sha256(query_text.encode("utf-8")).hexdigest()
+
 # W17 Day 3 한계 #85 — DB write-through 첫 1회만 warn (이후는 debug 로그).
 # 마이그레이션 006 미적용 운영 환경에서 한 번만 명시 알림 → 사용자 인지 + 로그 노이즈 방지.
 _first_persist_warn_logged: bool = False
@@ -100,6 +119,7 @@ def record_search(
         - DB row 의 query_text 컬럼 (search_metrics_log)
         - in-memory event 에는 미저장 (메모리 절약)
         - None / 빈 문자열도 허용 (테스트 backward compat)
+        - W18 Day 2: env JET_RAG_QUERY_TEXT_HASH='1' 시 SHA256 hex 변환 후 persist (#87)
     """
     safe_mode = mode if mode in _VALID_MODES else "hybrid"
     event = {
@@ -116,10 +136,11 @@ def record_search(
         _ring.append(event)
 
     # W15 Day 3 — DB write-through (Lock 해제 후, graceful)
+    # W18 Day 2 #87 — env hash 활성 시 SHA256 변환 후 persist
     _persist_to_db(
         recorded_at=datetime.now(timezone.utc),
         event=event,
-        query_text=query_text,
+        query_text=_maybe_hash_query(query_text),
     )
 
 
