@@ -229,45 +229,84 @@ def search(
             ) from exc
 
     # ------------------------------------------------------------------
-    # 2) 검색 (dense 성공 시 RPC, 실패 시 sparse-only)
+    # 2) 검색 (mode 별 RPC 분기 — W20 Day 2 한계 #74)
     # ------------------------------------------------------------------
     # W19 Day 2·3 — 응용 layer 필터 시 부족 방지 pre-allocate.
     # 우선순위: doc_id 필터 (#66, 4배) > mode ablation (#75, 2배) > default.
+    # W20 Day 2 #74: 008 split RPC 적용 시 mode 별 응용 필터 불필요 → cap 만 의미.
     if doc_id is not None:
         rpc_top_k = _RPC_TOP_K_DOC_FILTER
     elif mode in ("dense", "sparse"):
         rpc_top_k = _RPC_TOP_K_ABLATION
     else:
         rpc_top_k = _RPC_TOP_K
-    if dense_vec is not None:
-        rpc_resp = client.rpc(
-            "search_hybrid_rrf",
-            {
-                "query_text": clean_q,
-                "query_dense": dense_vec,
-                "k_rrf": _RRF_K,
-                "top_k": rpc_top_k,
-                "user_id_arg": str(user_id),
-            },
-        ).execute()
-        rpc_rows = rpc_resp.data or []
+
+    # W20 Day 2 #74 — mode 별 RPC 분기 (008 split RPC). 008 미적용 시 graceful fallback.
+    used_split_rpc = False
+    if mode == "dense" and dense_vec is not None:
+        try:
+            rpc_resp = client.rpc(
+                "search_dense_only",
+                {
+                    "query_dense": dense_vec,
+                    "k_rrf": _RRF_K,
+                    "top_k": rpc_top_k,
+                    "user_id_arg": str(user_id),
+                },
+            ).execute()
+            rpc_rows = rpc_resp.data or []
+            used_split_rpc = True
+        except Exception as exc:  # noqa: BLE001 — 008 미적용 fallback
+            logger.debug("search_dense_only RPC 미적용 fallback: %s", exc)
+            rpc_rows = None
+    elif mode == "sparse":
+        try:
+            rpc_resp = client.rpc(
+                "search_sparse_only",
+                {
+                    "query_text": clean_q,
+                    "k_rrf": _RRF_K,
+                    "top_k": rpc_top_k,
+                    "user_id_arg": str(user_id),
+                },
+            ).execute()
+            rpc_rows = rpc_resp.data or []
+            used_split_rpc = True
+        except Exception as exc:  # noqa: BLE001 — 008 미적용 fallback
+            logger.debug("search_sparse_only RPC 미적용 fallback: %s", exc)
+            rpc_rows = None
     else:
-        rpc_rows = _sparse_only_fallback(client, clean_q, user_id, rpc_top_k)
+        rpc_rows = None
+
+    # mode=hybrid 또는 split RPC 미적용 fallback → 기존 search_hybrid_rrf 호출.
+    if rpc_rows is None:
+        if dense_vec is not None:
+            rpc_resp = client.rpc(
+                "search_hybrid_rrf",
+                {
+                    "query_text": clean_q,
+                    "query_dense": dense_vec,
+                    "k_rrf": _RRF_K,
+                    "top_k": rpc_top_k,
+                    "user_id_arg": str(user_id),
+                },
+            ).execute()
+            rpc_rows = rpc_resp.data or []
+        else:
+            rpc_rows = _sparse_only_fallback(client, clean_q, user_id, rpc_top_k)
 
     # W11 Day 4 — 단일 문서 스코프 (US-08): RPC 결과 중 해당 doc_id 만 보존.
     # 응용 layer 필터 — RPC 결과 N 개 중 doc_id 일치만 통과 → 자연스럽게 dense·sparse·fused 카운트도 갱신.
     if doc_id is not None:
         rpc_rows = [r for r in rpc_rows if r.get("doc_id") == doc_id]
 
-    # W13 Day 2 — ablation mode 응용 layer 처리 (KPI '하이브리드 +5pp 우세' 비교 인프라)
-    #   · hybrid (default): RPC 결과 그대로 (dense + sparse RRF)
-    #   · dense: dense_rank 가 있는 row 만 보존 (sparse-only 매칭 row 제외)
-    #   · sparse: sparse_rank 가 있는 row 만 보존 (dense-only 매칭 row 제외)
-    # dense_vec 이 None 이면 (sparse-only fallback path) mode 무관하게 sparse-only 동작 — 기존 동작 보존.
-    if mode == "dense":
-        rpc_rows = [r for r in rpc_rows if r.get("dense_rank") is not None]
-    elif mode == "sparse":
-        rpc_rows = [r for r in rpc_rows if r.get("sparse_rank") is not None]
+    # W13 Day 2 — ablation mode 응용 layer 필터 (008 split RPC 미사용 시에만 적용).
+    # split RPC 사용 시 RPC 자체가 mode 분리 → 응용 필터 skip (한계 #74 회수).
+    if not used_split_rpc:
+        if mode == "dense":
+            rpc_rows = [r for r in rpc_rows if r.get("dense_rank") is not None]
+        elif mode == "sparse":
+            rpc_rows = [r for r in rpc_rows if r.get("sparse_rank") is not None]
 
     dense_hits = sum(1 for r in rpc_rows if r.get("dense_rank") is not None)
     sparse_hits = sum(1 for r in rpc_rows if r.get("sparse_rank") is not None)

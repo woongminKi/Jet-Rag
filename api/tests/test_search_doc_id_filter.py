@@ -40,16 +40,33 @@ def _empty_chain_response() -> MagicMock:
     return chain
 
 
-def _client_with_rpc_rows(rows: list[dict]) -> MagicMock:
-    """Supabase client mock — RPC 결과만 컨트롤. 그 외 .table() 은 빈 chain."""
+def _client_with_rpc_rows(rows: list[dict], *, split_rpc_available: bool = False) -> MagicMock:
+    """Supabase client mock — RPC 결과만 컨트롤. 그 외 .table() 은 빈 chain.
+
+    `split_rpc_available` (W20 Day 2 #74):
+        False (default) — search_dense_only / search_sparse_only RPC 호출 시 raise
+                          (008 미적용 환경 시뮬, search.py 가 hybrid fallback 진입)
+        True — split RPC 가 동일 rows 반환 (search.py 가 used_split_rpc=True 처리,
+               응용 layer 필터 skip)
+    """
     client = MagicMock()
     rpc_resp = MagicMock()
     rpc_resp.data = rows
     rpc_resp.execute.return_value.data = rows
-    # client.rpc(...).execute() → resp.data
     rpc_call = MagicMock()
     rpc_call.execute.return_value = rpc_resp
-    client.rpc.return_value = rpc_call
+
+    if split_rpc_available:
+        # 모든 RPC 가 동일 응답 반환 (split RPC 정상 응답 시뮬)
+        client.rpc.return_value = rpc_call
+    else:
+        # split RPC 호출 시 raise → search.py 가 hybrid fallback 진입
+        def _rpc_side_effect(name, args):
+            if name in ("search_dense_only", "search_sparse_only"):
+                raise RuntimeError(f"function {name} does not exist (008 미적용)")
+            return rpc_call
+        client.rpc.side_effect = _rpc_side_effect
+
     # documents 메타 fetch — 빈 chain
     client.table.return_value = _empty_chain_response()
     return client
@@ -299,6 +316,84 @@ class RpcTopKAblationCapTest(unittest.TestCase):
     def test_sparse_uses_ablation_top_k(self) -> None:
         from app.routers.search import _RPC_TOP_K_ABLATION
         self.assertEqual(self._execute_with_mode("sparse"), _RPC_TOP_K_ABLATION)
+
+
+class SplitRpcModeTest(unittest.TestCase):
+    """W20 Day 2 한계 #74 — 008 split RPC 적용 시 mode 별 RPC 분기 + 응용 layer 필터 skip."""
+
+    def _provider_mock(self):
+        provider_mock = MagicMock()
+        provider_mock.embed_query.return_value = [0.0] * 1024
+        provider_mock._last_cache_hit = False
+        return provider_mock
+
+    def _make_rows(self):
+        # 3 rows: dense+sparse / dense-only / sparse-only
+        return [
+            {"chunk_id": "c1", "doc_id": "doc-A", "rrf_score": 0.5,
+             "dense_rank": 1, "sparse_rank": 1},
+            {"chunk_id": "c2", "doc_id": "doc-B", "rrf_score": 0.4,
+             "dense_rank": 2, "sparse_rank": None},
+            {"chunk_id": "c3", "doc_id": "doc-C", "rrf_score": 0.3,
+             "dense_rank": None, "sparse_rank": 2},
+        ]
+
+    def test_dense_split_rpc_skips_app_filter(self) -> None:
+        """008 적용 환경: search_dense_only 호출 + 응용 필터 skip → RPC 응답 모두 통과."""
+        from app.routers import search as search_module
+
+        client_mock = _client_with_rpc_rows(
+            self._make_rows(), split_rpc_available=True
+        )
+        with patch.object(
+            search_module, "get_bgem3_provider", return_value=self._provider_mock()
+        ), patch.object(
+            search_module, "get_supabase_client", return_value=client_mock
+        ):
+            resp = search_module.search(
+                q="t", limit=10, offset=0, tags=None, doc_type=None,
+                from_date=None, to_date=None, doc_id=None, mode="dense",
+            )
+        # split RPC 응답 그대로 — 응용 필터 skip
+        self.assertEqual(resp.query_parsed.fused, 3)
+        # 호출된 RPC 가 search_dense_only 인지
+        self.assertEqual(client_mock.rpc.call_args[0][0], "search_dense_only")
+
+    def test_sparse_split_rpc_skips_app_filter(self) -> None:
+        from app.routers import search as search_module
+
+        client_mock = _client_with_rpc_rows(
+            self._make_rows(), split_rpc_available=True
+        )
+        with patch.object(
+            search_module, "get_bgem3_provider", return_value=self._provider_mock()
+        ), patch.object(
+            search_module, "get_supabase_client", return_value=client_mock
+        ):
+            resp = search_module.search(
+                q="t", limit=10, offset=0, tags=None, doc_type=None,
+                from_date=None, to_date=None, doc_id=None, mode="sparse",
+            )
+        self.assertEqual(resp.query_parsed.fused, 3)
+        self.assertEqual(client_mock.rpc.call_args[0][0], "search_sparse_only")
+
+    def test_dense_split_rpc_unavailable_falls_back_to_hybrid(self) -> None:
+        """008 미적용 환경: search_dense_only raise → search_hybrid_rrf fallback + 응용 필터."""
+        from app.routers import search as search_module
+
+        # default split_rpc_available=False — search_dense_only raise
+        client_mock = _client_with_rpc_rows(self._make_rows())
+        with patch.object(
+            search_module, "get_bgem3_provider", return_value=self._provider_mock()
+        ), patch.object(
+            search_module, "get_supabase_client", return_value=client_mock
+        ):
+            resp = search_module.search(
+                q="t", limit=10, offset=0, tags=None, doc_type=None,
+                from_date=None, to_date=None, doc_id=None, mode="dense",
+            )
+        # fallback path → 응용 필터 적용 → dense_rank 있는 c1, c2 만
+        self.assertEqual(resp.query_parsed.fused, 2)
 
 
 class RpcTopKDocFilterTest(unittest.TestCase):
