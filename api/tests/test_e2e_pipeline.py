@@ -240,32 +240,48 @@ class _FakeTableQuery:
 
     def _matches_filters(self, row: dict[str, Any]) -> bool:
         for op, col, value in self._filters:
+            actual = self._resolve_column(row, col)
             if op == "eq":
-                if row.get(col) != value:
+                if actual != value:
                     return False
             elif op == "neq":
-                if row.get(col) == value:
+                if actual == value:
                     return False
             elif op == "is":
                 # supabase-py 는 `.is_("col", "null")` 또는 `.is_("col", None)` 둘 다 사용.
                 if value in ("null", None):
-                    if row.get(col) is not None:
+                    if actual is not None:
                         return False
                 else:
-                    if row.get(col) != value:
+                    if actual != value:
                         return False
             elif op == "not_is":
                 # `.not_.is_("col", "null")` — IS NOT NULL
                 if value in ("null", None):
-                    if row.get(col) is None:
+                    if actual is None:
                         return False
                 else:
-                    if row.get(col) == value:
+                    if actual == value:
                         return False
             elif op == "in":
-                if row.get(col) not in value:
+                if actual not in value:
                     return False
         return True
+
+    @staticmethod
+    def _resolve_column(row: dict[str, Any], col: str) -> Any:
+        """JSONB path (`flags->>key`) 해석 — Supabase PostgREST 호환.
+
+        예: `flags->>filtered_reason` → `row["flags"]["filtered_reason"]`.
+        nested 한 단계만 — 본 fake 가 다루는 모든 케이스 충족.
+        """
+        if "->>" in col:
+            top, key = col.split("->>", 1)
+            container = row.get(top)
+            if isinstance(container, dict):
+                return container.get(key)
+            return None
+        return row.get(col)
 
 
 class _FakeTableQueryNot:
@@ -491,6 +507,10 @@ class E2EBaseTest(unittest.TestCase):
             ),
             patch(
                 "app.ingest.stages.extract.get_supabase_client",
+                return_value=self.fake_client,
+            ),
+            patch(
+                "app.routers.stats.get_supabase_client",
                 return_value=self.fake_client,
             ),
         ]
@@ -1359,6 +1379,110 @@ class ExtractUnsupportedTest(E2EBaseTest):
         doc_row = self.fake_client._tables["documents"][0]
         self.assertTrue(doc_row["flags"].get("extract_skipped"))
         self.assertIn("xlsx", doc_row["flags"].get("extract_skipped_reason", ""))
+
+
+# ====================================================================
+# S9 — stats router e2e (W10 Day 2 — F1 count 자산 활용)
+# ====================================================================
+
+
+class StatsRouterE2ETest(E2EBaseTest):
+    """S9 — `GET /stats` 라우터 함수 직접 호출 → 집계 정확도 검증.
+
+    검증 포인트
+    - documents 분포 (by_doc_type / by_source_channel / total_size_bytes)
+    - chunks 분포 (.count 자산 활용 — 한계 #20 회수 검증)
+    - failed 문서 분리 (flags.failed=True 는 별도 집계)
+    - search_slo / vision_usage in-memory counter 정상 직렬화
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        # in-memory metrics reset — 이전 테스트 영향 차단
+        from app.services import search_metrics, vision_metrics
+        # search_metrics 는 직접 리셋 API 가 없어 deque clear (구현 디테일).
+        search_metrics._ring.clear()  # noqa: SLF001 — 테스트 시점 격리
+        vision_metrics.reset()
+
+    def test_stats_aggregates_documents_chunks_jobs(self) -> None:
+        from app.config import get_settings
+        from app.routers.stats import stats as stats_endpoint
+
+        user_id = get_settings().default_user_id
+
+        # documents seed — 다양한 doc_type + 1 failed
+        self.fake_client._tables["documents"].extend([
+            {
+                "id": "d1", "user_id": user_id, "doc_type": "pdf",
+                "source_channel": "drag-drop", "size_bytes": 1024,
+                "flags": {}, "tags": ["계약"], "created_at": None,
+                "received_ms": 800, "deleted_at": None,
+            },
+            {
+                "id": "d2", "user_id": user_id, "doc_type": "docx",
+                "source_channel": "drag-drop", "size_bytes": 2048,
+                "flags": {}, "tags": ["보고서"], "created_at": None,
+                "received_ms": 600, "deleted_at": None,
+            },
+            {
+                "id": "d-fail", "user_id": user_id, "doc_type": "pdf",
+                "source_channel": "url", "size_bytes": 4096,
+                "flags": {"failed": True}, "tags": [], "created_at": None,
+                "received_ms": None, "deleted_at": None,
+            },
+        ])
+
+        # chunks seed — 5건 (3 effective + 2 filtered)
+        for i in range(3):
+            self.fake_client._tables["chunks"].append({
+                "id": f"c{i}", "doc_id": "d1", "chunk_idx": i,
+                "text": f"chunk {i}", "flags": {},
+            })
+        self.fake_client._tables["chunks"].append({
+            "id": "c-tn", "doc_id": "d1", "chunk_idx": 3,
+            "text": "| col |", "flags": {"filtered_reason": "table_noise"},
+        })
+        self.fake_client._tables["chunks"].append({
+            "id": "c-es", "doc_id": "d1", "chunk_idx": 4,
+            "text": "x", "flags": {"filtered_reason": "extreme_short"},
+        })
+
+        # ingest_jobs seed
+        self.fake_client._tables["ingest_jobs"].extend([
+            {"id": "j1", "doc_id": "d1", "status": "completed"},
+            {"id": "j2", "doc_id": "d2", "status": "completed"},
+            {"id": "j3", "doc_id": "d-fail", "status": "failed",
+             "current_stage": "extract", "error_msg": "x", "queued_at": None},
+        ])
+
+        resp = stats_endpoint()
+
+        # ---------------- documents ----------------
+        self.assertEqual(resp.documents.total, 2, "failed 1건 분리")
+        self.assertEqual(resp.documents.failed_count, 1)
+        self.assertEqual(resp.documents.by_doc_type, {"pdf": 1, "docx": 1})
+        self.assertEqual(resp.documents.total_size_bytes, 1024 + 2048)
+
+        # ---------------- chunks (count 자산 활용) ----------------
+        self.assertEqual(resp.chunks.total, 5)
+        self.assertEqual(resp.chunks.effective, 3)
+        self.assertEqual(
+            resp.chunks.filtered_breakdown,
+            {"table_noise": 1, "extreme_short": 1},
+        )
+        self.assertAlmostEqual(resp.chunks.filtered_ratio, 0.4, places=3)
+        self.assertEqual(resp.chunks_total, 5, "backward compatible 필드")
+
+        # ---------------- jobs ----------------
+        self.assertEqual(resp.jobs.total, 3)
+        self.assertEqual(
+            resp.jobs.by_status,
+            {"completed": 2, "failed": 1},
+        )
+
+        # ---------------- in-memory metrics ----------------
+        self.assertEqual(resp.search_slo.sample_count, 0)
+        self.assertEqual(resp.vision_usage.total_calls, 0)
 
 
 if __name__ == "__main__":

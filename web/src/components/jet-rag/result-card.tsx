@@ -131,19 +131,25 @@ function ChunkDebugPanel({
   ];
   const metaKeys = Object.keys(meta);
   return (
-    <div className="mt-2 space-y-1 rounded border border-dashed border-border bg-background/40 px-2 py-1.5 font-mono text-[10px] text-muted-foreground">
+    <div className="mt-2 space-y-1 rounded border border-dashed border-border bg-background/60 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-foreground/85">
       {rows.map(([k, v]) => (
         <div key={k} className="flex gap-2">
-          <span className="shrink-0 w-32 text-foreground/70">{k}</span>
+          <span className="shrink-0 w-32 font-semibold text-foreground/95">
+            {k}
+          </span>
           <span className="break-all">{v}</span>
         </div>
       ))}
       {metaKeys.length > 0 && (
         <>
-          <div className="pt-1 text-foreground/70">metadata</div>
+          <div className="pt-1.5 font-semibold uppercase tracking-wide text-[10px] text-foreground/70">
+            metadata
+          </div>
           {metaKeys.map((k) => (
-            <div key={k} className="flex gap-2 pl-2">
-              <span className="shrink-0 w-30 text-foreground/60">{k}</span>
+            <div key={k} className="flex gap-2 pl-3">
+              <span className="shrink-0 w-30 font-semibold text-foreground/85">
+                {k}
+              </span>
               <span className="break-all">{JSON.stringify(meta[k])}</span>
             </div>
           ))}
