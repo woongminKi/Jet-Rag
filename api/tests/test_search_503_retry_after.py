@@ -107,6 +107,38 @@ class HttpExceptionHeadersUnitTest(unittest.TestCase):
             "Retry-After 값이 60 이 아님 — _RETRY_AFTER_SECONDS 상수 변경 의심.",
         )
 
+    def test_dense_mode_with_transient_embed_yields_zero_results(self) -> None:
+        """W21 Day 2 — mode='dense' + embed transient → sparse fallback + 응용 필터 0건.
+
+        검증 시나리오:
+        - mode='dense' 명시
+        - embed_query transient (503) 실패 → dense_vec=None, fallback_reason='transient_5xx'
+        - sparse-only fallback 진입 (search_sparse_only_pgroonga RPC)
+        - W20 Day 2 used_split_rpc=False (split RPC 미사용 path)
+        - 응용 layer 필터 적용 → dense_rank 있는 row 만 통과 → sparse-only 결과는 0건
+        """
+        from app.routers import search as search_module
+
+        provider_mock = MagicMock()
+        provider_mock.embed_query.side_effect = _make_status_error(503)
+        client_mock = _empty_supabase_client()
+
+        with patch.object(
+            search_module, "get_bgem3_provider", return_value=provider_mock
+        ), patch.object(
+            search_module, "get_supabase_client", return_value=client_mock
+        ):
+            resp = search_module.search(
+                q="테스트", limit=10, offset=0,
+                tags=None, doc_type=None, from_date=None, to_date=None,
+                doc_id=None, mode="dense",
+            )
+
+        self.assertEqual(resp.total, 0, "mode=dense + embed 실패 → 응용 필터로 0건")
+        self.assertFalse(resp.query_parsed.has_dense)
+        self.assertEqual(resp.query_parsed.fallback_reason, "transient_5xx")
+        self.assertEqual(resp.query_parsed.fused, 0)
+
     def test_transient_5xx_response_has_no_retry_after(self) -> None:
         """대조군 — sparse-only fallback (200) 케이스는 Retry-After 부착되면 안 됨.
 
