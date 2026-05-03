@@ -13,9 +13,15 @@ interface HomeGridProps {
   stats: Stats;
   recentDocuments: Document[];
   searchTrend: TrendResponse | null;
+  visionTrend: TrendResponse | null;
 }
 
-export function HomeGrid({ stats, recentDocuments, searchTrend }: HomeGridProps) {
+export function HomeGrid({
+  stats,
+  recentDocuments,
+  searchTrend,
+  visionTrend,
+}: HomeGridProps) {
   return (
     <section className="container mx-auto px-4 py-8 md:px-6 md:py-12">
       <div className="grid gap-8 lg:grid-cols-3">
@@ -28,8 +34,13 @@ export function HomeGrid({ stats, recentDocuments, searchTrend }: HomeGridProps)
           <MyDocStatsCard stats={stats} />
           <ChunksStatsCard stats={stats} />
           <SearchSloCard stats={stats} />
-          {searchTrend && <MetricsTrendCard initialTrend={searchTrend} />}
+          {searchTrend && (
+            <MetricsTrendCard initialTrend={searchTrend} metric="search" />
+          )}
           <VisionUsageCard stats={stats} />
+          {visionTrend && (
+            <MetricsTrendCard initialTrend={visionTrend} metric="vision" />
+          )}
           <SearchTipsCard />
         </div>
       </div>
