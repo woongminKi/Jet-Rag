@@ -237,3 +237,32 @@ export interface BatchStatusItem {
 export interface BatchStatusResponse {
   items: BatchStatusItem[];
 }
+
+/** W16 Day 2 — `/stats/trend` 의 단일 시간 bucket.
+ *  - metric=search 시: p50_ms / p95_ms / fallback_count 채움
+ *  - metric=vision 시: success_count / quota_exhausted_count 채움
+ *  - 빈 bucket (sample_count=0) 도 row 유지 → frontend 시계열 zero-fill */
+export interface TrendBucket {
+  bucket_start: string;
+  sample_count: number;
+  p50_ms?: number | null;
+  p95_ms?: number | null;
+  fallback_count?: number | null;
+  success_count?: number | null;
+  quota_exhausted_count?: number | null;
+}
+
+export type TrendRange = '24h' | '7d' | '30d';
+export type TrendMode = 'all' | 'hybrid' | 'dense' | 'sparse';
+export type TrendMetric = 'search' | 'vision';
+
+/** W16 Day 2 — `/stats/trend` 응답.
+ *  error_code='migrations_pending': 005·006·007 미적용 graceful (buckets 빈 배열). */
+export interface TrendResponse {
+  metric: TrendMetric;
+  range: TrendRange;
+  mode: TrendMode | null;
+  buckets: TrendBucket[];
+  error_code: string | null;
+  generated_at: string;
+}

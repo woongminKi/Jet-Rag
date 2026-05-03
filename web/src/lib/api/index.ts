@@ -8,6 +8,10 @@ import type {
   SearchResponse,
   SourceChannel,
   Stats,
+  TrendMetric,
+  TrendMode,
+  TrendRange,
+  TrendResponse,
   UploadResponse,
 } from './types';
 
@@ -15,6 +19,20 @@ export * from './types';
 export { ApiError } from './client';
 
 export const getStats = () => apiGet<Stats>('/stats');
+
+/** W16 Day 2 — `/stats/trend` 시계열 aggregate.
+ *  - range: '24h' / '7d' / '30d' (default '7d')
+ *  - mode : metric=search 만 적용. 'all' / 'hybrid' / 'dense' / 'sparse' (default 'all')
+ *  - metric: 'search' / 'vision' (default 'search')
+ *  - 마이그레이션 005·006·007 미적용 시 graceful — buckets=[] + error_code='migrations_pending'. */
+export const getStatsTrend = (
+  range: TrendRange = '7d',
+  metric: TrendMetric = 'search',
+  mode: TrendMode = 'all',
+) => {
+  const qs = new URLSearchParams({ range, metric, mode });
+  return apiGet<TrendResponse>(`/stats/trend?${qs.toString()}`);
+};
 
 export const listDocuments = (limit = 20, offset = 0) =>
   apiGet<DocumentListResponse>(`/documents?limit=${limit}&offset=${offset}`);
