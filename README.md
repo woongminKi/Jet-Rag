@@ -1,5 +1,7 @@
 # Jet-Rag
 
+[![CI](https://github.com/woongminKi/Jet-Rag/actions/workflows/ci.yml/badge.svg)](https://github.com/woongminKi/Jet-Rag/actions/workflows/ci.yml)
+
 > 한국 직장인을 위한 멀티포맷 RAG 기반 개인 지식 에이전트.
 >
 > "정리하지 않아도, 기억의 단편으로 꺼내 쓰는 앱."
