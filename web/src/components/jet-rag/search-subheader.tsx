@@ -1,8 +1,9 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Bug, Search } from 'lucide-react';
+import { ArrowLeft, Bug, FileText, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -22,6 +23,8 @@ interface SearchSubheaderProps {
   };
   /** W7 Day 4 — debug 모드 ON 여부. 토글 시 ?debug=1 URL 갱신. */
   debug?: boolean;
+  /** W12 Day 1 — 단일 문서 스코프 (US-08). 지정 시 "이 문서 내 검색" 라벨 + 전체 검색 링크 노출. */
+  docId?: string | null;
 }
 
 export function SearchSubheader({
@@ -30,6 +33,7 @@ export function SearchSubheader({
   tookMs,
   queryParsed,
   debug = false,
+  docId = null,
 }: SearchSubheaderProps) {
   const router = useRouter();
   const [query, setQuery] = useState(initialQuery);
@@ -41,6 +45,7 @@ export function SearchSubheader({
     const next = new URLSearchParams();
     next.set('q', trimmed);
     if (debug) next.set('debug', '1');
+    if (docId) next.set('doc_id', docId);  // 검색어 변경해도 doc 스코프 유지
     router.push(`/search?${next.toString()}`);
   };
 
@@ -48,6 +53,7 @@ export function SearchSubheader({
     const next = new URLSearchParams();
     next.set('q', initialQuery);
     if (!debug) next.set('debug', '1');
+    if (docId) next.set('doc_id', docId);
     router.push(`/search?${next.toString()}`);
   };
 
@@ -76,6 +82,21 @@ export function SearchSubheader({
           />
         </form>
 
+        {/* W12 Day 1 — doc 스코프 라벨 (US-08). 클릭 시 전체 검색으로 전환. */}
+        {docId && (
+          <Link
+            href={`/search?q=${encodeURIComponent(initialQuery)}${debug ? '&debug=1' : ''}`}
+            title="이 문서 스코프 해제 — 전체 검색으로 전환"
+            className="inline-flex"
+          >
+            <Badge
+              variant="outline"
+              className="h-5 cursor-pointer gap-1 whitespace-nowrap px-1.5 text-[10px] hover:bg-muted"
+            >
+              <FileText className="h-3 w-3" />이 문서 내 검색
+            </Badge>
+          </Link>
+        )}
         <Badge variant="secondary" className="hidden whitespace-nowrap sm:inline-flex">
           {total}개 결과 · {(tookMs / 1000).toFixed(2)}초
         </Badge>

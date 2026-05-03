@@ -19,10 +19,21 @@ export const getStats = () => apiGet<Stats>('/stats');
 export const listDocuments = (limit = 20, offset = 0) =>
   apiGet<DocumentListResponse>(`/documents?limit=${limit}&offset=${offset}`);
 
-export const searchDocuments = (q: string, limit = 10, offset = 0) =>
-  apiGet<SearchResponse>(
-    `/search?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`,
-  );
+/** W11 Day 4 / W12 Day 1 — `docId` 지정 시 단일 문서 스코프 자연어 QA (US-08). */
+export const searchDocuments = (
+  q: string,
+  limit = 10,
+  offset = 0,
+  docId?: string | null,
+) => {
+  const qs = new URLSearchParams({
+    q,
+    limit: String(limit),
+    offset: String(offset),
+  });
+  if (docId) qs.set('doc_id', docId);
+  return apiGet<SearchResponse>(`/search?${qs.toString()}`);
+};
 
 export const uploadDocument = (
   file: File,

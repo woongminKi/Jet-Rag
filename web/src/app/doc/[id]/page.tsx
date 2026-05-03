@@ -122,7 +122,7 @@ function DocDetail({ docId }: { docId: string }) {
           <UploadedBanner />
         )}
 
-        <HeroSearch />
+        <HeroSearch docId={docId} />
 
         {doc ? (
           <>
@@ -143,23 +143,25 @@ function DocDetail({ docId }: { docId: string }) {
 }
 
 // =====================================================
-// Hero 검색 (전역, DE-27)
+// Hero 검색 (W12 Day 1 — docId 자동 주입으로 단일 문서 스코프 자연어 QA, US-08)
 // =====================================================
-function HeroSearch() {
+function HeroSearch({ docId }: { docId: string }) {
   const router = useRouter();
   const [q, setQ] = useState('');
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const trimmed = q.trim();
     if (!trimmed) return;
-    router.push(`/search?q=${encodeURIComponent(trimmed)}`);
+    // doc 페이지에서 검색은 그 문서 내 자연어 QA — doc_id 자동 주입
+    const params = new URLSearchParams({ q: trimmed, doc_id: docId });
+    router.push(`/search?${params.toString()}`);
   };
   return (
     <form onSubmit={handleSubmit} className="relative">
       <Search className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
       <Input
         type="search"
-        placeholder="다른 문서에서 찾아보기"
+        placeholder="이 문서 내 자연어 검색"
         value={q}
         onChange={(e) => setQ(e.target.value)}
         className="h-12 rounded-xl border-2 border-border bg-card pl-12 pr-24 text-sm shadow-sm focus:border-primary"
