@@ -1,8 +1,9 @@
+import Link from 'next/link';
 import type { SearchHit } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
-import { Progress } from '@/components/ui/progress';
 import { Highlighted } from './highlighted';
+import { RelevanceLabel } from './relevance-label';
 import { docTypeLabel } from '@/lib/doc-type-label';
 import { formatRelativeTime } from '@/lib/format';
 
@@ -10,9 +11,11 @@ interface ResultCardProps {
   hit: SearchHit;
   /** W7 Day 4 — true 시 chunk 별 raw metadata 패널 펼쳐 디버깅 가시성 ↑. */
   debug?: boolean;
+  /** W25 D3 — '이 문서에서 모두 보기' 링크에 query propagate (Phase 1). */
+  query?: string;
 }
 
-export function ResultCard({ hit, debug = false }: ResultCardProps) {
+export function ResultCard({ hit, debug = false, query }: ResultCardProps) {
   const moreCount = Math.max(0, hit.matched_chunk_count - hit.matched_chunks.length);
   const relevancePct = Math.round(hit.relevance * 100);
 
@@ -39,13 +42,13 @@ export function ResultCard({ hit, debug = false }: ResultCardProps) {
               ))}
             </div>
           </div>
-          <div className="w-32 shrink-0 space-y-1">
-            <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-              <span>관련도</span>
-              <span className="font-medium text-foreground">{relevancePct}%</span>
-            </div>
-            <Progress value={relevancePct} className="h-1.5" />
-          </div>
+          {/*
+            W25 D3 (D-2 + D-3) — 사용자 멘탈 모델 보정.
+            "관련도" → "매칭 강도" + ⓘ 툴팁: 정답 신뢰도와 분리 명시.
+            W25 D3 hydration fix — Radix Tooltip SSR mismatch 회피 위해
+            라벨/막대 영역 통째로 client island 분리 (RelevanceLabel).
+          */}
+          <RelevanceLabel relevancePct={relevancePct} />
         </div>
         {hit.summary ? (
           <p className="line-clamp-2 text-sm text-muted-foreground">{hit.summary}</p>
@@ -101,9 +104,24 @@ export function ResultCard({ hit, debug = false }: ResultCardProps) {
           })}
         </ul>
         <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span>
-            {moreCount > 0 ? `+${moreCount}개 더 매칭` : `매칭 ${hit.matched_chunk_count}개`}
-          </span>
+          {/*
+            W25 D3 (C-3) — moreCount > 0 일 때 doc 페이지로 wrap + ?q= propagate.
+            W25 D5 — doc 페이지가 ?q= 받아 매칭 청크 모두 표시 (cap 우회). 의도 완결.
+          */}
+          {moreCount > 0 ? (
+            <Link
+              href={
+                query
+                  ? `/doc/${hit.doc_id}?q=${encodeURIComponent(query)}`
+                  : `/doc/${hit.doc_id}`
+              }
+              className="text-foreground/80 hover:text-foreground hover:underline"
+            >
+              +{moreCount}개 더 매칭 (이 문서에서 모두 보기 →)
+            </Link>
+          ) : (
+            <span>매칭 {hit.matched_chunk_count}개</span>
+          )}
           <span>{formatRelativeTime(hit.created_at)}</span>
         </div>
       </CardContent>

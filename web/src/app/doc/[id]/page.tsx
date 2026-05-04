@@ -23,16 +23,29 @@ import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+import {
   ApiError,
   getDocument,
+  searchDocuments,
   type DocumentDetailResponse,
+  type MatchedChunk,
+  type SearchResponse,
 } from '@/lib/api';
 import { docTypeLabel } from '@/lib/doc-type-label';
 import { buildDocsUrl } from '@/lib/docs-filter';
 import { formatBytes } from '@/lib/format';
+import { Highlighted } from '@/components/jet-rag/highlighted';
 
 const POLL_INTERVAL_MS = 1500;
 const MAX_POLL_DURATION_MS = 5 * 60 * 1000;
+// W25 D5 — `?q=` 의 hits cap. doc 스코프 검색은 단일 doc hit 1개만 매칭하므로 작은 값으로 충분.
+// matched_chunks 는 백엔드 cap 200 (doc 스코프 시 우회) 으로 처리되며 본 limit 와 무관.
+// 백엔드 검증: Query(10, ge=1, le=50) — 50 초과 시 422.
+const DOC_SCOPE_FETCH_LIMIT = 10;
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -47,10 +60,14 @@ function DocDetail({ docId }: { docId: string }) {
   const searchParams = useSearchParams();
   const justUploaded = searchParams.get('uploaded') === '1';
   const justDuplicated = searchParams.get('duplicated') === '1';
+  // W25 D5 — `?q=...` 매칭 청크 표시 (사용자가 검색 결과의 `+N개 더 매칭` 클릭 진입 경로).
+  const q = (searchParams.get('q') ?? '').trim();
 
   const [doc, setDoc] = useState<DocumentDetailResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
+  // 매칭 청크 — null 은 fetch 미완료 / 미요청, 빈 배열은 fetch 완료 + 0 건.
+  const [matchedChunks, setMatchedChunks] = useState<MatchedChunk[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -88,6 +105,32 @@ function DocDetail({ docId }: { docId: string }) {
       if (timer !== null) clearTimeout(timer);
     };
   }, [docId]);
+
+  // W25 D5 — `?q=` 가 있을 때만 doc 스코프 검색 (매칭 청크 모두 가져오기).
+  // 백엔드: doc_id 스코프 시 `_MAX_MATCHED_CHUNKS_PER_DOC` cap 우회 → 응답에 모든 unique 청크 본문 포함.
+  // 정렬: rrf_score 내림차순 (백엔드가 정렬해서 줌).
+  // graceful: 실패 시 빈 배열 → MatchedChunksSection 의 0건 안내.
+  // React 19 패턴 (AGENTS.md 패턴 2): useEffect 안 동기 setState 금지 →
+  //   `.then/.catch` 콜백 안 setState 는 비동기라 OK. q 가 falsy 면 컴포넌트 자체가
+  //   conditional render 돼서 stale state 노출 X — useEffect 안 reset 동기 setState 불필요.
+  useEffect(() => {
+    if (!q) return;
+    let cancelled = false;
+    searchDocuments(q, DOC_SCOPE_FETCH_LIMIT, 0, docId, 'hybrid')
+      .then((resp: SearchResponse) => {
+        if (cancelled) return;
+        // doc_id 스코프 시 응답 items 는 0 또는 1건. items[0].matched_chunks 가 모든 매칭.
+        const hit = resp.items[0];
+        setMatchedChunks(hit ? hit.matched_chunks : []);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setMatchedChunks([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [docId, q]);
 
   if (notFound) {
     return (
@@ -129,6 +172,13 @@ function DocDetail({ docId }: { docId: string }) {
           <>
             <DocSummaryHeader doc={doc} />
             <DocStatusSection doc={doc} />
+            {q && (
+              <MatchedChunksSection
+                query={q}
+                chunks={matchedChunks}
+                docId={docId}
+              />
+            )}
             {doc.summary && <SummarySection summary={doc.summary} />}
             {doc.tags.length > 0 && <TagsSection tags={doc.tags} />}
             <FlagsSection doc={doc} />
@@ -279,6 +329,141 @@ function DocStatusSection({ doc }: { doc: DocumentDetailResponse }) {
         <p className="text-muted-foreground">
           현재 단계: {job.current_stage ?? '대기 중'}
         </p>
+      </div>
+    </Card>
+  );
+}
+
+// =====================================================
+// W25 D5 — 매칭 청크 섹션 (`?q=` 진입 시).
+// 사용자 검색 결과 카드의 `+N개 더 매칭 (이 문서에서 모두 보기 →)` 진입 경로.
+// 백엔드가 doc_id 스코프 시 모든 unique 청크 본문 + score 내림차순으로 응답 → 그대로 표시.
+// =====================================================
+function MatchedChunksSection({
+  query,
+  chunks,
+  docId,
+}: {
+  query: string;
+  chunks: MatchedChunk[] | null;
+  docId: string;
+}) {
+  // fetch 미완료 — 작은 스켈레톤. 검색 자체가 ~1초 안이라 zero-flash 회피 우선.
+  if (chunks === null) {
+    return (
+      <Card className="p-5">
+        <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
+          <Search className="h-4 w-4 text-primary" />
+          매칭 청크 불러오는 중…
+        </div>
+        <div className="space-y-2">
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-16 w-full" />
+        </div>
+      </Card>
+    );
+  }
+
+  if (chunks.length === 0) {
+    // 사용자가 q 와 함께 진입했지만 매칭 0 — fallback 안내 + 검색 페이지 가이드.
+    return (
+      <Card className="space-y-2 border-warning/30 bg-warning/5 p-5">
+        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+          <Search className="h-4 w-4 text-warning" />
+          이 문서에 ‘{query}’ 매칭이 없어요
+        </div>
+        <p className="text-xs text-muted-foreground">
+          전체 검색에서 다시 찾아보세요.
+        </p>
+        <div className="pt-1">
+          <Button asChild size="sm" variant="outline">
+            <Link href={`/search?q=${encodeURIComponent(query)}`}>
+              전체 검색으로 보기
+            </Link>
+          </Button>
+        </div>
+      </Card>
+    );
+  }
+
+  // W25 D6 fix — raw RRF score (`rrf 0.0161`) → 상대 매칭 강도 % 표시.
+  // 정규화: 청크 단위 max 기준. 백엔드가 rrf_score 내림차순으로 정렬해서 주므로
+  //   chunks[0].rrf_score 가 max 보장 → 별도 reduce 불필요.
+  // 멘탈 모델: 검색 결과 카드의 `매칭 강도 100%` (doc 단위) vs 본 섹션의 `매칭 강도 99%` (chunk 단위) —
+  //   라벨 동일, 단위 차이는 헤더 ⓘ 툴팁으로 안내.
+  const maxRrf =
+    typeof chunks[0]?.rrf_score === 'number' && chunks[0].rrf_score > 0
+      ? chunks[0].rrf_score
+      : null;
+
+  return (
+    <Card className="p-5">
+      <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
+        <Search className="h-4 w-4 text-primary" />
+        ‘{query}’ 와 관련된 청크 {chunks.length}개
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className="ml-1 inline-flex cursor-help items-center gap-0.5 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <Badge variant="outline" className="h-5 gap-0.5 px-1.5 text-[10px] font-normal">
+                매칭 강도순
+                <Info className="h-2.5 w-2.5" aria-hidden />
+              </Badge>
+              <span className="sr-only">매칭 강도순 안내</span>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">
+            이 문서 안 청크들 중 가장 강한 매칭 대비 상대 강도예요. 정답 신뢰도와는 다릅니다.
+          </TooltipContent>
+        </Tooltip>
+      </div>
+      <ul className="space-y-2">
+        {chunks.map((chunk) => {
+          // % 계산 — maxRrf 가 null 이거나 chunk score 가 없으면 표시 생략 (graceful).
+          const matchPct =
+            maxRrf !== null && typeof chunk.rrf_score === 'number'
+              ? Math.max(1, Math.round((chunk.rrf_score / maxRrf) * 100))
+              : null;
+          return (
+            <li
+              key={chunk.chunk_id}
+              className="rounded-md border border-border bg-muted/30 p-3 text-sm"
+            >
+              <div className="mb-1 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-muted-foreground">
+                <div className="flex min-w-0 items-center gap-2">
+                  {chunk.page !== null && <span>p.{chunk.page}</span>}
+                  {chunk.section_title && (
+                    <>
+                      <span className="text-border">·</span>
+                      <span className="truncate">{chunk.section_title}</span>
+                    </>
+                  )}
+                  <span className="text-border">·</span>
+                  <span>idx {chunk.chunk_idx}</span>
+                </div>
+                {matchPct !== null && (
+                  <span className="shrink-0 normal-case tracking-normal tabular-nums text-muted-foreground/80">
+                    매칭 강도 {matchPct}%
+                  </span>
+                )}
+              </div>
+              <p className="leading-relaxed text-foreground/90">
+                <Highlighted text={chunk.text} ranges={chunk.highlight} />
+              </p>
+            </li>
+          );
+        })}
+      </ul>
+      {/* doc 스코프에서 0 건이 아닐 때만 — 보조 navigation 으로 전체 검색 안내 */}
+      <div className="mt-3 text-right">
+        <Link
+          href={`/search?q=${encodeURIComponent(query)}&doc_id=${encodeURIComponent(docId)}`}
+          className="text-xs text-muted-foreground hover:text-foreground hover:underline"
+        >
+          이 문서 검색 페이지로 →
+        </Link>
       </div>
     </Card>
   );

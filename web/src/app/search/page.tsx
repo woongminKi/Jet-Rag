@@ -69,7 +69,12 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
             ) : (
               <div className="space-y-4">
                 {response.items.map((hit) => (
-                  <ResultCard key={hit.doc_id} hit={hit} debug={debug} />
+                  <ResultCard
+                    key={hit.doc_id}
+                    hit={hit}
+                    debug={debug}
+                    query={query}
+                  />
                 ))}
               </div>
             )}

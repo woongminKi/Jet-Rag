@@ -18,6 +18,7 @@ RPC:
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -37,8 +38,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["search"])
 
 _MAX_QUERY_LEN = 200
+# 검색 결과 카드의 본문 미리보기 개수 — list 모드 (doc_id 미지정) 에 적용.
+# doc_id 명시 (단일 문서 스코프) 시 본 cap 을 우회 — 사용자가 그 문서의 모든 매칭 청크를 보고 싶다는 명시적 요청.
+# (W25 D5 — `+89개 더 매칭 (이 문서에서 모두 보기)` Link 의 doc 페이지 매칭 청크 섹션 데이터 공급.)
 _MAX_MATCHED_CHUNKS_PER_DOC = 3
-_SNIPPET_AROUND = 80
+# doc_id 스코프 시 응답 청크 최대 개수 — `_RPC_TOP_K_DOC_FILTER` (200) 와 동일 안전 상한.
+# 한 문서에 매칭 청크 200개 이상은 RPC 가 잘라내 우리쪽 의도 (모두 보기) 도 자연 cap.
+_MAX_MATCHED_CHUNKS_DOC_SCOPE = 200
+# W25 D3 — snippet around 확장 (80 → 240).
+# 매칭 위치 ±N자 본문. 사용자 검색 결과의 정보량 부족 (B-1) 해결 — wire 증가 ~3배 trade-off.
+# 환경변수로 운영 중 조정 가능. p95 latency 측정 필요 (smoke 시 확인).
+_SNIPPET_AROUND = int(os.environ.get("SEARCH_SNIPPET_AROUND", "240"))
 _RRF_K = 60
 _RPC_TOP_K = 50  # RPC 의 dense / sparse path 각각 상위 K
 # W19 Day 2 한계 #75 — mode=dense/sparse 응용 layer 필터 후 부족 방지 cap.
@@ -51,6 +61,15 @@ _RPC_TOP_K_DOC_FILTER = 200
 _DOC_TYPES = {"pdf", "hwp", "hwpx", "docx", "pptx", "image", "url", "txt", "md"}
 # 503 응답의 Retry-After 헤더 — RFC 7231. HF cold start (5~20s) + 안전 마진.
 _RETRY_AFTER_SECONDS = "60"
+
+# W25 D4 Phase 2 — 표지 청크 가드 heuristic.
+# 사용자 시나리오 ("소나타에서 제공하는 시트 종류 뭐가 있어?") 에서 sonata 카탈로그 p.1 의
+# 6자 표지 청크 ("SONATA") 가 dense cos sim 비정상 우세로 top-1 진입 → 후처리 패널티로 회피.
+# 보수적 안 (a) — text_len <= 30 AND (chunk_idx == 0 OR page == 1) 동시 만족 시에만 곱셈.
+# (b)/(c) (chunk_filter 마킹·dense_rank 노출) 는 효과 측정 후 결정.
+# 짧은 헤딩 (예: "결론") 은 chunk_idx>0 또는 page>1 이라 false positive 회피.
+_COVER_GUARD_TEXT_LEN = 30
+_COVER_GUARD_PENALTY = 0.3
 
 
 class MatchedChunk(BaseModel):
@@ -343,16 +362,56 @@ def search(
         )
 
     # ------------------------------------------------------------------
-    # 3) doc_id 별 RRF 그룹 (max score) + chunk_id ↔ doc_id 매핑
+    # 2-b) W25 D4 Phase 2 — 표지 청크 가드 (rrf_score in-place 패널티).
+    #     RPC 응답에 chunk metadata 가 없어 (chunk_id/doc_id/rrf_score/dense_rank/sparse_rank 만)
+    #     candidate chunks 의 (chunk_idx, page, char_length(text)) 를 단일 IN 쿼리로 fetch.
+    #     이후 누적 단계 (3)) 에서 패널티 적용 → ranking 변경. 본문 fetch (6)) 는 그대로.
+    # ------------------------------------------------------------------
+    candidate_chunk_ids = {r["chunk_id"] for r in rpc_rows}
+    cover_guard_meta: dict[str, dict] = {}
+    if candidate_chunk_ids:
+        guard_resp = (
+            client.table("chunks")
+            .select("id, chunk_idx, page, text")
+            .in_("id", list(candidate_chunk_ids))
+            .execute()
+        )
+        for c in guard_resp.data or []:
+            cover_guard_meta[c["id"]] = {
+                "chunk_idx": c.get("chunk_idx"),
+                "page": c.get("page"),
+                "text_len": len(c.get("text") or ""),
+            }
+
+    def _is_cover_chunk(chunk_id: str) -> bool:
+        meta = cover_guard_meta.get(chunk_id)
+        if not meta:
+            return False
+        if meta["text_len"] > _COVER_GUARD_TEXT_LEN:
+            return False
+        return meta["chunk_idx"] == 0 or meta["page"] == 1
+
+    # ------------------------------------------------------------------
+    # 3) doc_id 별 RRF 그룹 (max score) + chunk_id 별 max score 집계
+    # W25 D3 — chunk_id dedupe (C-1a). dense path + sparse path 가 같은 chunk_id 를
+    # 별개 row 로 반환할 수 있어 list 누적 시 matched_chunk_count 가 부풀려짐.
+    # dict[chunk_id, max_score] 로 누적해 unique chunk 수 = matched_chunk_count 보장.
     # ------------------------------------------------------------------
     doc_score: dict[str, float] = {}
-    doc_chunk_scores: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    doc_chunk_scores: dict[str, dict[str, float]] = defaultdict(dict)
     for r in rpc_rows:
         doc_id = r["doc_id"]
         chunk_id = r["chunk_id"]
         score = float(r["rrf_score"])
+        # W25 D4 Phase 2 — 표지 청크 가드: 짧은 chunk_idx=0 또는 page=1 청크 score 패널티.
+        # doc_score / doc_chunk_scores 둘 다 동일 곱셈 적용 — doc-level ranking 도 함께 떨어져야
+        # 표지 청크만 가진 doc 의 top-1 진입 회피.
+        if _is_cover_chunk(chunk_id):
+            score *= _COVER_GUARD_PENALTY
         doc_score[doc_id] = max(doc_score.get(doc_id, 0.0), score)
-        doc_chunk_scores[doc_id].append((chunk_id, score))
+        existing = doc_chunk_scores[doc_id].get(chunk_id)
+        if existing is None or score > existing:
+            doc_chunk_scores[doc_id][chunk_id] = score
 
     candidate_doc_ids = list(doc_score.keys())
 
@@ -412,14 +471,25 @@ def search(
         )
 
     # ------------------------------------------------------------------
-    # 6) 페이지의 매칭 청크 본문 fetch (각 doc 의 RRF top 3)
+    # 6) 페이지의 매칭 청크 본문 fetch (각 doc 의 RRF top N)
+    # W25 D5 — doc_id 명시 시 cap 우회 (모든 unique 청크 본문 fetch).
+    # 안전 상한 (_MAX_MATCHED_CHUNKS_DOC_SCOPE) 적용 — RPC 200건과 동일.
     # ------------------------------------------------------------------
+    # NOTE: 위 line 3)·5) 의 `for r in rpc_rows: doc_id = ...` 루프에서 함수 파라미터 `doc_id`
+    # 가 shadow 됨 (기존 코드 패턴). 본 cap 결정은 함수 진입 시 파라미터 값을 의도하므로
+    # `is_doc_scope` 를 본 함수 진입 시 캡처된 사실 (rpc_top_k 결정 분기) 로부터 재구성한다.
+    is_doc_scope = rpc_top_k == _RPC_TOP_K_DOC_FILTER
+    chunk_cap = (
+        _MAX_MATCHED_CHUNKS_DOC_SCOPE
+        if is_doc_scope
+        else _MAX_MATCHED_CHUNKS_PER_DOC
+    )
     selected_chunk_ids: list[str] = []
-    for doc_id in page_doc_ids:
-        top3 = sorted(
-            doc_chunk_scores[doc_id], key=lambda x: x[1], reverse=True
-        )[:_MAX_MATCHED_CHUNKS_PER_DOC]
-        selected_chunk_ids.extend(cid for cid, _ in top3)
+    for did in page_doc_ids:
+        top_ids = sorted(
+            doc_chunk_scores[did].items(), key=lambda x: x[1], reverse=True
+        )[:chunk_cap]
+        selected_chunk_ids.extend(cid for cid, _ in top_ids)
 
     chunks_resp = (
         client.table("chunks")
@@ -430,12 +500,11 @@ def search(
     chunks_by_id: dict[str, dict] = {
         c["id"]: c for c in (chunks_resp.data or [])
     }
-    # chunk_id → rrf_score 매핑 (페이지 내 응답에서만 사용)
+    # chunk_id → rrf_score 매핑 (페이지 내 응답에서만 사용).
+    # doc_chunk_scores 가 이미 chunk_id 별 max 로 dedupe 됨 (W25 D3) — 단순 복사.
     chunk_rrf: dict[str, float] = {}
     for doc_id in page_doc_ids:
-        for cid, score in doc_chunk_scores[doc_id]:
-            # 같은 chunk_id 가 dense/sparse path 양쪽에 등장 시 max
-            chunk_rrf[cid] = max(chunk_rrf.get(cid, 0.0), score)
+        chunk_rrf.update(doc_chunk_scores[doc_id])
 
     # ------------------------------------------------------------------
     # 7) 응답 조립 (relevance 는 결과 집합 내 정규화 — top=1.0)
@@ -446,19 +515,27 @@ def search(
     items: list[SearchHit] = []
     for doc_id in page_doc_ids:
         meta = docs_meta[doc_id]
-        all_matches = doc_chunk_scores[doc_id]
-        matched_count = len(all_matches)
-        top3_ids = [
+        all_matches = doc_chunk_scores[doc_id]  # dict[chunk_id, max_score]
+        matched_count = len(all_matches)  # unique chunk 수 (W25 D3 dedupe)
+        # W25 D5 — list 모드는 top 3 미리보기 (chunk_idx 오름차순), doc 스코프는 모든 매칭 (score 내림차순).
+        # doc 스코프는 사용자가 명시적으로 "모두 보기" 진입 — score 순이 의도.
+        top_ids = [
             cid
             for cid, _ in sorted(
-                all_matches, key=lambda x: x[1], reverse=True
-            )[:_MAX_MATCHED_CHUNKS_PER_DOC]
+                all_matches.items(), key=lambda x: x[1], reverse=True
+            )[:chunk_cap]
         ]
-        # chunk_idx 오름차순 (UX 일관) — 본문 등장 순서대로 노출
-        top_chunks = sorted(
-            (chunks_by_id[cid] for cid in top3_ids if cid in chunks_by_id),
-            key=lambda c: c["chunk_idx"],
-        )
+        if is_doc_scope:
+            # score 내림차순 (id 순서 보존) — doc 페이지가 관련도 순으로 매칭 청크 표시
+            top_chunks = [
+                chunks_by_id[cid] for cid in top_ids if cid in chunks_by_id
+            ]
+        else:
+            # list 모드 — chunk_idx 오름차순 (UX 일관: 본문 등장 순서대로 노출)
+            top_chunks = sorted(
+                (chunks_by_id[cid] for cid in top_ids if cid in chunks_by_id),
+                key=lambda c: c["chunk_idx"],
+            )
 
         matched_chunks = []
         for c in top_chunks:
