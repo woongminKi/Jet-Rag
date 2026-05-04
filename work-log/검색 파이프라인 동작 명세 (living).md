@@ -1,8 +1,8 @@
 # 검색 파이프라인 동작 명세 (living)
 
 > **Living document** — 검색 모델·인제스트 stage·검색 로직·표시 정책이 변경 또는 고도화될 때마다 갱신.
-> 마지막 갱신: 2026-05-04 (W25 D7 — mini-Ragas Phase 1 ship)
-> 버전: v0.2
+> 마지막 갱신: 2026-05-04 (W25 D8 — Phase 2 메뉴 footer 가드 시도 → 롤백)
+> 버전: v0.2.1
 
 ---
 
@@ -206,6 +206,7 @@ PDF 등  →  detect → extract → chunk → ... → DB  ←→  자연어 질
 4. **`page=null` doc_type 은 표지 가드 영향 없음** — DOCX/HWPX 등은 가드 우회. 단일 페이지 PDF 본문이 가드 false positive 가능 (현재 0건 측정).
 5. **chunk_filter 의 false positive risk** — 짧은 헤딩 (예: "결론") 이 `extreme_short` 로 잘못 제외 가능. 회귀 테스트로 보호 중.
 6. **doc 페이지 `HeroSearch` input 의 `?q=` prefill 누락** — UX 마찰 (D5-input 후속 큐).
+7. **PDF 카탈로그 메뉴 footer 노이즈 (W25 D8 측정)** — SONATA 카탈로그 99 chunks 중 ~70% 청크에 메뉴 footer 가 본문과 합쳐져 등장 → 변별력 부족이 mini-Ragas 4건 격차 (G-S-001/005/006/008) 의 공통 원인. 런타임 score 가드 (W25 D8 시도) 는 정답 청크와 노이즈 청크를 분리 못함 → 롤백. **차수 (B) chunk 분리 정책 또는 (D) PGroonga 한국어 sparse 회복** 으로 근본 해결 필요.
 
 ---
 
@@ -241,6 +242,7 @@ top-1 이 아닌 4~10위 진입. 후속 ranking 개선 신호 (snippet annotatio
 
 | 날짜 | W·Day | 변경 요약 | 영향 범위 | commit |
 |---|---|---|---|---|
+| 2026-05-04 | W25 D8 | Phase 2 메뉴 footer 가드 시도 → **롤백** (G-S-006 0.50→0.03 악화) — 차수 (B) chunk 분리 / (D) PGroonga 회복 후보로 후속 sprint 이관 | search.py 변경 0 (시도 + 회귀) / 시도 결과 주석만 보존 | (롤백, commit 0) |
 | 2026-05-04 | W25 D7 | mini-Ragas (Phase 1) ship — Context Recall/Precision + `make eval` + ragas/datasets 의존성 첫 추가 | KPI 측정 / Makefile / pyproject.toml | (이번 sprint) |
 | 2026-05-04 | W25 D3~D6 | snippet 240 / chunk_id dedupe / 매칭 강도 라벨 / 표지 가드 / doc 페이지 ?q= / % 표시 통일 | search.py + UI | `72e14ca` |
 | 2026-05-04 | W25 D1·D2 | `/docs` 라우트 + 태그 destination 통일 + 최근 추가 카드 인터랙션 | UI (검색 외) | `77a2ae2` |

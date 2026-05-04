@@ -71,6 +71,14 @@ _RETRY_AFTER_SECONDS = "60"
 _COVER_GUARD_TEXT_LEN = 30
 _COVER_GUARD_PENALTY = 0.3
 
+# W25 D8 Phase 2 — 메뉴 footer 가드: 1차 시도 실패 → 롤백 / 후속 sprint 신호로 보존.
+# 시도 결과 (work-log/2026-05-04 W25 D8 Phase 2 메뉴 footer 가드.md):
+#   - 단순 패턴 매칭 → 정답 청크 (idx 37/38/43) 도 함께 깎임 → G-S-006 0.50→0.03 악화
+#   - 비율 기반 (ratio >= 0.30) → 본문 + 메뉴 합산 청크 ratio 0.5~0.65 로 정답 보호 실패
+#   - 정밀 패턴 (130자 고정 시퀀스) 도 동일 — 모든 페이지에 메뉴가 등장하여 변별력 부족이 본질
+# 결론: 런타임 score 패널티로는 해결 불가. chunk 분리 정책 (Phase 2 차수 B) 또는 PGroonga
+#       한국어 sparse 회복 (D) 으로 근본 해결해야 함.
+
 
 class MatchedChunk(BaseModel):
     chunk_id: str
