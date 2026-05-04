@@ -71,6 +71,16 @@ _MAX_SCAN_PAGES = 5
 # 스캔 페이지 → PNG 렌더 DPI (PyMuPDF 기본 72 → 150 으로 OCR 품질 확보)
 _SCAN_RENDER_DPI = 150
 
+# W25 D14 — 일반 PDF 의 표/그림/다이어그램 정보 보강용 vision enrich.
+# 무료 quota (RPD 20) 한계로 default false. paid tier 전환 시 운영자가 ENV 로 opt-in.
+# - true 이면 _is_scan_pdf 와 무관하게 모든 PDF 페이지에 vision 호출 → ocr_text/structured/caption
+#   을 추가 sections 로 병합 (PyMuPDF 결과 보존 + 보강).
+_PDF_VISION_ENRICH_ENABLED = (
+    os.environ.get("JETRAG_PDF_VISION_ENRICH", "false").strip().lower() == "true"
+)
+# enrich 모드 페이지 cap (paid tier 환경에서도 RPM/latency 보호).
+_VISION_ENRICH_MAX_PAGES = int(os.environ.get("JETRAG_PDF_VISION_ENRICH_MAX_PAGES", "50"))
+
 
 def run_extract_stage(job_id: str, doc_id: str) -> ExtractionResult | None:
     """스테이지 실행. 지원 포맷이면 `ExtractionResult`, 그 외는 skip 후 `None`.
@@ -122,6 +132,24 @@ def run_extract_stage(job_id: str, doc_id: str) -> ExtractionResult | None:
                 data, file_name=file_name, image_parser=_image_parser
             )
             _mark_scan_flag(client, doc_id, existing_flags=doc.get("flags") or {})
+
+        # W25 D14 — 일반 PDF (텍스트 PDF) 도 vision enrich 활성 시 표/그림 보강.
+        # 스캔 PDF 가 아니라야 의미 (스캔 PDF 는 이미 vision 처리됨).
+        elif (
+            doc_type == "pdf"
+            and _PDF_VISION_ENRICH_ENABLED
+            and not (doc.get("flags") or {}).get("scan")
+        ):
+            logger.info(
+                "PDF vision enrich 활성 — 모든 페이지 vision 호출 후 sections 병합. doc_id=%s",
+                doc_id,
+            )
+            result = _enrich_pdf_with_vision(
+                data,
+                base_result=result,
+                file_name=file_name,
+                image_parser=_image_parser,
+            )
 
     return result
 
@@ -233,6 +261,102 @@ def _reroute_pdf_to_image(
 
     return ExtractionResult(
         source_type="pdf",  # 본질은 PDF, flags.scan=true 로 구분
+        sections=sections,
+        raw_text="\n\n".join(raw_parts),
+        warnings=warnings,
+    )
+
+
+def _enrich_pdf_with_vision(
+    data: bytes,
+    *,
+    base_result: ExtractionResult,
+    file_name: str,
+    image_parser: ImageParser,
+) -> ExtractionResult:
+    """W25 D14 — 일반 PDF 의 표/그림/다이어그램 정보를 vision 으로 보강.
+
+    motivation:
+        PyMuPDF parser 가 (1) PDF 안 이미지 블록 (type=1) 을 if 문으로 무시 → 그림 정보 0
+        (2) 표는 raw text 로 cell 순서 뒤섞이고 일부 누락. 사용자가 보고한 데이터센터
+        안내서 PDF 에서 p.4 표 잘림 + p.6 그림 누락 이슈 (W25 D14 진단) 직접 fix.
+
+    설계:
+        - PyMuPDF 결과 (sections, raw_text, warnings) 보존
+        - 페이지별 PNG 렌더 (DPI 150) → ImageParser.parse() 호출 (Gemini Vision)
+        - 각 페이지의 vision 결과를 **추가 sections** 로 append (PyMuPDF section 과 병합 X)
+        - section_title 에 "(vision) p.N" 명시 — 검색 결과 출처 식별 가능
+        - cap _VISION_ENRICH_MAX_PAGES (default 50) — 대형 PDF 안전장치
+
+    한계 (W25 D14 권고 단계 인정):
+        - vision 호출 = paid tier quota 사용 (~$0.00075/페이지)
+        - 인제스트 latency ↑ (페이지당 1~3초)
+        - vision 의 ocr_text 가 PyMuPDF text 와 일부 중복 (chunk_filter dedup 룰이 처리)
+    """
+    sections: list[ExtractedSection] = list(base_result.sections)
+    raw_parts: list[str] = [base_result.raw_text] if base_result.raw_text else []
+    warnings: list[str] = list(base_result.warnings)
+
+    try:
+        doc = fitz.open(stream=data, filetype="pdf")
+    except Exception as exc:  # noqa: BLE001 — PyMuPDF 결과는 이미 있으니 graceful
+        warnings.append(f"vision_enrich: PDF 열기 실패: {exc}")
+        return ExtractionResult(
+            source_type=base_result.source_type,
+            sections=sections,
+            raw_text="\n\n".join(raw_parts),
+            warnings=warnings,
+        )
+
+    try:
+        total_pages = len(doc)
+        process_count = min(total_pages, _VISION_ENRICH_MAX_PAGES)
+        if total_pages > _VISION_ENRICH_MAX_PAGES:
+            msg = (
+                f"vision_enrich: {total_pages}페이지 중 첫 {_VISION_ENRICH_MAX_PAGES}페이지만 "
+                "처리 (paid tier RPM/latency 보호)"
+            )
+            warnings.append(msg)
+            logger.warning("%s (file=%s)", msg, file_name)
+
+        for page_num in range(process_count):
+            try:
+                page = doc[page_num]
+                pix = page.get_pixmap(dpi=_SCAN_RENDER_DPI)
+                png_bytes = pix.tobytes("png")
+                page_result = image_parser.parse(
+                    png_bytes,
+                    file_name=f"{file_name}#page{page_num + 1}.png",
+                    source_type="pdf_vision_enrich",  # vision_usage_log 명시
+                )
+                # vision 결과의 sections 를 page 메타 보강해 추가
+                for sec in page_result.sections:
+                    base_title = (sec.section_title or "").strip()
+                    enriched_title = (
+                        f"(vision) p.{page_num + 1} {base_title}".strip()
+                        if base_title
+                        else f"(vision) p.{page_num + 1}"
+                    )
+                    sections.append(
+                        ExtractedSection(
+                            text=sec.text,
+                            page=page_num + 1,
+                            section_title=enriched_title,
+                            bbox=None,
+                        )
+                    )
+                if page_result.raw_text:
+                    raw_parts.append(page_result.raw_text)
+                warnings.extend(page_result.warnings)
+            except Exception as exc:  # noqa: BLE001 — 페이지 단위 부분 실패 허용
+                msg = f"vision_enrich: page {page_num + 1} 실패: {exc}"
+                warnings.append(msg)
+                logger.warning("%s (file=%s)", msg, file_name)
+    finally:
+        doc.close()
+
+    return ExtractionResult(
+        source_type=base_result.source_type,  # 'pdf' 보존
         sections=sections,
         raw_text="\n\n".join(raw_parts),
         warnings=warnings,
