@@ -80,8 +80,36 @@ _COVER_GUARD_PENALTY = 0.3
 #       한국어 sparse 회복 (D) 으로 근본 해결해야 함.
 
 
+# W25 D10 차수 D-a-2 — 한국어 조사 strip whitelist.
+# Mecab 토크나이저가 "전폭은/전고는/디스플레이는" 같은 조사 결합 토큰을 분해 못 해
+# vocab 부재 처리. 응용 layer 에서 끝 1자 조사 strip 으로 우회.
+# whitelist (가장 흔한 1자 조사) — false positive 회피.
+# "이" 는 외래어 명사 끝 (디스플레이/알고리즘 류) 충돌로 제외 → "회사이" 같은 case 는 보존 trade-off.
+# 토큰 길이 >= 3 조건도 동일 의도 (짧은 단어 보호).
+_KOREAN_PARTICLES_1 = frozenset(
+    ["는", "은", "가", "을", "를", "도", "만", "에", "의"]
+)
+_PARTICLE_STRIP_MIN_LEN = 3
+
+
+def _strip_korean_particle(token: str) -> str:
+    """W25 D11 차수 D-a-2 — 한국어 조사 strip + trailing punctuation 정리.
+
+    예: '전폭은' → '전폭', '디스플레이는' → '디스플레이', '길이가' → '길이',
+        '전폭은?' → '전폭' (의문문 punctuation 도 함께 정리).
+    토큰 길이 >= 3 일 때만 적용 (짧은 단어 false positive 회피).
+    한글 끝 1자가 whitelist 에 있을 때만 strip — '얼마나/종류야' 같은 비조사 어미는 보존.
+    """
+    cleaned = token.rstrip("?!.,;:")
+    if len(cleaned) < _PARTICLE_STRIP_MIN_LEN:
+        return cleaned
+    if cleaned[-1] in _KOREAN_PARTICLES_1:
+        return cleaned[:-1]
+    return cleaned
+
+
 def _build_pgroonga_query(q: str) -> str:
-    """W25 D10 차수 D-a — PGroonga `&@~` multi-token AND → OR 변환.
+    """W25 D10/D11 차수 D-a + D-a-2 — PGroonga `&@~` multi-token AND → OR 변환 + 조사 strip.
 
     PGroonga query mode (`&@~`) 는 query 내 모든 토큰이 같은 chunk 에 모두 매칭돼야
     hit 가 잡힘 (AND 매칭). 사용자 자연어 query 는 3~5 단어라 한 단어만 vocab 부재여도
@@ -91,12 +119,15 @@ def _build_pgroonga_query(q: str) -> str:
     W25 D9 진단 (work-log/2026-05-04 W25 D9 phase2-d-diagnosis.md) 직접 검증:
         '소나타 전장' → 0 hits (AND, 본문 vocab 'Sonata' 만 있고 '소나타' 0건)
         '소나타 OR 전장' → 2 hits (OR — '전장' 단독 매칭으로 sparse 회복)
+        '전폭은' → 0 hits (Mecab 조사 미분해)
+        '전폭' (조사 strip) → 매칭 가능
 
-    단일 토큰 query 는 변환 무의미 → 그대로 반환 (OR 1개는 의미 없음).
+    단일 토큰 query 는 변환 무의미 → 조사 strip 만 적용 후 반환.
     """
-    tokens = [t for t in q.strip().split() if t]
+    tokens = [_strip_korean_particle(t) for t in q.strip().split() if t]
+    tokens = [t for t in tokens if t]  # strip 결과 빈 토큰 제외 (방어)
     if len(tokens) <= 1:
-        return q.strip()
+        return tokens[0] if tokens else q.strip()
     return " OR ".join(tokens)
 
 
