@@ -74,7 +74,16 @@ from app.db import get_supabase_client  # noqa: E402
 
 _SEARCH_BASE = "http://localhost:8000"
 _GEMINI_MODEL = "gemini-2.5-flash"
-_EMBEDDING_MODEL = "models/embedding-001"
+# W25 D14 fix v2 — Gemini API embedding 모델 이름 변천:
+#   embedding-001 (v1beta deprecated, 404)
+#   text-embedding-004 (v1beta 도 404)
+#   gemini-embedding-001 — 현재 GA (2026 기준)
+# ENV 로 override 가능 (Google 측 모델 변경 시 빠른 대응).
+_EMBEDDING_MODEL = os.environ.get("RAGAS_EMBEDDING_MODEL", "models/gemini-embedding-001")
+# TestsetGenerator 가 input documents 전부에 EmbeddingExtractor (NER overlap) 적용
+# → chunks 수백 개 입력 시 embedding 호출 폭주. 샘플링으로 입력 documents 줄임.
+# 의미 QA 생성에는 50 documents 면 충분 (대부분 RAG 자료 기준).
+_TESTSET_INPUT_DOCS_MAX = int(os.environ.get("RAGAS_AUTO_TESTSET_DOCS_MAX", "50"))
 
 
 def _load_chunks_as_documents(doc_id: str) -> list[Document]:
@@ -192,13 +201,24 @@ def main() -> int:
     ragas_llm = LangchainLLMWrapper(chat_llm)
     ragas_embeddings = LangchainEmbeddingsWrapper(embeddings)
 
-    # 1) chunks 로드
+    # 1) chunks 로드 + 샘플링 (TestsetGenerator EmbeddingExtractor 폭주 방지)
     print(f"[1/4] chunks 로드 (doc={args.doc_id})", file=sys.stderr)
     documents = _load_chunks_as_documents(args.doc_id)
     if not documents:
         print(f"[FAIL] doc_id={args.doc_id} 의 chunks 없음", file=sys.stderr)
         return 1
-    print(f"  {len(documents)} chunks → langchain Documents", file=sys.stderr)
+    n_total = len(documents)
+    if n_total > _TESTSET_INPUT_DOCS_MAX:
+        # 균등 샘플링 — 문서 전반부터 후반까지 골고루
+        step = n_total // _TESTSET_INPUT_DOCS_MAX
+        documents = documents[::step][:_TESTSET_INPUT_DOCS_MAX]
+        print(
+            f"  {n_total} chunks → 균등 샘플링 {len(documents)} (step={step}, "
+            f"cap RAGAS_AUTO_TESTSET_DOCS_MAX={_TESTSET_INPUT_DOCS_MAX})",
+            file=sys.stderr,
+        )
+    else:
+        print(f"  {n_total} chunks → langchain Documents (전체 사용)", file=sys.stderr)
 
     # 2) TestsetGenerator — 자동 QA 생성
     print(
