@@ -18,6 +18,11 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# W25 D14 Sprint 4 (2026-05-05) 시도 후 원복:
+#   강화 (5회/2.0s base, max delay 32s) 적용 후 reingest 실패 — HTTP/2 ConnectionTerminated
+#   (long sleep 중 connection idle timeout). Sprint 5 (sweep 만 유지) 로 전환.
+# 현재 정책: 기본 3회/1.0s (Sprint 1 시점) + extract.py 의 sweep 로직 (max 3 sweep)
+# 으로 누락 페이지 재시도 효과는 보존.
 _MAX_ATTEMPTS = 3
 _BASE_BACKOFF_SECONDS = 1.0
 

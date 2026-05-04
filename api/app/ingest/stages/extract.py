@@ -80,6 +80,10 @@ _PDF_VISION_ENRICH_ENABLED = (
 )
 # enrich 모드 페이지 cap (paid tier 환경에서도 RPM/latency 보호).
 _VISION_ENRICH_MAX_PAGES = int(os.environ.get("JETRAG_PDF_VISION_ENRICH_MAX_PAGES", "50"))
+# W25 D14 Sprint 4 — sweep 로직: 503 random 실패 페이지 자동 재시도.
+# 1차 pass 후 누락 페이지만 2차/3차 sweep. 한 reingest 안에서 누락 ↓↓.
+# 정상 환경에선 1차에서 모두 성공 → sweep 즉시 종료 (latency 영향 0).
+_VISION_ENRICH_MAX_SWEEPS = int(os.environ.get("JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS", "3"))
 
 
 def run_extract_stage(job_id: str, doc_id: str) -> ExtractionResult | None:
@@ -319,39 +323,70 @@ def _enrich_pdf_with_vision(
             warnings.append(msg)
             logger.warning("%s (file=%s)", msg, file_name)
 
-        for page_num in range(process_count):
-            try:
-                page = doc[page_num]
-                pix = page.get_pixmap(dpi=_SCAN_RENDER_DPI)
-                png_bytes = pix.tobytes("png")
-                page_result = image_parser.parse(
-                    png_bytes,
-                    file_name=f"{file_name}#page{page_num + 1}.png",
-                    source_type="pdf_vision_enrich",  # vision_usage_log 명시
+        # W25 D14 Sprint 4 — sweep 로직: 503 random 실패 페이지 자동 재시도.
+        pending_pages: list[int] = list(range(process_count))
+        for sweep_idx in range(1, _VISION_ENRICH_MAX_SWEEPS + 1):
+            if not pending_pages:
+                break
+            if sweep_idx > 1:
+                logger.info(
+                    "vision_enrich sweep %d/%d: 누락 %d 페이지 재시도 %s (file=%s)",
+                    sweep_idx, _VISION_ENRICH_MAX_SWEEPS,
+                    len(pending_pages),
+                    [p + 1 for p in pending_pages], file_name,
                 )
-                # vision 결과의 sections 를 page 메타 보강해 추가
-                for sec in page_result.sections:
-                    base_title = (sec.section_title or "").strip()
-                    enriched_title = (
-                        f"(vision) p.{page_num + 1} {base_title}".strip()
-                        if base_title
-                        else f"(vision) p.{page_num + 1}"
+            failed_in_sweep: list[int] = []
+            for page_num in pending_pages:
+                try:
+                    page = doc[page_num]
+                    pix = page.get_pixmap(dpi=_SCAN_RENDER_DPI)
+                    png_bytes = pix.tobytes("png")
+                    page_result = image_parser.parse(
+                        png_bytes,
+                        file_name=f"{file_name}#page{page_num + 1}.png",
+                        source_type="pdf_vision_enrich",
                     )
-                    sections.append(
-                        ExtractedSection(
-                            text=sec.text,
-                            page=page_num + 1,
-                            section_title=enriched_title,
-                            bbox=None,
+                    # vision 결과의 sections 를 page 메타 보강해 추가
+                    for sec in page_result.sections:
+                        base_title = (sec.section_title or "").strip()
+                        enriched_title = (
+                            f"(vision) p.{page_num + 1} {base_title}".strip()
+                            if base_title
+                            else f"(vision) p.{page_num + 1}"
                         )
+                        sections.append(
+                            ExtractedSection(
+                                text=sec.text,
+                                page=page_num + 1,
+                                section_title=enriched_title,
+                                bbox=None,
+                            )
+                        )
+                    if page_result.raw_text:
+                        raw_parts.append(page_result.raw_text)
+                    warnings.extend(page_result.warnings)
+                except Exception as exc:  # noqa: BLE001 — 페이지 단위 부분 실패 허용
+                    failed_in_sweep.append(page_num)
+                    if sweep_idx == _VISION_ENRICH_MAX_SWEEPS:
+                        msg = (
+                            f"vision_enrich: page {page_num + 1} 실패 "
+                            f"(sweep {sweep_idx}/{_VISION_ENRICH_MAX_SWEEPS} 최종): {exc}"
+                        )
+                        warnings.append(msg)
+                    logger.warning(
+                        "vision_enrich page %d 실패 (sweep %d/%d): %s (file=%s)",
+                        page_num + 1, sweep_idx, _VISION_ENRICH_MAX_SWEEPS,
+                        exc, file_name,
                     )
-                if page_result.raw_text:
-                    raw_parts.append(page_result.raw_text)
-                warnings.extend(page_result.warnings)
-            except Exception as exc:  # noqa: BLE001 — 페이지 단위 부분 실패 허용
-                msg = f"vision_enrich: page {page_num + 1} 실패: {exc}"
-                warnings.append(msg)
-                logger.warning("%s (file=%s)", msg, file_name)
+            pending_pages = failed_in_sweep
+
+        if pending_pages:
+            msg = (
+                f"vision_enrich: {_VISION_ENRICH_MAX_SWEEPS} sweep 후에도 누락: "
+                f"{[p + 1 for p in pending_pages]}"
+            )
+            warnings.append(msg)
+            logger.error("%s (file=%s)", msg, file_name)
     finally:
         doc.close()
 

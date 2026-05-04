@@ -77,13 +77,14 @@ class TestEnrichPdfWithVision(unittest.TestCase):
         self.assertEqual(parser.parse.call_count, 3)
 
     def test_per_page_failure_graceful(self):
-        # 한 페이지 vision 실패해도 다른 페이지는 진행 + warning 추가
+        # 한 페이지 vision 실패해도 다른 페이지는 진행 + warning 추가.
+        # W25 D14 Sprint 4 — sweep 로직: page 2 가 sweep 1/2/3 모두 실패 → 최종 누락.
         data = _make_pdf_bytes(2)
         base = ExtractionResult(
             source_type="pdf", sections=[], raw_text="", warnings=[]
         )
         parser = MagicMock()
-        # 첫 페이지 성공, 두 번째 페이지 raise
+        # 첫 페이지 성공, 두 번째 페이지 sweep 3회 모두 raise
         parser.parse.side_effect = [
             ExtractionResult(
                 source_type="image",
@@ -91,15 +92,56 @@ class TestEnrichPdfWithVision(unittest.TestCase):
                 raw_text="ok",
                 warnings=[],
             ),
-            RuntimeError("Vision API timeout"),
+            RuntimeError("Vision API timeout"),  # sweep 1
+            RuntimeError("Vision API timeout"),  # sweep 2
+            RuntimeError("Vision API timeout"),  # sweep 3 (최종)
         ]
         result = _enrich_pdf_with_vision(
             data, base_result=base, file_name="test.pdf", image_parser=parser
         )
         # 첫 페이지 section 만 추가됨
         self.assertEqual(len(result.sections), 1)
-        # warning 에 두 번째 페이지 실패 명시
-        self.assertTrue(any("page 2 실패" in w for w in result.warnings))
+        # 최종 sweep warning + 전체 누락 warning 둘 다
+        self.assertTrue(any("page 2 실패" in w and "최종" in w for w in result.warnings))
+        self.assertTrue(any("3 sweep 후에도 누락" in w for w in result.warnings))
+        # parser 호출 횟수: 1 (page 1 sweep 1) + 3 (page 2 sweep 1/2/3) = 4
+        self.assertEqual(parser.parse.call_count, 4)
+
+    def test_sweep_recovers_failed_page(self):
+        # sweep 1 에서 실패한 페이지가 sweep 2 에서 성공 — 누락 0
+        data = _make_pdf_bytes(2)
+        base = ExtractionResult(
+            source_type="pdf", sections=[], raw_text="", warnings=[]
+        )
+        parser = MagicMock()
+        parser.parse.side_effect = [
+            # sweep 1 — page 1 성공, page 2 실패
+            ExtractionResult(
+                source_type="image",
+                sections=[ExtractedSection(text="p1 ok", page=None, section_title=None)],
+                raw_text="p1 ok", warnings=[],
+            ),
+            RuntimeError("503 sweep 1"),
+            # sweep 2 — page 2 재시도 성공
+            ExtractionResult(
+                source_type="image",
+                sections=[ExtractedSection(text="p2 recovered", page=None, section_title=None)],
+                raw_text="p2 recovered", warnings=[],
+            ),
+        ]
+        result = _enrich_pdf_with_vision(
+            data, base_result=base, file_name="test.pdf", image_parser=parser
+        )
+        # 두 페이지 모두 sections 추가됨
+        self.assertEqual(len(result.sections), 2)
+        texts = {s.text for s in result.sections}
+        self.assertIn("p1 ok", texts)
+        self.assertIn("p2 recovered", texts)
+        # "최종" warning 없음 (sweep 2 에서 회복)
+        self.assertFalse(any("최종" in w for w in result.warnings))
+        self.assertFalse(any("sweep 후에도 누락" in w for w in result.warnings))
+        # parser 호출 = page 1 (sweep 1) + page 2 (sweep 1) + page 2 (sweep 2) = 3
+        self.assertEqual(parser.parse.call_count, 3)
 
     def test_max_pages_cap(self):
         # cap 보다 많은 페이지 PDF — 첫 cap 페이지만 처리 + warning
