@@ -266,3 +266,28 @@ export interface TrendResponse {
   error_code: string | null;
   generated_at: string;
 }
+
+/** W25 D12 — `/answer` 라우터 응답 (LLM RAG PoC).
+ *  faithfulness: 답변에 인라인 [N] 으로 sources[] 인용 명시. */
+export interface AnswerSource {
+  chunk_id: string;
+  doc_id: string;
+  doc_title: string | null;
+  chunk_idx: number;
+  page: number | null;
+  section_title: string | null;
+  score: number;
+  /** chunk 본문 앞 200자 — UI snippet 용 */
+  snippet: string;
+}
+
+export interface AnswerResponse {
+  query: string;
+  answer: string;
+  sources: AnswerSource[];
+  /** false 면 검색 0건 → answer 는 "찾지 못함" 메시지 */
+  has_search_results: boolean;
+  model: string;
+  took_ms: number;
+  query_parsed: QueryParsedInfo;
+}

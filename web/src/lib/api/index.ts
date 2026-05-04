@@ -1,5 +1,6 @@
 import { apiGet, apiPost, apiPostFormData } from './client';
 import type {
+  AnswerResponse,
   BatchStatusResponse,
   DocumentDetailResponse,
   DocumentListResponse,
@@ -86,3 +87,17 @@ export const getBatchStatus = (docIds: string[]) =>
 
 export const reingestDocument = (docId: string) =>
   apiPost<ReingestResponse>(`/documents/${docId}/reingest`);
+
+/** W25 D12 — `/answer` LLM RAG PoC.
+ *  검색 → top_k chunks → Gemini 2.5 Flash 답변 + 출처 인용.
+ *  · top_k: LLM 에 전달할 chunks 수 (default 5, max 10)
+ *  · docId: 단일 문서 스코프 (US-08 패턴 동일) */
+export const getAnswer = (
+  q: string,
+  topK = 5,
+  docId?: string | null,
+) => {
+  const qs = new URLSearchParams({ q, top_k: String(topK) });
+  if (docId) qs.set('doc_id', docId);
+  return apiGet<AnswerResponse>(`/answer?${qs.toString()}`);
+};
