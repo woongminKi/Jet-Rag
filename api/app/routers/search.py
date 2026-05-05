@@ -84,6 +84,14 @@ _RERANKER_ENABLED_DEFAULT = "false"
 # 너무 키우면 latency 증가, 너무 작으면 RRF top-K 가 cap 보다 작을 때 노이즈.
 _RERANKER_TOP_K = 50
 
+# W25 D14+1 (G) — doc-level embedding RRF 가산 (S4).
+# documents.doc_embedding (1024 dim, summary+implications 또는 raw_text[:3000] 임베딩)
+# 과 query_dense cosine sim 으로 doc-level rank 산출 → RRF 가산.
+# chunks 단위 매칭만 보던 기존 점수에 doc 단위 의미 매칭 보강.
+# opt-in ENV — default false (S2 reranker 회귀 학습 — 정량 baseline 후 default 결정).
+# 효과는 multi-doc 검색에서 발휘 (doc-scope `?doc_id=...` 시 영향 0).
+_DOC_EMBEDDING_RRF_ENABLED_DEFAULT = "false"
+
 # W25 D8 Phase 2 — 메뉴 footer 가드: 1차 시도 실패 → 롤백 / 후속 sprint 신호로 보존.
 # 시도 결과 (work-log/2026-05-04 W25 D8 Phase 2 메뉴 footer 가드.md):
 #   - 단순 패턴 매칭 → 정답 청크 (idx 37/38/43) 도 함께 깎임 → G-S-006 0.50→0.03 악화
@@ -191,6 +199,10 @@ class QueryParsedInfo(BaseModel):
     # default False (backward compatible — opt-in ENV off 또는 reranker 실패 시 RRF fallback).
     reranker_used: bool = False
     reranker_fallback_reason: str | None = None  # transient / permanent / None
+    # W25 D14+1 (G/S4) — doc-level embedding RRF 가산 사용 여부.
+    # 가산이 적용된 doc 수 (doc_embedding NULL 인 doc 제외).
+    doc_embedding_rrf_used: bool = False
+    doc_embedding_hits: int = 0
 
 
 class SearchResponse(BaseModel):
@@ -551,10 +563,12 @@ def search(
 
     # ------------------------------------------------------------------
     # 4) documents 메타 fetch + 메타 필터 4종 적용
+    # W25 D14+1 (G/S4) — doc_embedding 도 함께 fetch (doc-level RRF 가산용).
+    # 추가 query 0 — 기존 fetch 의 select 확장. 1024-dim 1024*8B = 8KB / doc, 50 docs ≈ 400KB.
     # ------------------------------------------------------------------
     docs_query = (
         client.table("documents")
-        .select("id, title, doc_type, tags, summary, created_at")
+        .select("id, title, doc_type, tags, summary, created_at, doc_embedding")
         .in_("id", candidate_doc_ids)
         .eq("user_id", user_id)
         .is_("deleted_at", "null")
@@ -571,6 +585,66 @@ def search(
     docs_meta: dict[str, dict] = {
         d["id"]: d for d in (docs_query.execute().data or [])
     }
+
+    # ------------------------------------------------------------------
+    # 4-b) W25 D14+1 (G/S4) — doc-level embedding RRF 가산.
+    #     dense_vec (query) 와 doc_embedding (summary+implications 임베딩) cosine sim →
+    #     candidate docs 내 rank → 1/(k_rrf+rank) 를 doc_score 에 가산.
+    #     chunks 단위 매칭에 doc 단위 의미 매칭 보강 — 카탈로그/표 chunks 가
+    #     약한 doc 도 doc 요약 수준에선 강한 매칭이면 살아남음.
+    #     doc_embedding NULL 인 doc 은 가산 0 (graceful skip).
+    # ------------------------------------------------------------------
+    doc_embedding_rrf_enabled = (
+        os.environ.get(
+            "JETRAG_DOC_EMBEDDING_RRF",
+            _DOC_EMBEDDING_RRF_ENABLED_DEFAULT,
+        ).lower()
+        == "true"
+    )
+    doc_embedding_rrf_used = False
+    doc_embedding_hits = 0
+
+    if doc_embedding_rrf_enabled and dense_vec is not None and docs_meta:
+        cosine_by_doc: dict[str, float] = {}
+        for did, meta in docs_meta.items():
+            emb = meta.get("doc_embedding")
+            if not emb:
+                continue
+            # Supabase pgvector 응답이 string ("[1.0,2.0,...]") 또는 list — 둘 다 처리.
+            if isinstance(emb, str):
+                try:
+                    emb = [float(x) for x in emb.strip("[]").split(",")]
+                except ValueError:
+                    continue
+            if not isinstance(emb, list) or len(emb) != 1024:
+                continue
+            sim = _cosine(dense_vec, emb)
+            if sim is not None:
+                cosine_by_doc[did] = sim
+
+        if cosine_by_doc:
+            # cosine sim 내림차순 → rank → 1/(k+rank) RRF 가산
+            sorted_by_cos = sorted(
+                cosine_by_doc.items(), key=lambda x: x[1], reverse=True
+            )
+            for rank, (did, _sim) in enumerate(sorted_by_cos, start=1):
+                doc_score[did] = doc_score.get(did, 0.0) + 1.0 / (_RRF_K + rank)
+            doc_embedding_rrf_used = True
+            doc_embedding_hits = len(cosine_by_doc)
+
+    # query_parsed 갱신 (4-b 결과 반영)
+    query_parsed = QueryParsedInfo(
+        has_dense=query_parsed.has_dense,
+        has_sparse=query_parsed.has_sparse,
+        dense_hits=query_parsed.dense_hits,
+        sparse_hits=query_parsed.sparse_hits,
+        fused=query_parsed.fused,
+        fallback_reason=query_parsed.fallback_reason,
+        reranker_used=query_parsed.reranker_used,
+        reranker_fallback_reason=query_parsed.reranker_fallback_reason,
+        doc_embedding_rrf_used=doc_embedding_rrf_used,
+        doc_embedding_hits=doc_embedding_hits,
+    )
 
     # ------------------------------------------------------------------
     # 5) RRF 점수 내림차순 정렬 + 페이지네이션
@@ -720,6 +794,25 @@ def search(
 
 
 # ---------------------- helpers ----------------------
+
+
+def _cosine(a: list[float], b: list[float]) -> float | None:
+    """W25 D14+1 (G) — 두 벡터의 cosine similarity. 의존성 0 (numpy 미사용).
+
+    1024 dim × 50 docs 정도면 수 ms 이내. 0 벡터 발생 시 None 반환 (가산 skip).
+    """
+    if len(a) != len(b):
+        return None
+    dot = 0.0
+    norm_a = 0.0
+    norm_b = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        norm_a += x * x
+        norm_b += y * y
+    if norm_a <= 0.0 or norm_b <= 0.0:
+        return None
+    return dot / ((norm_a ** 0.5) * (norm_b ** 0.5))
 
 
 def _sparse_only_fallback(
