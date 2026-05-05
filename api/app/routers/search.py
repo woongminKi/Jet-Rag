@@ -27,6 +27,10 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
 
+from app.adapters.impl.bge_reranker_hf import (
+    get_reranker_provider,
+    is_transient_reranker_error,
+)
 from app.adapters.impl.bgem3_hf_embedding import (
     get_bgem3_provider,
     is_transient_hf_error,
@@ -71,6 +75,14 @@ _RETRY_AFTER_SECONDS = "60"
 # 짧은 헤딩 (예: "결론") 은 chunk_idx>0 또는 page>1 이라 false positive 회피.
 _COVER_GUARD_TEXT_LEN = 30
 _COVER_GUARD_PENALTY = 0.3
+
+# W25 D14+1 (S2) — BGE-reranker-v2-m3 cross-encoder rerank.
+# RRF top-K (50) → reranker score → 재정렬. opt-in ENV (default off).
+# 활성 시 cover guard 곱셈 skip — cross-encoder 가 짧은 표지 청크 의미 매칭 약함을 직접 인식.
+_RERANKER_ENABLED_DEFAULT = "false"
+# rerank 후보 cap — top 50 ≈ HF API 1회 호출 latency ~300~500ms.
+# 너무 키우면 latency 증가, 너무 작으면 RRF top-K 가 cap 보다 작을 때 노이즈.
+_RERANKER_TOP_K = 50
 
 # W25 D8 Phase 2 — 메뉴 footer 가드: 1차 시도 실패 → 롤백 / 후속 sprint 신호로 보존.
 # 시도 결과 (work-log/2026-05-04 W25 D8 Phase 2 메뉴 footer 가드.md):
@@ -175,6 +187,10 @@ class QueryParsedInfo(BaseModel):
     sparse_hits: int
     fused: int
     fallback_reason: str | None = None
+    # W25 D14+1 (S2) — BGE-reranker 사용 여부 + 실패 분류.
+    # default False (backward compatible — opt-in ENV off 또는 reranker 실패 시 RRF fallback).
+    reranker_used: bool = False
+    reranker_fallback_reason: str | None = None  # transient / permanent / None
 
 
 class SearchResponse(BaseModel):
@@ -391,6 +407,88 @@ def search(
         elif mode == "sparse":
             rpc_rows = [r for r in rpc_rows if r.get("sparse_rank") is not None]
 
+    # ------------------------------------------------------------------
+    # 2-b) chunks 본문 통합 fetch — cover guard meta + reranker 입력 + 응답 조립 한 번에.
+    #     W25 D14+1 (S2) — 기존엔 cover guard fetch (id, chunk_idx, page, text) 와
+    #     응답 조립 fetch (id, doc_id, chunk_idx, page, section_title, text, metadata)
+    #     가 분리. reranker 도입 시 candidate top-K 의 본문이 필요 → 한 번 fetch 로 통합.
+    # ------------------------------------------------------------------
+    candidate_chunk_ids: list[str] = []
+    seen_cids: set[str] = set()
+    for r in rpc_rows:
+        cid = r["chunk_id"]
+        if cid not in seen_cids:
+            seen_cids.add(cid)
+            candidate_chunk_ids.append(cid)
+
+    chunks_by_id: dict[str, dict] = {}
+    if candidate_chunk_ids:
+        chunks_full_resp = (
+            client.table("chunks")
+            .select("id, doc_id, chunk_idx, page, section_title, text, metadata")
+            .in_("id", candidate_chunk_ids)
+            .execute()
+        )
+        chunks_by_id = {c["id"]: c for c in (chunks_full_resp.data or [])}
+
+    cover_guard_meta: dict[str, dict] = {
+        cid: {
+            "chunk_idx": c.get("chunk_idx"),
+            "page": c.get("page"),
+            "text_len": len(c.get("text") or ""),
+        }
+        for cid, c in chunks_by_id.items()
+    }
+
+    def _is_cover_chunk(chunk_id: str) -> bool:
+        meta = cover_guard_meta.get(chunk_id)
+        if not meta:
+            return False
+        if meta["text_len"] > _COVER_GUARD_TEXT_LEN:
+            return False
+        return meta["chunk_idx"] == 0 or meta["page"] == 1
+
+    # ------------------------------------------------------------------
+    # 2-c) W25 D14+1 (S2) — BGE-reranker cross-encoder 재정렬 (opt-in).
+    #     활성 + candidates 2건 이상 시: top-K 본문을 HF API 로 1회 호출 →
+    #     cross-encoder score 반환 → rpc_rows 의 rrf_score 를 reranker score 로 in-place 대체.
+    #     실패 시 RRF score 그대로 사용 (검색 자체는 차단 X — silent degradation 회피).
+    #     query_parsed.reranker_used / reranker_fallback_reason 로 진단 노출.
+    # ------------------------------------------------------------------
+    reranker_enabled = (
+        os.environ.get("JETRAG_RERANKER_ENABLED", _RERANKER_ENABLED_DEFAULT).lower()
+        == "true"
+    )
+    reranker_used = False
+    reranker_fallback_reason: str | None = None
+
+    if reranker_enabled and len(rpc_rows) > 1 and candidate_chunk_ids:
+        rerank_pairs: list[tuple[str, str]] = []
+        for cid in candidate_chunk_ids[:_RERANKER_TOP_K]:
+            text = (chunks_by_id.get(cid) or {}).get("text") or ""
+            rerank_pairs.append((cid, text))
+        try:
+            provider = get_reranker_provider()
+            scores = provider.rerank(clean_q, rerank_pairs)
+            score_by_id = {
+                cid: s for (cid, _), s in zip(rerank_pairs, scores)
+            }
+            for r in rpc_rows:
+                cid = r["chunk_id"]
+                if cid in score_by_id:
+                    r["rrf_score"] = score_by_id[cid]
+            reranker_used = True
+        except Exception as exc:  # noqa: BLE001
+            if is_transient_reranker_error(exc):
+                reranker_fallback_reason = "transient"
+            else:
+                reranker_fallback_reason = "permanent"
+            logger.warning(
+                "reranker 호출 실패 → RRF fallback (reason=%s): %s",
+                reranker_fallback_reason,
+                exc,
+            )
+
     dense_hits = sum(1 for r in rpc_rows if r.get("dense_rank") is not None)
     sparse_hits = sum(1 for r in rpc_rows if r.get("sparse_rank") is not None)
     query_parsed = QueryParsedInfo(
@@ -400,6 +498,8 @@ def search(
         sparse_hits=sparse_hits,
         fused=len(rpc_rows),
         fallback_reason=fallback_reason,
+        reranker_used=reranker_used,
+        reranker_fallback_reason=reranker_fallback_reason,
     )
 
     if not rpc_rows:
@@ -426,36 +526,6 @@ def search(
         )
 
     # ------------------------------------------------------------------
-    # 2-b) W25 D4 Phase 2 — 표지 청크 가드 (rrf_score in-place 패널티).
-    #     RPC 응답에 chunk metadata 가 없어 (chunk_id/doc_id/rrf_score/dense_rank/sparse_rank 만)
-    #     candidate chunks 의 (chunk_idx, page, char_length(text)) 를 단일 IN 쿼리로 fetch.
-    #     이후 누적 단계 (3)) 에서 패널티 적용 → ranking 변경. 본문 fetch (6)) 는 그대로.
-    # ------------------------------------------------------------------
-    candidate_chunk_ids = {r["chunk_id"] for r in rpc_rows}
-    cover_guard_meta: dict[str, dict] = {}
-    if candidate_chunk_ids:
-        guard_resp = (
-            client.table("chunks")
-            .select("id, chunk_idx, page, text")
-            .in_("id", list(candidate_chunk_ids))
-            .execute()
-        )
-        for c in guard_resp.data or []:
-            cover_guard_meta[c["id"]] = {
-                "chunk_idx": c.get("chunk_idx"),
-                "page": c.get("page"),
-                "text_len": len(c.get("text") or ""),
-            }
-
-    def _is_cover_chunk(chunk_id: str) -> bool:
-        meta = cover_guard_meta.get(chunk_id)
-        if not meta:
-            return False
-        if meta["text_len"] > _COVER_GUARD_TEXT_LEN:
-            return False
-        return meta["chunk_idx"] == 0 or meta["page"] == 1
-
-    # ------------------------------------------------------------------
     # 3) doc_id 별 RRF 그룹 (max score) + chunk_id 별 max score 집계
     # W25 D3 — chunk_id dedupe (C-1a). dense path + sparse path 가 같은 chunk_id 를
     # 별개 row 로 반환할 수 있어 list 누적 시 matched_chunk_count 가 부풀려짐.
@@ -468,9 +538,9 @@ def search(
         chunk_id = r["chunk_id"]
         score = float(r["rrf_score"])
         # W25 D4 Phase 2 — 표지 청크 가드: 짧은 chunk_idx=0 또는 page=1 청크 score 패널티.
-        # doc_score / doc_chunk_scores 둘 다 동일 곱셈 적용 — doc-level ranking 도 함께 떨어져야
-        # 표지 청크만 가진 doc 의 top-1 진입 회피.
-        if _is_cover_chunk(chunk_id):
+        # W25 D14+1 (S2) — reranker 활성 시 cross-encoder 가 본질 처리 → 곱셈 skip
+        # (음수 logit 에 곱셈 시 부호 뒤집힘 회피 + 표지 청크 의미 매칭 약함을 reranker 가 직접 인식).
+        if not reranker_used and _is_cover_chunk(chunk_id):
             score *= _COVER_GUARD_PENALTY
         doc_score[doc_id] = max(doc_score.get(doc_id, 0.0), score)
         existing = doc_chunk_scores[doc_id].get(chunk_id)
@@ -548,22 +618,14 @@ def search(
         if is_doc_scope
         else _MAX_MATCHED_CHUNKS_PER_DOC
     )
+    # W25 D14+1 (S2) — chunks 본문은 2-b) 단계에서 이미 candidate top-K 전체 fetch 됨.
+    # selected_chunk_ids 는 페이지 내 응답 표시용 (chunks_by_id 의 부분집합) — 추가 fetch 불필요.
     selected_chunk_ids: list[str] = []
     for did in page_doc_ids:
         top_ids = sorted(
             doc_chunk_scores[did].items(), key=lambda x: x[1], reverse=True
         )[:chunk_cap]
         selected_chunk_ids.extend(cid for cid, _ in top_ids)
-
-    chunks_resp = (
-        client.table("chunks")
-        .select("id, doc_id, chunk_idx, page, section_title, text, metadata")
-        .in_("id", selected_chunk_ids)
-        .execute()
-    )
-    chunks_by_id: dict[str, dict] = {
-        c["id"]: c for c in (chunks_resp.data or [])
-    }
     # chunk_id → rrf_score 매핑 (페이지 내 응답에서만 사용).
     # doc_chunk_scores 가 이미 chunk_id 별 max 로 dedupe 됨 (W25 D3) — 단순 복사.
     chunk_rrf: dict[str, float] = {}
