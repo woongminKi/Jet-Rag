@@ -16,6 +16,7 @@ import { getBrowserSupabase } from '@/lib/supabase/client';
  */
 
 const FALLBACK_POLL_MS = 15000;
+const SAFETY_RESYNC_MS = 60000; // Realtime 가 missing event 등 발생 시 ground truth 보정
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
 export interface ActiveDocsState {
@@ -51,18 +52,30 @@ export function useActiveDocsRealtime(
       if (cancelled) return;
       setItems(Array.from(itemsByDocId.values()));
     };
-
-    const initial = async () => {
+    /** ground truth 동기화 — getActiveDocs 응답 기반 전체 교체.
+     *  응답에 없는 doc (이미 completed) 제거 + 신규/갱신 upsert. Realtime UPDATE
+     *  missing 이나 RLS 차단 등으로 terminal event 누락 시에도 자동 정정. */
+    const resyncFromBackend = async () => {
       try {
         const res = await getActiveDocs(24);
         if (cancelled) return;
+        const responseDocIds = new Set(res.items.map((i) => i.doc_id));
+        for (const docId of Array.from(itemsByDocId.keys())) {
+          if (!responseDocIds.has(docId)) {
+            const stale = itemsByDocId.get(docId);
+            if (stale) removeItem(docId, stale.job.job_id);
+          }
+        }
         for (const it of res.items) upsertItem(it);
         flush();
       } catch {
-        // graceful: 백엔드 미기동 환경에서도 Realtime push 만으로 점진 채움
-      } finally {
-        if (!cancelled) setLoading(false);
+        /* graceful */
       }
+    };
+
+    const initial = async () => {
+      await resyncFromBackend();
+      if (!cancelled) setLoading(false);
     };
 
     initial();
@@ -72,16 +85,10 @@ export function useActiveDocsRealtime(
       // fallback polling (Realtime 미설정 환경)
       const tick = setInterval(() => {
         if (cancelled) return;
-        getActiveDocs(24)
-          .then((res) => {
-            if (cancelled) return;
-            // 전체 교체 (단순 fallback)
-            itemsByJobId.clear();
-            itemsByDocId.clear();
-            for (const it of res.items) upsertItem(it);
-            flush();
-          })
-          .catch(() => {});
+        // 전체 교체 (단순 fallback) — resyncFromBackend 의 incremental 보다 강한 의미
+        itemsByJobId.clear();
+        itemsByDocId.clear();
+        resyncFromBackend();
       }, FALLBACK_POLL_MS);
       return () => {
         cancelled = true;
@@ -154,22 +161,24 @@ export function useActiveDocsRealtime(
             });
             flush();
           } else {
-            // 신규 doc — 메타 보강을 위해 active 재조회 (debounce 효과)
-            getActiveDocs(24)
-              .then((res) => {
-                if (cancelled) return;
-                for (const it of res.items) upsertItem(it);
-                flush();
-              })
-              .catch(() => {});
+            // 신규 doc — 메타 보강 + ground truth 동기화 (전체 교체로 stale 제거)
+            resyncFromBackend();
           }
         },
       )
       .subscribe();
 
+    // safety net — Realtime 가 RLS 차단·missing event 등으로 terminal 누락해도
+    // 60s 마다 ground truth 정정. polling 1.5s/5s 보다 훨씬 가벼움.
+    const safetyTick = setInterval(() => {
+      if (cancelled) return;
+      resyncFromBackend();
+    }, SAFETY_RESYNC_MS);
+
     return () => {
       cancelled = true;
       sb.removeChannel(channel);
+      clearInterval(safetyTick);
     };
   }, []);
 
