@@ -202,6 +202,9 @@ export interface JobStatus {
   queued_at: string;
   started_at: string | null;
   finished_at: string | null;
+  /** W25 D14 Sprint B — 대략적 남은 시간(ms). queued/running 시만 추정값,
+   *  나머지는 null. ingest_logs.duration_ms median (5분 cache) + fallback. */
+  estimated_remaining_ms?: number | null;
 }
 
 export interface DocumentStatusResponse {

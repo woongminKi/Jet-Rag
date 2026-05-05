@@ -31,6 +31,7 @@ from app.ingest import (
     run_full_ingest,
     run_pipeline,
 )
+from app.ingest.eta import compute_remaining_ms
 from app.routers._input_gate import HEAD_BYTES, validate_magic
 from app.routers._url_gate import recheck_dns_consistency, validate_url_safety
 
@@ -79,6 +80,11 @@ class JobStatus(BaseModel):
     queued_at: str
     started_at: str | None
     finished_at: str | None
+    # W25 D14 Sprint B — 대략적 남은 시간(ms). queued/running 시만 추정값,
+    # completed/failed/cancelled 는 None. ingest_logs.duration_ms median 기반
+    # (5분 TTL cache + fallback hardcoded). 첫 ingest 시 정확도 낮음 — 사용자 표시
+    # 시 "약 N분 N초 남음" 보수적 표기 권장.
+    estimated_remaining_ms: int | None = None
 
 
 class DocumentStatusResponse(BaseModel):
@@ -875,6 +881,11 @@ def list_active_documents(
                     queued_at=row["queued_at"],
                     started_at=row.get("started_at"),
                     finished_at=row.get("finished_at"),
+                    estimated_remaining_ms=compute_remaining_ms(
+                        supabase,
+                        job_status=row["status"],
+                        current_stage=row.get("current_stage"),
+                    ),
                 ),
             )
         )
@@ -943,6 +954,11 @@ def batch_status(
                     queued_at=row["queued_at"],
                     started_at=row.get("started_at"),
                     finished_at=row.get("finished_at"),
+                    estimated_remaining_ms=compute_remaining_ms(
+                        supabase,
+                        job_status=row["status"],
+                        current_stage=row.get("current_stage"),
+                    ),
                 ),
             )
         )
