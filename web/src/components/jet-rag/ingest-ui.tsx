@@ -3,6 +3,7 @@
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ApiError, uploadDocument } from '@/lib/api';
+import { emitDocUploaded } from '@/lib/notifications/upload-event';
 import { DropZone } from '@/components/jet-rag/drop-zone';
 import { UploadList } from '@/components/jet-rag/upload-list';
 import type { UploadItemData } from '@/components/jet-rag/upload-item';
@@ -50,6 +51,10 @@ export function IngestUI({ initialItems }: IngestUIProps) {
                 : it,
             ),
           );
+          // W25 D14 — 헤더 indicator 즉시 갱신 (Realtime INSERT event 도착 대기 없이)
+          if (!res.duplicated) {
+            emitDocUploaded({ docId: res.doc_id });
+          }
           if (res.duplicated && !autoRoutedRef.current) {
             autoRoutedRef.current = true;
             router.push(`/doc/${res.doc_id}?duplicated=1`);

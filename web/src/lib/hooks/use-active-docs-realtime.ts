@@ -1,7 +1,12 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { getActiveDocs, type ActiveDocItem } from '@/lib/api';
+import {
+  getActiveDocs,
+  getDocumentStatus,
+  type ActiveDocItem,
+} from '@/lib/api';
+import { onDocUploaded } from '@/lib/notifications/upload-event';
 import { getBrowserSupabase } from '@/lib/supabase/client';
 
 /** W25 D14 Phase 1 — 글로벌 active docs 상태 (Supabase Realtime 기반).
@@ -53,21 +58,44 @@ export function useActiveDocsRealtime(
       setItems(Array.from(itemsByDocId.values()));
     };
     /** ground truth 동기화 — getActiveDocs 응답 기반 전체 교체.
-     *  응답에 없는 doc (이미 completed) 제거 + 신규/갱신 upsert. Realtime UPDATE
-     *  missing 이나 RLS 차단 등으로 terminal event 누락 시에도 자동 정정. */
+     *  응답에 없는 doc (이미 completed/failed/cancelled) 는 제거 + 정확한 terminal status
+     *  를 getDocumentStatus 1회 조회 후 onTerminal 콜백 호출 — Realtime UPDATE 가
+     *  RLS 차단·missing event 로 누락돼도 토스트 정상. */
     const resyncFromBackend = async () => {
       try {
         const res = await getActiveDocs(24);
         if (cancelled) return;
         const responseDocIds = new Set(res.items.map((i) => i.doc_id));
+        const droppedItems: ActiveDocItem[] = [];
         for (const docId of Array.from(itemsByDocId.keys())) {
           if (!responseDocIds.has(docId)) {
             const stale = itemsByDocId.get(docId);
-            if (stale) removeItem(docId, stale.job.job_id);
+            if (stale) {
+              droppedItems.push(stale);
+              removeItem(docId, stale.job.job_id);
+            }
           }
         }
         for (const it of res.items) upsertItem(it);
         flush();
+        // 빠진 doc 의 정확 status 조회 후 onTerminal — Realtime UPDATE 누락 보완
+        for (const dropped of droppedItems) {
+          getDocumentStatus(dropped.doc_id)
+            .then((status) => {
+              if (cancelled) return;
+              const terminalStatus = status.job?.status;
+              if (
+                terminalStatus &&
+                TERMINAL_STATUSES.has(terminalStatus) &&
+                terminalStatus !== 'cancelled'
+              ) {
+                onTerminalRef.current?.(dropped, terminalStatus);
+              }
+            })
+            .catch(() => {
+              /* graceful — 토스트 누락 허용 */
+            });
+        }
       } catch {
         /* graceful */
       }
@@ -85,14 +113,16 @@ export function useActiveDocsRealtime(
       // fallback polling (Realtime 미설정 환경)
       const tick = setInterval(() => {
         if (cancelled) return;
-        // 전체 교체 (단순 fallback) — resyncFromBackend 의 incremental 보다 강한 의미
-        itemsByJobId.clear();
-        itemsByDocId.clear();
         resyncFromBackend();
       }, FALLBACK_POLL_MS);
+      // 업로드 직후 즉시 갱신 (polling 15s 대기 없이)
+      const offUploadedFallback = onDocUploaded(() => {
+        resyncFromBackend();
+      });
       return () => {
         cancelled = true;
         clearInterval(tick);
+        offUploadedFallback();
       };
     }
 
@@ -175,10 +205,17 @@ export function useActiveDocsRealtime(
       resyncFromBackend();
     }, SAFETY_RESYNC_MS);
 
+    // W25 D14 — IngestUI 가 업로드 성공 직후 emit → indicator 즉시 갱신.
+    // Realtime INSERT event 도착 대기 없이 헤더 카운트 즉시 +1.
+    const offUploaded = onDocUploaded(() => {
+      resyncFromBackend();
+    });
+
     return () => {
       cancelled = true;
       sb.removeChannel(channel);
       clearInterval(safetyTick);
+      offUploaded();
     };
   }, []);
 
