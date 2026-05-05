@@ -171,6 +171,32 @@ export const submitRagasEval = async (
   return res.json() as Promise<RagasEvalResponse>;
 };
 
+/** W25 D14 — 검색 적합도 (Context Precision) 만 측정 (LLM 호출 1개). */
+export interface SearchPrecisionPayload {
+  query: string;
+  contexts: string[];
+  doc_id?: string | null;
+}
+
+export const getSearchPrecision = (query: string, docId?: string | null) => {
+  const qs = new URLSearchParams({ query });
+  if (docId) qs.set('doc_id', docId);
+  return apiGet<RagasEvalResponse>(`/search/eval-precision?${qs.toString()}`);
+};
+
+export const submitSearchPrecision = async (
+  payload: SearchPrecisionPayload,
+): Promise<RagasEvalResponse> => {
+  const res = await fetch(`${_API_BASE}/search/eval-precision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+  });
+  if (!res.ok) throw new ApiError(res.status, await res.text());
+  return res.json() as Promise<RagasEvalResponse>;
+};
+
 export const reingestDocument = (docId: string) =>
   apiPost<ReingestResponse>(`/documents/${docId}/reingest`);
 

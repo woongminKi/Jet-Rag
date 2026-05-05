@@ -5,6 +5,7 @@ import { getStats, searchDocuments } from '@/lib/api';
 import { SearchSubheader } from '@/components/jet-rag/search-subheader';
 import { FilterSidebar } from '@/components/jet-rag/filter-sidebar';
 import { ResultCard } from '@/components/jet-rag/result-card';
+import { SearchPrecisionCard } from '@/components/jet-rag/search-precision-card';
 import { Badge } from '@/components/ui/badge';
 import { buildDocsUrl } from '@/lib/docs-filter';
 
@@ -60,6 +61,15 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
         <div className="grid gap-6 lg:grid-cols-[260px_1fr]">
           <FilterSidebar />
           <section>
+            {/* W25 D14 — 검색 적합도 자동 측정 (mount 시 캐시 → 미스 시 LLM judge ~5초). */}
+            {response.items.length > 0 && (
+              <SearchPrecisionCard
+                query={query}
+                docId={docId}
+                hits={response.items}
+              />
+            )}
+
             {/* W25 D14 — 검색 결과 위 prominent AI 답변 진입 카드.
                 sub-header 의 작은 버튼만으로 진입점이 약하다는 사용자 피드백 반영. */}
             <Link

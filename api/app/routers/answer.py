@@ -561,3 +561,163 @@ def submit_ragas_eval(payload: RagasEvalRequest) -> RagasEvalResponse:
         took_ms=result.took_ms,
         cached=False,
     )
+
+
+# ============================================================
+# /search/eval-precision — W25 D14 검색 적합도만 측정 (LLM 호출 1개)
+# ============================================================
+
+class SearchPrecisionRequest(BaseModel):
+    query: str
+    contexts: list[str]
+    doc_id: str | None = None
+
+
+@router.get("/search/eval-precision", response_model=RagasEvalResponse)
+def get_search_precision(
+    query: str = Query(..., min_length=1, max_length=_MAX_QUERY_LEN),
+    doc_id: str | None = Query(default=None),
+) -> RagasEvalResponse:
+    """캐시 조회 — 검색 적합도만 측정한 row (answer_text="" sentinel)."""
+    if _ragas_eval_disabled:
+        return RagasEvalResponse(
+            metrics=RagasMetricsModel(),
+            judge_model=None,
+            took_ms=None,
+            skipped=True,
+            note="answer_ragas_evals 테이블 미존재 — 마이그 012 적용 필요",
+        )
+    import unicodedata as _u
+
+    clean_q = _u.normalize("NFC", query.strip())
+    client = get_supabase_client()
+    # answer_text = "" sentinel 매칭 (검색 전용 row)
+    try:
+        q = (
+            client.table("answer_ragas_evals")
+            .select("metrics, model_judge, took_ms, created_at")
+            .eq("query", clean_q)
+            .eq("answer_text", "")
+            .order("created_at", desc=True)
+            .limit(1)
+        )
+        if doc_id:
+            q = q.eq("doc_id", doc_id)
+        else:
+            q = q.is_("doc_id", "null")
+        rows = (q.execute().data or [])
+        row = rows[0] if rows else None
+    except Exception as exc:  # noqa: BLE001
+        _disable_ragas_eval(exc)
+        row = None
+
+    if not row:
+        return RagasEvalResponse(
+            metrics=RagasMetricsModel(),
+            judge_model=None,
+            took_ms=None,
+            cached=False,
+        )
+    metrics_dict = row.get("metrics") or {}
+    return RagasEvalResponse(
+        metrics=RagasMetricsModel(**metrics_dict),
+        judge_model=row.get("model_judge"),
+        took_ms=row.get("took_ms"),
+        cached=True,
+        created_at=row.get("created_at"),
+    )
+
+
+@router.post("/search/eval-precision", response_model=RagasEvalResponse)
+def submit_search_precision(payload: SearchPrecisionRequest) -> RagasEvalResponse:
+    """검색 적합도 (Context Precision) 만 측정 + 캐시.
+
+    LLM judge 호출 1개 → ~$0.003/평가. 답변 생성 (Faithfulness/Relevancy) 호출 X.
+    """
+    if _ragas_eval_disabled:
+        return RagasEvalResponse(
+            metrics=RagasMetricsModel(),
+            judge_model=None,
+            took_ms=None,
+            skipped=True,
+            note="answer_ragas_evals 테이블 미존재 — 마이그 012 적용 필요",
+        )
+    import unicodedata as _u
+    from app.services.ragas_eval import (
+        RagasUnavailable,
+        evaluate_context_precision_only,
+    )
+
+    clean_q = _u.normalize("NFC", payload.query.strip())
+    settings = get_settings()
+    client = get_supabase_client()
+
+    # 캐시 우선 조회 (검색 전용 row — answer_text="")
+    try:
+        q = (
+            client.table("answer_ragas_evals")
+            .select("metrics, model_judge, took_ms, created_at")
+            .eq("query", clean_q)
+            .eq("answer_text", "")
+            .order("created_at", desc=True)
+            .limit(1)
+        )
+        if payload.doc_id:
+            q = q.eq("doc_id", payload.doc_id)
+        else:
+            q = q.is_("doc_id", "null")
+        cached_rows = q.execute().data or []
+        if cached_rows:
+            cached = cached_rows[0]
+            return RagasEvalResponse(
+                metrics=RagasMetricsModel(**(cached.get("metrics") or {})),
+                judge_model=cached.get("model_judge"),
+                took_ms=cached.get("took_ms"),
+                cached=True,
+                created_at=cached.get("created_at"),
+            )
+    except Exception as exc:  # noqa: BLE001
+        _disable_ragas_eval(exc)
+        return RagasEvalResponse(
+            metrics=RagasMetricsModel(),
+            judge_model=None,
+            took_ms=None,
+            skipped=True,
+            note="캐시 조회 실패 — 마이그 012 미적용 가능",
+        )
+
+    # 실측정
+    try:
+        result = evaluate_context_precision_only(query=clean_q, contexts=payload.contexts)
+    except RagasUnavailable as exc:
+        return RagasEvalResponse(
+            metrics=RagasMetricsModel(),
+            judge_model=None,
+            took_ms=None,
+            skipped=True,
+            note=f"RAGAS 평가 불가: {exc}",
+        )
+
+    metrics_dict = result.metrics.to_dict()
+    try:
+        client.table("answer_ragas_evals").insert(
+            {
+                "user_id": str(settings.default_user_id),
+                "doc_id": payload.doc_id,
+                "query": clean_q,
+                "answer_text": "",  # sentinel — 검색 전용 row
+                "contexts": payload.contexts,
+                "metrics": metrics_dict,
+                "model_judge": result.judge_model,
+                "took_ms": result.took_ms,
+            }
+        ).execute()
+    except Exception as exc:  # noqa: BLE001
+        _disable_ragas_eval(exc)
+
+    return RagasEvalResponse(
+        metrics=RagasMetricsModel(**metrics_dict),
+        judge_model=result.judge_model,
+        took_ms=result.took_ms,
+        cached=False,
+    )

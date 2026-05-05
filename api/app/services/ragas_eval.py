@@ -139,6 +139,80 @@ def evaluate_single(
         raise RagasUnavailable(f"평가 실패: {exc}") from exc
 
 
+def evaluate_context_precision_only(
+    *,
+    query: str,
+    contexts: list[str],
+) -> RagasEvalResult:
+    """검색 적합도만 측정 (LLMContextPrecisionWithoutReference) — 답변 없이.
+
+    /search 결과 페이지에서 LLM 답변 생성 비용 없이 "검색 chunks 가 query 에
+    얼마나 잘 맞는가" 만 평가. judge LLM 호출 1개만 사용 → ~$0.003/평가.
+    """
+    start = time.monotonic()
+    if not contexts:
+        return RagasEvalResult(
+            metrics=RagasMetrics(context_precision=0.0),
+            judge_model=_JUDGE_MODEL,
+            took_ms=int((time.monotonic() - start) * 1000),
+        )
+
+    try:
+        from datasets import Dataset
+        from langchain_google_genai import (
+            ChatGoogleGenerativeAI,
+            GoogleGenerativeAIEmbeddings,
+        )
+        from ragas import EvaluationDataset, evaluate
+        from ragas.embeddings import LangchainEmbeddingsWrapper
+        from ragas.llms import LangchainLLMWrapper
+        from ragas.metrics import LLMContextPrecisionWithoutReference
+    except ImportError as exc:
+        raise RagasUnavailable(f"의존성 누락: {exc}") from exc
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise RagasUnavailable("GEMINI_API_KEY 미설정")
+
+    try:
+        judge_llm = LangchainLLMWrapper(
+            ChatGoogleGenerativeAI(model=_JUDGE_MODEL, google_api_key=api_key)
+        )
+        judge_emb = LangchainEmbeddingsWrapper(
+            GoogleGenerativeAIEmbeddings(model=_EMBEDDING_MODEL, google_api_key=api_key)
+        )
+        # response 필드는 dummy — Faithfulness/Relevancy 호출 안 함
+        ds = Dataset.from_dict(
+            {
+                "user_input": [query],
+                "response": [""],
+                "retrieved_contexts": [contexts],
+            }
+        )
+        result = evaluate(
+            dataset=EvaluationDataset.from_hf_dataset(ds),
+            metrics=[LLMContextPrecisionWithoutReference()],
+            llm=judge_llm,
+            embeddings=judge_emb,
+        )
+        scores = result.scores[0] if result.scores else {}
+        metrics = RagasMetrics(
+            context_precision=_safe_float(
+                scores.get("llm_context_precision_without_reference")
+            ),
+        )
+        return RagasEvalResult(
+            metrics=metrics,
+            judge_model=_JUDGE_MODEL,
+            took_ms=int((time.monotonic() - start) * 1000),
+        )
+    except RagasUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Context Precision evaluate 실패")
+        raise RagasUnavailable(f"평가 실패: {exc}") from exc
+
+
 def _safe_float(v) -> float | None:
     try:
         if v is None:
