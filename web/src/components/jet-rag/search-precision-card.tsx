@@ -130,8 +130,8 @@ export function SearchPrecisionCard({ query, docId, hits }: SearchPrecisionCardP
           {score !== null ? `${pct}점` : '—'}
         </span>
       </div>
-      <p className="mt-1 text-[11px] text-muted-foreground" title="LLMContextPrecisionWithoutReference">
-        검색된 chunks 가 질문에 얼마나 잘 맞는가 — 가장 관련된 chunk 가 상위에 있는지 LLM judge 평가
+      <p className="mt-1 text-[11px] text-muted-foreground" title="BGE-M3 dense embedding cosine similarity (DCG-weighted)">
+        검색된 chunks 가 질문에 얼마나 잘 맞는가 — BGE-M3 임베딩 cosine + ranking 가중 평균
       </p>
       <div className="mt-2 h-1.5 overflow-hidden rounded-sm bg-muted">
         <div

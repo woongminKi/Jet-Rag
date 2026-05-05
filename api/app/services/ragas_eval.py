@@ -79,11 +79,7 @@ def evaluate_single(
         from ragas import EvaluationDataset, evaluate
         from ragas.embeddings import LangchainEmbeddingsWrapper
         from ragas.llms import LangchainLLMWrapper
-        from ragas.metrics import (
-            Faithfulness,
-            LLMContextPrecisionWithoutReference,
-            ResponseRelevancy,
-        )
+        from ragas.metrics import Faithfulness, ResponseRelevancy
     except ImportError as exc:
         raise RagasUnavailable(f"의존성 누락: {exc}") from exc
 
@@ -99,7 +95,6 @@ def evaluate_single(
             GoogleGenerativeAIEmbeddings(model=_EMBEDDING_MODEL, google_api_key=api_key)
         )
 
-        # 단일 row dataset
         ds = Dataset.from_dict(
             {
                 "user_input": [query],
@@ -107,25 +102,28 @@ def evaluate_single(
                 "retrieved_contexts": [contexts],
             }
         )
+        # W25 D14 — Faithfulness/ResponseRelevancy 만 LLM judge.
+        # context_precision 은 BGE-M3 휴리스틱 (LLMContextPrecisionWithoutReference 가
+        # Gemini 한국어에서 0점 false negative 일관 → 별도 계산).
         result = evaluate(
             dataset=EvaluationDataset.from_hf_dataset(ds),
-            metrics=[
-                Faithfulness(),
-                ResponseRelevancy(),
-                LLMContextPrecisionWithoutReference(),
-            ],
+            metrics=[Faithfulness(), ResponseRelevancy()],
             llm=judge_llm,
             embeddings=judge_emb,
         )
-        # result.scores 는 row 별 dict (단일 row 라 [0])
         scores = result.scores[0] if result.scores else {}
+
+        # 검색 적합도 — BGE-M3 cosine (별도 함수 재사용)
+        try:
+            heur = evaluate_context_precision_only(query=query, contexts=contexts)
+            ctx_precision = heur.metrics.context_precision
+        except RagasUnavailable:
+            ctx_precision = None
+
         metrics = RagasMetrics(
             faithfulness=_safe_float(scores.get("faithfulness")),
             answer_relevancy=_safe_float(scores.get("answer_relevancy")),
-            # W25 D14 — "검색 적합도" — query+contexts 만으로 ranking 평가 (reference 불필요)
-            context_precision=_safe_float(
-                scores.get("llm_context_precision_without_reference")
-            ),
+            context_precision=ctx_precision,
         )
         return RagasEvalResult(
             metrics=metrics,
@@ -139,86 +137,84 @@ def evaluate_single(
         raise RagasUnavailable(f"평가 실패: {exc}") from exc
 
 
+_HEURISTIC_JUDGE_LABEL = "bge-m3-cosine"
+
+
 def evaluate_context_precision_only(
     *,
     query: str,
     contexts: list[str],
 ) -> RagasEvalResult:
-    """검색 적합도만 측정 (LLMContextPrecisionWithoutReference) — 답변 없이.
+    """검색 적합도 — BGE-M3 임베딩 cosine similarity 기반 휴리스틱 (W25 D14 갱신).
 
-    /search 결과 페이지에서 LLM 답변 생성 비용 없이 "검색 chunks 가 query 에
-    얼마나 잘 맞는가" 만 평가. judge LLM 호출 1개만 사용 → ~$0.003/평가.
+    원래 RAGAS LLMContextPrecisionWithoutReference 사용했지만 한국어 query/contexts
+    에서 Gemini 2.5 Flash/Pro 모두 일관되게 0.0 반환 (영어 prompt + LLM 의 한국어
+    "유용성" 판정 false negative). 동일 데이터로 BGE-M3 cosine 은 의미적 유사도
+    0.5~0.9 정상 반환 → 휴리스틱으로 교체.
+
+    알고리즘:
+      1) BGE-M3 로 query + 각 context dense embedding (1024 dim)
+      2) cosine similarity 계산
+      3) ranking 가중 평균 — top-k 위치 가중 (검색 결과 ranking 보존)
+
+    장점: LLM judge 비용 0, 빠름 (~1~2초, BGE-M3 HF API), 한국어 정확.
+    한계: 임베딩 모델의 한계 그대로 — 의미적 매칭만, "useful for answer" 같은
+    추론 X. 그래도 사용자 직관 ("관련 chunk 가 검색됐나") 에 잘 fit.
     """
     start = time.monotonic()
     if not contexts:
         return RagasEvalResult(
             metrics=RagasMetrics(context_precision=0.0),
-            judge_model=_JUDGE_MODEL,
+            judge_model=_HEURISTIC_JUDGE_LABEL,
             took_ms=int((time.monotonic() - start) * 1000),
         )
 
     try:
-        from datasets import Dataset
-        from langchain_google_genai import (
-            ChatGoogleGenerativeAI,
-            GoogleGenerativeAIEmbeddings,
-        )
-        from ragas import EvaluationDataset, evaluate
-        from ragas.embeddings import LangchainEmbeddingsWrapper
-        from ragas.llms import LangchainLLMWrapper
-        from ragas.metrics import LLMContextPrecisionWithoutReference
+        from app.adapters.impl.bgem3_hf_embedding import get_bgem3_provider
     except ImportError as exc:
-        raise RagasUnavailable(f"의존성 누락: {exc}") from exc
-
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise RagasUnavailable("GEMINI_API_KEY 미설정")
+        raise RagasUnavailable(f"BGE-M3 어댑터 누락: {exc}") from exc
 
     try:
-        judge_llm = LangchainLLMWrapper(
-            ChatGoogleGenerativeAI(model=_JUDGE_MODEL, google_api_key=api_key)
-        )
-        judge_emb = LangchainEmbeddingsWrapper(
-            GoogleGenerativeAIEmbeddings(model=_EMBEDDING_MODEL, google_api_key=api_key)
-        )
-        # response 필드는 dummy — Faithfulness/Relevancy 호출 안 함
-        ds = Dataset.from_dict(
-            {
-                "user_input": [query],
-                "response": [""],
-                "retrieved_contexts": [contexts],
-            }
-        )
-        result = evaluate(
-            dataset=EvaluationDataset.from_hf_dataset(ds),
-            metrics=[LLMContextPrecisionWithoutReference()],
-            llm=judge_llm,
-            embeddings=judge_emb,
-        )
-        scores = result.scores[0] if result.scores else {}
-        # W25 D14 — Gemini judge false negative 디버그용 raw 점수 로그
-        logger.info(
-            "context_precision raw scores: %s (query=%r, n_contexts=%d, ctx_first=%r)",
-            dict(scores),
-            query,
-            len(contexts),
-            (contexts[0] if contexts else "")[:80],
-        )
-        metrics = RagasMetrics(
-            context_precision=_safe_float(
-                scores.get("llm_context_precision_without_reference")
-            ),
-        )
-        return RagasEvalResult(
-            metrics=metrics,
-            judge_model=_JUDGE_MODEL,
-            took_ms=int((time.monotonic() - start) * 1000),
-        )
-    except RagasUnavailable:
-        raise
+        provider = get_bgem3_provider()
+        q_vec = provider.embed_query(query)
+        # embed_batch — 1회 HF API call 로 모든 contexts 처리 (latency ↓)
+        ctx_results = provider.embed_batch(contexts)
+        ctx_vecs = [r.dense for r in ctx_results]
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Context Precision evaluate 실패")
-        raise RagasUnavailable(f"평가 실패: {exc}") from exc
+        logger.exception("BGE-M3 embed 실패")
+        raise RagasUnavailable(f"임베딩 실패: {exc}") from exc
+
+    # cosine similarity (dim 동일 가정)
+    import math
+
+    def _cos(a: list[float], b: list[float]) -> float:
+        if not a or not b or len(a) != len(b):
+            return 0.0
+        dot = sum(x * y for x, y in zip(a, b))
+        na = math.sqrt(sum(x * x for x in a)) or 1.0
+        nb = math.sqrt(sum(x * x for x in b)) or 1.0
+        return dot / (na * nb)
+
+    sims = [max(0.0, _cos(q_vec, cv)) for cv in ctx_vecs]
+    # ranking 가중 평균 — k 번째 chunk weight = 1/log2(k+2) (DCG 패턴)
+    weights = [1.0 / math.log2(i + 2) for i in range(len(sims))]
+    weighted_sum = sum(s * w for s, w in zip(sims, weights))
+    weight_total = sum(weights) or 1.0
+    score = weighted_sum / weight_total
+
+    logger.info(
+        "context_precision (heuristic): score=%.3f sims=%s (query=%r, n=%d)",
+        score,
+        [f"{s:.2f}" for s in sims[:5]],
+        query,
+        len(sims),
+    )
+
+    return RagasEvalResult(
+        metrics=RagasMetrics(context_precision=_safe_float(score)),
+        judge_model=_HEURISTIC_JUDGE_LABEL,
+        took_ms=int((time.monotonic() - start) * 1000),
+    )
 
 
 def _safe_float(v) -> float | None:
