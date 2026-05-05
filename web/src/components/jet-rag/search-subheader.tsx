@@ -3,7 +3,7 @@
 import { useState, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Bug, FileText, Search } from 'lucide-react';
+import { ArrowLeft, Bug, FileText, Search, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -122,6 +122,22 @@ export function SearchSubheader({
         <Badge variant="secondary" className="hidden whitespace-nowrap sm:inline-flex">
           {total}개 결과 · {(tookMs / 1000).toFixed(2)}초
         </Badge>
+
+        {/* W25 D14 — AI 답변 진입점. 검색 결과 페이지 → /ask (LLM RAG + 신뢰도 + 출처). */}
+        <Button
+          asChild
+          size="sm"
+          variant="outline"
+          className="h-8 gap-1.5 whitespace-nowrap px-2.5 text-xs"
+          title="현재 검색어로 AI 답변 보기 (Gemini + 출처 인용)"
+        >
+          <Link
+            href={`/ask?q=${encodeURIComponent(initialQuery)}${docId ? `&doc_id=${docId}` : ''}`}
+          >
+            <Sparkles className="h-3.5 w-3.5 text-primary" />
+            <span>AI 답변</span>
+          </Link>
+        </Button>
         {/* W9 Day 8 — fallback badge 는 사용자 알람 성격이라 mobile 도 노출 (한계 #33).
             dense/sparse 진단 badge 는 좁은 폭 보호로 md+ 만 유지. */}
         {queryParsed?.fallback_reason && (
