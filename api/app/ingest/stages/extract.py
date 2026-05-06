@@ -109,9 +109,12 @@ _PDF_VISION_ENRICH_ENABLED = (
 # enrich 모드 페이지 cap (paid tier 환경에서도 RPM/latency 보호).
 _VISION_ENRICH_MAX_PAGES = int(os.environ.get("JETRAG_PDF_VISION_ENRICH_MAX_PAGES", "50"))
 # W25 D14 Sprint 4 — sweep 로직: 503 random 실패 페이지 자동 재시도.
-# 1차 pass 후 누락 페이지만 2차/3차 sweep. 한 reingest 안에서 누락 ↓↓.
+# 1차 pass 후 누락 페이지만 2차 sweep. 한 reingest 안에서 누락 ↓↓.
 # 정상 환경에선 1차에서 모두 성공 → sweep 즉시 종료 (latency 영향 0).
-_VISION_ENRICH_MAX_SWEEPS = int(os.environ.get("JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS", "3"))
+# 2026-05-06 D2-C — master plan §7.3 정합: default 3 → 2.
+#   sweep × retry 곱셈 제거 (sweep 2 × retry 1 = worst case 페이지당 2 호출).
+#   회귀 발생 시 ENV `JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS=3` 으로 즉시 회복.
+_VISION_ENRICH_MAX_SWEEPS = int(os.environ.get("JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS", "2"))
 
 
 def run_extract_stage(job_id: str, doc_id: str) -> ExtractionResult | None:

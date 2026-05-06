@@ -78,13 +78,47 @@ class TestEnrichPdfWithVision(unittest.TestCase):
 
     def test_per_page_failure_graceful(self):
         # 한 페이지 vision 실패해도 다른 페이지는 진행 + warning 추가.
-        # W25 D14 Sprint 4 — sweep 로직: page 2 가 sweep 1/2/3 모두 실패 → 최종 누락.
+        # 2026-05-06 D2-C — master plan §7.3: sweep default 3 → 2.
+        # page 2 가 sweep 1/2 모두 실패 → 최종 누락.
+        from app.ingest.stages import extract as ext_mod
+
         data = _make_pdf_bytes(2)
         base = ExtractionResult(
             source_type="pdf", sections=[], raw_text="", warnings=[]
         )
         parser = MagicMock()
-        # 첫 페이지 성공, 두 번째 페이지 sweep 3회 모두 raise
+        # 첫 페이지 성공, 두 번째 페이지 sweep 2회 모두 raise
+        parser.parse.side_effect = [
+            ExtractionResult(
+                source_type="image",
+                sections=[ExtractedSection(text="ok", page=None, section_title=None)],
+                raw_text="ok",
+                warnings=[],
+            ),
+            RuntimeError("Vision API timeout"),  # sweep 1
+            RuntimeError("Vision API timeout"),  # sweep 2 (최종)
+        ]
+        with patch.object(ext_mod, "_VISION_ENRICH_MAX_SWEEPS", 2):
+            result = _enrich_pdf_with_vision(
+                data, base_result=base, file_name="test.pdf", image_parser=parser
+            )
+        # 첫 페이지 section 만 추가됨
+        self.assertEqual(len(result.sections), 1)
+        # 최종 sweep warning + 전체 누락 warning 둘 다
+        self.assertTrue(any("page 2 실패" in w and "최종" in w for w in result.warnings))
+        self.assertTrue(any("2 sweep 후에도 누락" in w for w in result.warnings))
+        # parser 호출 횟수: 1 (page 1 sweep 1) + 2 (page 2 sweep 1/2) = 3
+        self.assertEqual(parser.parse.call_count, 3)
+
+    def test_per_page_failure_graceful_env_override_to_3(self):
+        # ENV override (sweep 3) 회복 시나리오 — page 2 가 sweep 1/2/3 모두 실패.
+        from app.ingest.stages import extract as ext_mod
+
+        data = _make_pdf_bytes(2)
+        base = ExtractionResult(
+            source_type="pdf", sections=[], raw_text="", warnings=[]
+        )
+        parser = MagicMock()
         parser.parse.side_effect = [
             ExtractionResult(
                 source_type="image",
@@ -96,16 +130,17 @@ class TestEnrichPdfWithVision(unittest.TestCase):
             RuntimeError("Vision API timeout"),  # sweep 2
             RuntimeError("Vision API timeout"),  # sweep 3 (최종)
         ]
-        result = _enrich_pdf_with_vision(
-            data, base_result=base, file_name="test.pdf", image_parser=parser
-        )
+        with patch.object(ext_mod, "_VISION_ENRICH_MAX_SWEEPS", 3):
+            result = _enrich_pdf_with_vision(
+                data, base_result=base, file_name="test.pdf", image_parser=parser
+            )
         # 첫 페이지 section 만 추가됨
         self.assertEqual(len(result.sections), 1)
-        # 최종 sweep warning + 전체 누락 warning 둘 다
-        self.assertTrue(any("page 2 실패" in w and "최종" in w for w in result.warnings))
-        self.assertTrue(any("3 sweep 후에도 누락" in w for w in result.warnings))
-        # parser 호출 횟수: 1 (page 1 sweep 1) + 3 (page 2 sweep 1/2/3) = 4
+        # 호출 = 1 (page 1) + 3 (page 2) = 4
         self.assertEqual(parser.parse.call_count, 4)
+        # 최종 sweep warning 에 3 명시
+        self.assertTrue(any("3/3 최종" in w or "(sweep 3/3" in w for w in result.warnings))
+        self.assertTrue(any("3 sweep 후에도 누락" in w for w in result.warnings))
 
     def test_sweep_recovers_failed_page(self):
         # sweep 1 에서 실패한 페이지가 sweep 2 에서 성공 — 누락 0
@@ -188,6 +223,50 @@ class TestEnrichPdfWithVision(unittest.TestCase):
         self.assertTrue(any("vision_enrich: PDF 열기 실패" in w for w in result.warnings))
         # parser 미호출
         self.assertEqual(parser.parse.call_count, 0)
+
+
+class TestVisionEnrichDefaults(unittest.TestCase):
+    """2026-05-06 D2-C — master plan §7.3 정합 회귀 보호.
+
+    sweep × retry 곱셈 제거 (sweep 2 × retry 1 = worst case 페이지당 2 호출).
+    회귀 발생 시 ENV `JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS=3` 으로 즉시 회복 가능.
+    """
+
+    def test_sweep_default_is_2(self):
+        # ENV 미설정 시 module-level default = 2 (master plan §7.3).
+        # importlib.reload 로 ENV 영향 격리 — 테스트 환경에서 ENV 가 설정돼 있으면 unset.
+        import importlib
+        import os as _os
+
+        from app.ingest.stages import extract as ext_mod
+
+        prev = _os.environ.pop("JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS", None)
+        try:
+            importlib.reload(ext_mod)
+            self.assertEqual(ext_mod._VISION_ENRICH_MAX_SWEEPS, 2)
+        finally:
+            if prev is not None:
+                _os.environ["JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS"] = prev
+            importlib.reload(ext_mod)
+
+    def test_sweep_env_override_to_3(self):
+        # ENV 설정 시 회복 시나리오 — sweep = 3.
+        import importlib
+        import os as _os
+
+        from app.ingest.stages import extract as ext_mod
+
+        prev = _os.environ.get("JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS")
+        _os.environ["JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS"] = "3"
+        try:
+            importlib.reload(ext_mod)
+            self.assertEqual(ext_mod._VISION_ENRICH_MAX_SWEEPS, 3)
+        finally:
+            if prev is None:
+                _os.environ.pop("JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS", None)
+            else:
+                _os.environ["JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS"] = prev
+            importlib.reload(ext_mod)
 
 
 if __name__ == "__main__":
