@@ -7,6 +7,7 @@ retry 패턴을 한 곳에 모은다. 어댑터 6종 분리 (DE-19) 시 두 어�
 from __future__ import annotations
 
 import logging
+import os
 import random
 import time
 from functools import lru_cache
@@ -21,9 +22,11 @@ logger = logging.getLogger(__name__)
 # W25 D14 Sprint 4 (2026-05-05) 시도 후 원복:
 #   강화 (5회/2.0s base, max delay 32s) 적용 후 reingest 실패 — HTTP/2 ConnectionTerminated
 #   (long sleep 중 connection idle timeout). Sprint 5 (sweep 만 유지) 로 전환.
-# 현재 정책: 기본 3회/1.0s (Sprint 1 시점) + extract.py 의 sweep 로직 (max 3 sweep)
-# 으로 누락 페이지 재시도 효과는 보존.
-_MAX_ATTEMPTS = 3
+# 2026-05-06 D2-C — master plan §7.3 정합: default 3 → 1.
+#   sweep × retry 곱셈 제거 (sweep 2 × retry 1 = worst case 페이지당 2 호출, 50p PDF
+#   기준 450 → 100 으로 4.5x 절감). 503 random 은 sweep 2 가 페이지 단위로 재시도
+#   보장 → retry 1 로 충분. 회귀 발생 시 ENV `JETRAG_GEMINI_RETRY=3` 으로 즉시 회복.
+_MAX_ATTEMPTS = int(os.environ.get("JETRAG_GEMINI_RETRY", "1"))
 _BASE_BACKOFF_SECONDS = 1.0
 
 T = TypeVar("T")
