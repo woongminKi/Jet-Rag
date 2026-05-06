@@ -1170,9 +1170,16 @@ class TagSummarizeGracefulTest(E2EBaseTest):
         })
         extraction = _make_extraction([("본문 텍스트입니다.", None)])
 
-        # _llm.complete 가 항상 raise — graceful 검증
+        # _llm.complete 가 항상 raise — graceful 검증.
+        # D2-A 후 — _get_tag_llm() / _get_summary_llm() 가 별도 인스턴스라 둘 다 patch.
+        tag_summarize._get_tag_llm.cache_clear()
+        tag_summarize._get_summary_llm.cache_clear()
         with patch.object(
-            tag_summarize._llm,
+            tag_summarize._get_tag_llm(),
+            "complete",
+            side_effect=RuntimeError("LLM API down"),
+        ), patch.object(
+            tag_summarize._get_summary_llm(),
             "complete",
             side_effect=RuntimeError("LLM API down"),
         ):
@@ -1201,7 +1208,8 @@ class TagSummarizeGracefulTest(E2EBaseTest):
         })
         extraction = _make_extraction([("본문", None)])
 
-        # _llm.complete 호출 카운터 — 첫 호출 raise (RESOURCE_EXHAUSTED) 후 두 번째 호출 안 됨
+        # _llm.complete 호출 카운터 — 첫 호출 raise (RESOURCE_EXHAUSTED) 후 두 번째 호출 안 됨.
+        # D2-A 후 — tag/summary 인스턴스 각각 patch.
         call_count = [0]
 
         def _quota_raise(*args, **kwargs):
@@ -1210,7 +1218,13 @@ class TagSummarizeGracefulTest(E2EBaseTest):
                 "429 RESOURCE_EXHAUSTED. You exceeded your current quota"
             )
 
-        with patch.object(tag_summarize._llm, "complete", side_effect=_quota_raise):
+        tag_summarize._get_tag_llm.cache_clear()
+        tag_summarize._get_summary_llm.cache_clear()
+        with patch.object(
+            tag_summarize._get_tag_llm(), "complete", side_effect=_quota_raise
+        ), patch.object(
+            tag_summarize._get_summary_llm(), "complete", side_effect=_quota_raise
+        ):
             tag_summarize.run_tag_summarize_stage(
                 job_id, doc_id=doc_id, extraction=extraction
             )
@@ -1243,7 +1257,13 @@ class TagSummarizeGracefulTest(E2EBaseTest):
             call_count[0] += 1
             raise RuntimeError("Service temporarily unavailable")
 
-        with patch.object(tag_summarize._llm, "complete", side_effect=_generic_raise):
+        tag_summarize._get_tag_llm.cache_clear()
+        tag_summarize._get_summary_llm.cache_clear()
+        with patch.object(
+            tag_summarize._get_tag_llm(), "complete", side_effect=_generic_raise
+        ), patch.object(
+            tag_summarize._get_summary_llm(), "complete", side_effect=_generic_raise
+        ):
             tag_summarize.run_tag_summarize_stage(
                 job_id, doc_id=doc_id, extraction=extraction
             )
@@ -1266,23 +1286,24 @@ class TagSummarizeGracefulTest(E2EBaseTest):
         })
         extraction = _make_extraction([("계약·합의 본문", None)])
 
-        # _call_tags 와 _call_summary 가 _llm.complete 두 번 호출 — 응답 시퀀스 부여.
-        responses = [
-            json.dumps({
-                "topic_tags": ["계약", "합의"],
-                "entity_tags": ["갑", "을"],
-                "document_type": "보고서",
-                "time_reference": "2025-01",
-            }),
-            json.dumps({
-                "summary_3line": "1줄 요약\n2줄 요약\n3줄 요약",
-                "implications": "본 문서의 함의",
-            }),
-        ]
+        # _call_tags 와 _call_summary 가 각각 별도 LLMProvider 호출 (D2-A factory 분리).
+        # tag 호출 1회, summary 호출 1회 — 인스턴스가 다르니 각각 patch.
+        tag_response = json.dumps({
+            "topic_tags": ["계약", "합의"],
+            "entity_tags": ["갑", "을"],
+            "document_type": "보고서",
+            "time_reference": "2025-01",
+        })
+        summary_response = json.dumps({
+            "summary_3line": "1줄 요약\n2줄 요약\n3줄 요약",
+            "implications": "본 문서의 함의",
+        })
+        tag_summarize._get_tag_llm.cache_clear()
+        tag_summarize._get_summary_llm.cache_clear()
         with patch.object(
-            tag_summarize._llm,
-            "complete",
-            side_effect=responses,
+            tag_summarize._get_tag_llm(), "complete", return_value=tag_response,
+        ), patch.object(
+            tag_summarize._get_summary_llm(), "complete", return_value=summary_response,
         ):
             tag_summarize.run_tag_summarize_stage(
                 job_id, doc_id=doc_id, extraction=extraction

@@ -15,10 +15,11 @@ from __future__ import annotations
 import json
 import logging
 import time
+from functools import lru_cache
 from typing import Any
 
-from app.adapters.impl.gemini_llm import GeminiLLMProvider
-from app.adapters.llm import ChatMessage
+from app.adapters.factory import get_llm_provider
+from app.adapters.llm import ChatMessage, LLMProvider
 from app.adapters.parser import ExtractionResult
 from app.db import get_supabase_client
 from app.ingest.jobs import begin_stage, end_stage, update_stage
@@ -30,7 +31,18 @@ _STAGE = "tag_summarize"
 _TAG_INPUT_CHARS = 3000
 _SUMMARY_INPUT_CHARS = 12000
 
-_llm = GeminiLLMProvider()
+
+# Phase 1 S0 D2-A — purpose 별 factory 경유 (tag/summary 분리). 각각의 ENV
+# (JETRAG_LLM_MODEL_TAG / JETRAG_LLM_MODEL_SUMMARY) 로 모델 override 가능.
+# Master plan §4 의 "tag/summary → flash-lite" 정합은 D2-D 별도 commit.
+@lru_cache(maxsize=1)
+def _get_tag_llm() -> LLMProvider:
+    return get_llm_provider("tag")
+
+
+@lru_cache(maxsize=1)
+def _get_summary_llm() -> LLMProvider:
+    return get_llm_provider("summary")
 
 
 def run_tag_summarize_stage(
@@ -115,7 +127,7 @@ def _call_tags(raw_text: str) -> dict[str, Any]:
         "응답은 반드시 위 4개 키를 가진 단일 JSON 객체만 포함. 설명·Markdown·코드블록 금지."
     )
     user = f"다음 텍스트에서 태그를 추출하세요:\n\n{head}"
-    response = _llm.complete(
+    response = _get_tag_llm().complete(
         [ChatMessage(role="system", content=system), ChatMessage(role="user", content=user)],
         temperature=0.1,
         json_mode=True,
@@ -135,7 +147,7 @@ def _call_summary(raw_text: str) -> dict[str, Any]:
         "응답은 반드시 위 2개 키를 가진 단일 JSON 객체만 포함. 설명·Markdown·코드블록 금지."
     )
     user = f"다음 텍스트를 요약하세요:\n\n{body}"
-    response = _llm.complete(
+    response = _get_summary_llm().complete(
         [ChatMessage(role="system", content=system), ChatMessage(role="user", content=user)],
         temperature=0.2,
         json_mode=True,
