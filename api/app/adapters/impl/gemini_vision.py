@@ -50,6 +50,46 @@ _VALID_TYPES: set[VisionCategory] = {
     "문서", "스크린샷", "메신저대화", "화이트보드", "명함", "차트", "표", "기타",
 }
 
+# Phase 1 S0 D1 — Gemini 2.5 Flash 단가 (USD per 1M token, 보수적 추정).
+# 출처: https://ai.google.dev/pricing — 2026-05 기준.
+# input  $0.10/1M, output $0.40/1M (image / video / audio 도 $0.10/1M 동일).
+# thinking 토큰은 output 단가 적용 (Gemini 가 별도 무료/할인 단가 X).
+# 모델 변경 시 (master plan §4 의 gemini-2.0-flash) 별도 단가 테이블 필요.
+_PRICE_INPUT_PER_1M_USD: float = 0.10
+_PRICE_OUTPUT_PER_1M_USD: float = 0.40
+
+
+def _estimate_cost(prompt_tokens: int, output_tokens: int, thinking_tokens: int) -> float:
+    """단순 단가 × 토큰 수. image_tokens 는 prompt_tokens 에 합산 (Gemini 가 별도 안 분리)."""
+    return (
+        prompt_tokens * _PRICE_INPUT_PER_1M_USD
+        + (output_tokens + thinking_tokens) * _PRICE_OUTPUT_PER_1M_USD
+    ) / 1_000_000
+
+
+def _parse_usage_metadata(response: object, *, model: str) -> dict | None:
+    """Gemini response.usage_metadata → record_call usage dict.
+
+    SDK 버전에 따라 필드 부재 가능 → getattr default 0 으로 안전 처리.
+    metadata 자체가 없으면 None 반환 (record_call 가 모든 컬럼 NULL 처리).
+    """
+    metadata = getattr(response, "usage_metadata", None)
+    if metadata is None:
+        return None
+    prompt_tokens = int(getattr(metadata, "prompt_token_count", 0) or 0)
+    output_tokens = int(getattr(metadata, "candidates_token_count", 0) or 0)
+    thinking_tokens = int(getattr(metadata, "thoughts_token_count", 0) or 0)
+    return {
+        "prompt_tokens": prompt_tokens,
+        # Gemini 는 image_tokens 를 별도 분리 안 함 (prompt_token_count 에 포함).
+        # 향후 SDK 가 이미지 토큰 분리 시 여기서 추출.
+        "image_tokens": None,
+        "output_tokens": output_tokens,
+        "thinking_tokens": thinking_tokens,
+        "estimated_cost": _estimate_cost(prompt_tokens, output_tokens, thinking_tokens),
+        "model_used": model,
+    }
+
 
 class GeminiVisionCaptioner:
     def __init__(self, *, model: str = _DEFAULT_MODEL) -> None:
@@ -70,7 +110,7 @@ class GeminiVisionCaptioner:
             response_mime_type="application/json",
         )
 
-        def call() -> str:
+        def call() -> object:
             response = get_client().models.generate_content(
                 model=self._model,
                 contents=contents,
@@ -79,13 +119,13 @@ class GeminiVisionCaptioner:
             text = response.text
             if text is None or not text.strip():
                 raise RuntimeError(f"Gemini Vision 응답이 비어있습니다: {response}")
-            return text
+            return response
 
-        text = with_retry(call, label="gemini.vision.caption")
-        return self._parse(text)
+        response = with_retry(call, label="gemini.vision.caption")
+        return self._parse(response.text, response=response, model=self._model)
 
     @staticmethod
-    def _parse(text: str) -> VisionCaption:
+    def _parse(text: str, *, response: object | None = None, model: str | None = None) -> VisionCaption:
         try:
             data = json.loads(text)
         except json.JSONDecodeError as exc:
@@ -118,9 +158,17 @@ class GeminiVisionCaptioner:
         if not isinstance(structured, dict) or not structured:
             structured = None
 
+        # Phase 1 S0 D1 — usage_metadata 파싱 (response 인자 옵션, 미전달 시 None).
+        usage = (
+            _parse_usage_metadata(response, model=model or _DEFAULT_MODEL)
+            if response is not None
+            else None
+        )
+
         return VisionCaption(
             type=type_,
             ocr_text=ocr_text,
             caption=caption_text,
             structured=structured,
+            usage=usage,
         )

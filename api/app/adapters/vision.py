@@ -26,6 +26,10 @@ class VisionCaption:
     ocr_text: str
     caption: str
     structured: dict | None = None
+    # Phase 1 S0 D1 — Gemini usage_metadata 파싱 결과 (마이그 014 컬럼과 매핑).
+    # 키: prompt_tokens / image_tokens / output_tokens / thinking_tokens /
+    #     estimated_cost / model_used. 미지원 SDK / 응답 누락 시 None.
+    usage: dict | None = None
 
 
 class VisionCaptioner(Protocol):
