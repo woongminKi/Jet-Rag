@@ -5,7 +5,7 @@
 1) `/search` 와 동일 RPC (`search_hybrid_rrf`) 로 top-K chunks 수집
    - dense (BGE-M3) + sparse (PGroonga OR query) RRF
    - 단일 문서 스코프 (`doc_id`) 또는 전 doc 스코프 모두 지원
-2) chunks 본문을 한국어 prompt 로 구성 → Gemini 2.5 Flash 호출
+2) chunks 본문을 한국어 prompt 로 구성 → factory 가 결정한 LLM 호출
 3) 답변 + 출처 chunk_id 반환
 
 설계 결정 (PoC, W25 D12 자율 결정 — work-log 명시):
@@ -14,9 +14,10 @@
   search router 600줄의 검색·필터 로직 재활용은 v1.5 통합 시점)
 - Q3 prompt 한국어 + faithfulness 보장 — 검색 결과에 없는 내용 추측 금지
 - Q4 출처 명시 — 응답에 sources: [{chunk_id, doc_id, doc_title, chunk_idx, page}]
-- Q5 model — Gemini 2.5 Flash (기존 GeminiLLMProvider 재사용)
+- Q5 model — factory.get_llm_provider("answer") 가 결정 (master plan §4 = 2.0-flash)
 - Q6 동기 호출 — streaming 은 v1.5 이후
 - Q7 search 0건 → "제공된 자료에서 관련 정보를 찾지 못했습니다" 답변 (LLM 호출 회피)
+- D2-D 갱신 — 응답의 model 필드는 LLM 인스턴스의 model property 동적 표시.
 
 명세
 - 의존성 추가 0 (기존 LLMProvider + supabase RPC + bgem3 어댑터 재사용)
@@ -52,12 +53,22 @@ _DEFAULT_TOP_K = 5
 _MAX_TOP_K = 10
 _RRF_K = 60
 _RPC_TOP_K = 50
-# 응답 schema 의 `model` 필드 표시값. 실 호출 모델은 factory 가 결정 (provider/ENV
-# override 반영). 다음 단계에서 응답에 실 모델명을 표시하려면 _get_llm() 인스턴스에서
-# `_model` 노출 + 응답 시 호출 — D2-D 시점 별도 commit 권고.
-_LLM_MODEL = "gemini-2.5-flash"
+# D2-D — 응답 schema `model` 필드는 LLM 인스턴스 `model` property 동적 표시.
+# 검색 결과 0 (LLM 호출 회피) 시 호출 회피로 인스턴스를 만들지 않으므로 fallback 필요.
+_LLM_MODEL_FALLBACK = "gemini-2.0-flash"
 # 청크 본문 prompt 주입 시 chunks 개당 최대 글자 (긴 chunk 절단). prompt token 폭주 방지.
 _CHUNK_TEXT_MAX = 1200
+
+
+def _resolve_model_label(llm: LLMProvider | None) -> str:
+    """응답 schema 표시용 모델 ID — provider 인스턴스의 model 속성 우선.
+
+    검색 0건으로 LLM 호출 회피 시 None → factory 가 결정할 default 모델로 fallback.
+    Protocol 에 model 속성이 없을 수도 있어 getattr default.
+    """
+    if llm is None:
+        return _LLM_MODEL_FALLBACK
+    return getattr(llm, "model", None) or getattr(llm, "_model", None) or _LLM_MODEL_FALLBACK
 
 
 # Phase 1 S0 D2-A — module-level singleton 제거 + lazy factory 경유.
@@ -253,14 +264,15 @@ def answer(
             answer="제공된 자료에서 해당 정보를 찾지 못했습니다.",
             sources=[],
             has_search_results=False,
-            model=_LLM_MODEL,
+            model=_resolve_model_label(None),
             took_ms=int((time.monotonic() - start_t) * 1000),
             query_parsed=QueryParsedInfo(**query_parsed),
         )
 
     messages = _build_messages(clean_q, chunks)
+    llm = _get_llm()
     try:
-        llm_text = _get_llm().complete(messages, temperature=0.2)
+        llm_text = llm.complete(messages, temperature=0.2)
     except Exception as exc:  # noqa: BLE001
         if is_quota_exhausted(exc):
             logger.warning("answer: Gemini quota 소진 — 503")
@@ -295,7 +307,7 @@ def answer(
         answer=llm_text.strip(),
         sources=sources,
         has_search_results=True,
-        model=_LLM_MODEL,
+        model=_resolve_model_label(llm),
         took_ms=int((time.monotonic() - start_t) * 1000),
         query_parsed=QueryParsedInfo(**query_parsed),
     )

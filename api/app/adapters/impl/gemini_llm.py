@@ -1,4 +1,4 @@
-"""Gemini 2.5 Flash 기반 `LLMProvider` 구현체.
+"""Gemini 기반 `LLMProvider` 구현체 (master plan §4 — 2.0-flash default).
 
 - google-genai SDK (2026년 최신) 래핑
 - system / user / assistant role 을 Gemini system_instruction + Content 구조로 매핑
@@ -7,6 +7,8 @@
 
 Vision 은 `GeminiVisionCaptioner` (adapters/impl/gemini_vision.py) 로 분리.
 `_attach_images` 는 LLM 텍스트 생성 보조용으로만 유지하며 mime 은 PNG 고정 (레거시).
+
+D2-D — `model` property 노출로 응답 schema 등 호출처가 실 모델명을 동적 표시 가능.
 """
 
 from __future__ import annotations
@@ -20,14 +22,19 @@ from app.adapters.llm import ChatMessage
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "gemini-2.5-flash"
+_DEFAULT_MODEL = "gemini-2.0-flash"
 
 
 class GeminiLLMProvider:
-    """`LLMProvider` Protocol 구현체 (Gemini 2.5 Flash 기본)."""
+    """`LLMProvider` Protocol 구현체 (Gemini 2.0 Flash 기본)."""
 
     def __init__(self, *, model: str = _DEFAULT_MODEL) -> None:
         self._model = model
+
+    @property
+    def model(self) -> str:
+        """현재 사용 중인 모델 ID — 응답 schema·로깅 용 public getter."""
+        return self._model
 
     def complete(
         self,
