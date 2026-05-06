@@ -1,0 +1,33 @@
+query,query_type,expected_doc_title,expected_answer_summary,must_include,source_hint,negative
+"그때 쏘나타 시트 뭐였더라 가죽이었나",fuzzy_memory,sonata-the-edge_catalog,트림별 시트 재질 (인조가죽/천연가죽/나파),시트;가죽,,false
+"쏘나타 디 엣지 인스퍼레이션 트림 가격 얼마야",exact_fact,sonata-the-edge_catalog,트림별 가격 정보,인스퍼레이션;가격,,false
+"쏘나타 휠 사이즈 트림별로 표 어디 있어",table_lookup,sonata-the-edge_catalog,트림별 휠 인치 표,휠;인치,사양 표,false
+"쏘나타 외장 색상 몇 종류였지",exact_fact,sonata-the-edge_catalog,외장 컬러 옵션 종류,컬러;색상,,false
+"쏘나타 그 인테리어 사진 어떻게 생겼더라",vision_diagram,sonata-the-edge_catalog,인테리어 비주얼 (대시보드/시트/콘솔),인테리어,,false
+"데이터센터 테스트베드 사업 그 다이어그램 있잖아 구조가 어떻게 돼",vision_diagram,2025년 데이터센터 산업 활성화 지원 사업 통합_안내서,사업 체계 다이어그램 (실증연계형/주관기관/수요기관/장비SW),테스트베드;실증;장비,p.6 근처,false
+"데이터센터 사업 신청 자격 어디 있었지",fuzzy_memory,2025년 데이터센터 산업 활성화 지원 사업 통합_안내서,신청 자격 요건,자격;신청,,false
+"데이터센터 지원금 얼마까지 나온다고",numeric_lookup,2025년 데이터센터 산업 활성화 지원 사업 통합_안내서,지원금 한도,지원금,,false
+"데이터센터 사업 신청 마감일 언제야",exact_fact,2025년 데이터센터 산업 활성화 지원 사업 통합_안내서,신청 마감일,마감일,,false
+"보건의료 빅데이터에서 환자 정보 보호 어떻게 한다고 했지",synonym_mismatch,보건의료_빅데이터_플랫폼_시범사업_추진계획(안),개인정보 비식별화 방안,비식별화;개인정보,,false
+"보건의료 빅데이터 플랫폼 핵심만 짧게",summary,보건의료_빅데이터_플랫폼_시범사업_추진계획(안),시범사업 추진 계획 요약,빅데이터;시범사업,,false
+"보건의료 빅데이터에서 데이터 종류 어떤 게 들어가",exact_fact,보건의료_빅데이터_플랫폼_시범사업_추진계획(안),데이터 카테고리 목록,데이터 종류,,false
+"운영내규에서 위원회 구성 어떻게 돼있어",exact_fact,한마음생활체육관_운영_내규(2024.4.30.개정),운영위원회 구성과 인원,위원회;구성,,false
+"한마음생활체육관 시설 이용료 얼마야",numeric_lookup,한마음생활체육관_운영_내규(2024.4.30.개정),시설별 이용 요금,이용료;요금,,false
+"운영내규랑 직제규정에서 위원회 역할 어떻게 달라",cross_doc,한마음생활체육관_운영_내규(2024.4.30.개정)|직제_규정(2024.4.30.개정),두 자료의 위원회 역할 비교,위원회;역할,각 자료 위원회 조항,false
+"직제규정에서 부서 구조 그림 같은 거 있나",vision_diagram,직제_규정(2024.4.30.개정),조직도 또는 부서 구조,조직;부서,,false
+"법률 자료 중에 임대차 분쟁 관련 있었나",fuzzy_memory,law sample2|law sample3,임대차 관련 판례 또는 조항,임대차,,false
+"law sample 자료에서 손해배상 기준 어디 있었지",fuzzy_memory,law sample2|law sample3,손해배상 산정 기준,손해배상,,false
+"경제전망에서 12% 증가 그게 어디였지",numeric_lookup,sample-report,특정 지표 12% 증가 부분,12%;증가,,false
+"sample-report 경제전망 핵심만 알려줘",summary,sample-report,주요 경제 지표와 전망 요약,경제;전망,,false
+"브랜딩 스튜디오앤드오어 메인 컬러 뭐였지",exact_fact,브랜딩_스튜디오앤드오어,주요 브랜드 컬러 정보,컬러;색상,,false
+"스튜디오앤드오어 로고 디자인 컨셉이 뭐야",fuzzy_memory,브랜딩_스튜디오앤드오어,로고 디자인 의도와 컨셉,로고;컨셉,,false
+"내 이력서에서 당근서비스 지원 포지션 뭐였지",exact_fact,[당근서비스_Product Engineer(ERP)] 기웅민 이력서,Product Engineer (ERP),Product Engineer;ERP,,false
+"내 이력서 프로젝트 경력 어떤 거 있었더라",fuzzy_memory,[당근서비스_Product Engineer(ERP)] 기웅민 이력서,프로젝트 경력 리스트,프로젝트;경력,,false
+"내 이력서 기술 스택 정리 어디 있어",exact_fact,[당근서비스_Product Engineer(ERP)] 기웅민 이력서,기술 스택 섹션,기술;스택,,false
+"승인글 템플릿 양식 어떻게 생겼더라",summary,승인글 템플릿1|승인글 템플릿3,승인글 양식 구조,승인;템플릿,,false
+"승인글에서 결재 라인 보통 몇 단계야",exact_fact,승인글 템플릿1|승인글 템플릿3,결재 단계 수,결재;단계,,false
+"이 자료들에 환경 인증 절차 나와있어?",out_of_scope,,자료에 없음,,,true
+"내가 받은 자료 중에 ESG 관련 있나",out_of_scope,,자료에 없음,ESG,,true
+"AI 윤리 가이드라인 같은 거 있어?",out_of_scope,,자료에 없음,AI;윤리,,true
+"쏘나타랑 데이터센터 자료에서 둘 다 안전 관련 내용 있어?",cross_doc,sonata-the-edge_catalog|2025년 데이터센터 산업 활성화 지원 사업 통합_안내서,두 자료의 안전 관련 내용 비교,안전,,false
+"보건의료 자료랑 데이터센터 자료에서 데이터 활용 방식 어떻게 달라",cross_doc,보건의료_빅데이터_플랫폼_시범사업_추진계획(안)|2025년 데이터센터 산업 활성화 지원 사업 통합_안내서,두 자료의 데이터 활용 비교,데이터;활용,,false
