@@ -70,7 +70,12 @@ _MODEL_ENV_PREFIX = "JETRAG_LLM_MODEL_"
 
 
 def _resolve_provider() -> str:
-    """ENV 의 provider 값 정규화 + OpenAI key 부재 시 Gemini fallback."""
+    """ENV 의 provider 값 정규화 + OpenAI key 부재 시 Gemini fallback.
+
+    알 수 없는 provider 는 그대로 반환해 호출 시점 (`get_llm_provider`) 에서
+    명확한 ValueError 로 차단한다. import-time 안전성은 호출처 lazy 화로 확보
+    (extract.py 등은 `_get_image_parser()` 함수 패턴 사용 — P1-1).
+    """
     provider = os.environ.get(_PROVIDER_ENV_KEY, "gemini").strip().lower()
     if provider == "openai" and not os.environ.get("OPENAI_API_KEY"):
         logger.warning(

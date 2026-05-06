@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+from functools import lru_cache
 from typing import Any
 
 import fitz  # PyMuPDF — 스캔 PDF rerouting 시 페이지를 PNG 로 렌더
@@ -43,30 +44,49 @@ from app.ingest.jobs import (
 logger = logging.getLogger(__name__)
 
 _STAGE = "extract"
+
+# 가벼운 파서들은 module-level 단일 인스턴스 — 외부 호출/네트워크 0 이라 안전.
 _pdf_parser = PyMuPDFParser()
 _hwpx_parser = HwpxParser()
-# Phase 1 S0 D1 — image_parse purpose 의 VisionCaptioner 를 팩토리로 받음.
-# ENV (JETRAG_LLM_PROVIDER) 1줄로 OpenAI/Gemini 전환 가능 — master plan §6/§7.
-_image_parser = ImageParser(captioner=get_vision_captioner("image_parse"))
 _url_parser = UrlParser()
 _hwp_parser = Hwp5Parser()
 _hwpml_parser = HwpmlParser()
 _docx_parser = DocxParser()
-# W8 Day 2 — PPTX Vision OCR rerouting: 텍스트 0 슬라이드의 가장 큰 Picture 를
-# ImageParser 에 위임. max 5 슬라이드 cap (Gemini Flash RPD 20 제약).
-_pptx_parser = PptxParser(image_parser=_image_parser)
 
-# doc_type → DocumentParser 디스패처.
-# W5 DE-67 — DOCX 추가. W7 후속 — DE-68 PPTX ship (사용자 자료 업로드 시점).
-_PARSERS_BY_DOC_TYPE: dict[str, DocumentParser] = {
-    "pdf": _pdf_parser,
-    "hwpx": _hwpx_parser,
-    "image": _image_parser,
-    "url": _url_parser,
-    "hwp": _hwp_parser,
-    "docx": _docx_parser,
-    "pptx": _pptx_parser,
-}
+
+# Phase 1 S0 D1 보강 (P1-1) — Vision 의존 파서들은 lazy 인스턴스화.
+# 이전 구현은 module-level 에서 `get_vision_captioner("image_parse")` 를 즉시
+# 호출 → ENV 가 invalid (예: JETRAG_LLM_PROVIDER=invalid) 거나 OpenAI 어댑터
+# NotImplementedError 분기에 닿는 경우 module import 자체가 실패해 API 서버
+# startup 까지 폭주했다. 첫 사용 시점 (`run_extract_stage` 진입) 까지 지연하면
+# 비-vision 코드 경로 (단위 테스트, 헬스체크) 는 영향 0.
+@lru_cache(maxsize=1)
+def _get_image_parser() -> ImageParser:
+    return ImageParser(captioner=get_vision_captioner("image_parse"))
+
+
+@lru_cache(maxsize=1)
+def _get_pptx_parser() -> PptxParser:
+    # PPTX Vision OCR rerouting (W8 Day 2) — 텍스트 0 슬라이드의 가장 큰 Picture 를
+    # ImageParser 에 위임. max 5 슬라이드 cap (Gemini Flash RPD 20 제약).
+    return PptxParser(image_parser=_get_image_parser())
+
+
+@lru_cache(maxsize=1)
+def _get_parsers_by_doc_type() -> dict[str, DocumentParser]:
+    """doc_type → DocumentParser 디스패처. lazy — vision-의존 파서 hydrate 포함.
+
+    W5 DE-67 — DOCX 추가. W7 후속 — DE-68 PPTX ship (사용자 자료 업로드 시점).
+    """
+    return {
+        "pdf": _pdf_parser,
+        "hwpx": _hwpx_parser,
+        "image": _get_image_parser(),
+        "url": _url_parser,
+        "hwp": _hwp_parser,
+        "docx": _docx_parser,
+        "pptx": _get_pptx_parser(),
+    }
 
 # 스캔 PDF 감지 임계값 — PyMuPDFParser raw_text 가 이 이하면 텍스트 레이어 부재로 간주
 # (DE-36, W2 Day 3). 사용자 정의 가능하게 추후 분리 가능
@@ -104,7 +124,7 @@ def run_extract_stage(job_id: str, doc_id: str) -> ExtractionResult | None:
     doc = _fetch_document(client, doc_id)
     doc_type = doc["doc_type"]
 
-    parser = _PARSERS_BY_DOC_TYPE.get(doc_type)
+    parser = _get_parsers_by_doc_type().get(doc_type)
     if parser is None:
         _mark_unsupported_format(client, doc_id, doc_type=doc_type, flags=doc.get("flags") or {})
         skip_stage(
@@ -143,7 +163,7 @@ def run_extract_stage(job_id: str, doc_id: str) -> ExtractionResult | None:
             result = _reroute_pdf_to_image(
                 data,
                 file_name=file_name,
-                image_parser=_image_parser,
+                image_parser=_get_image_parser(),
                 doc_id=doc_id,
             )
             _mark_scan_flag(client, doc_id, existing_flags=doc.get("flags") or {})
@@ -163,7 +183,7 @@ def run_extract_stage(job_id: str, doc_id: str) -> ExtractionResult | None:
                 data,
                 base_result=result,
                 file_name=file_name,
-                image_parser=_image_parser,
+                image_parser=_get_image_parser(),
                 job_id=job_id,
                 doc_id=doc_id,
             )

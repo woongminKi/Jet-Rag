@@ -67,11 +67,44 @@ def _estimate_cost(prompt_tokens: int, output_tokens: int, thinking_tokens: int)
     ) / 1_000_000
 
 
+# Gemini SDK ModalityTokenCount.modality 의 IMAGE 식별자 (대문자 정규화 비교).
+# 실측 (google-genai 1.x): MediaModality 는 enum (TEXT/IMAGE/VIDEO/AUDIO/DOCUMENT/MODALITY_UNSPECIFIED).
+_MODALITY_IMAGE = "IMAGE"
+
+
+def _extract_image_tokens(metadata: object) -> int | None:
+    """`prompt_tokens_details: list[ModalityTokenCount]` 에서 IMAGE modality 토큰 합산.
+
+    SDK 버전 / 응답 형태에 따라 필드 부재 가능 → 안전 처리.
+    값이 0 이거나 details 자체가 없으면 None (NULL 컬럼) 반환.
+    """
+    details = getattr(metadata, "prompt_tokens_details", None) or []
+    total = 0
+    for d in details:
+        modality = getattr(d, "modality", None)
+        # MediaModality enum 또는 str 둘 다 대응 — `str(enum)` 은 'MediaModality.IMAGE' 라
+        # name/value 로 비교. enum 값이 'IMAGE' 문자열과 동일.
+        modality_str = (
+            getattr(modality, "name", None)
+            or getattr(modality, "value", None)
+            or (str(modality) if modality is not None else "")
+        )
+        if str(modality_str).upper().endswith(_MODALITY_IMAGE):
+            total += int(getattr(d, "token_count", 0) or 0)
+    return total or None
+
+
 def _parse_usage_metadata(response: object, *, model: str) -> dict | None:
     """Gemini response.usage_metadata → record_call usage dict.
 
     SDK 버전에 따라 필드 부재 가능 → getattr default 0 으로 안전 처리.
     metadata 자체가 없으면 None 반환 (record_call 가 모든 컬럼 NULL 처리).
+
+    image_tokens (P1-3 보강):
+        Gemini SDK 의 `prompt_tokens_details: list[ModalityTokenCount]` 가
+        IMAGE/TEXT modality 분리 제공 → IMAGE 합산만 별도 컬럼에 저장.
+        `prompt_tokens` 는 SDK 의 `prompt_token_count` 그대로 (텍스트+이미지 합산).
+        image_tokens 는 정보용 — 단가 계산은 prompt_tokens 단일 단가 적용.
     """
     metadata = getattr(response, "usage_metadata", None)
     if metadata is None:
@@ -79,11 +112,10 @@ def _parse_usage_metadata(response: object, *, model: str) -> dict | None:
     prompt_tokens = int(getattr(metadata, "prompt_token_count", 0) or 0)
     output_tokens = int(getattr(metadata, "candidates_token_count", 0) or 0)
     thinking_tokens = int(getattr(metadata, "thoughts_token_count", 0) or 0)
+    image_tokens = _extract_image_tokens(metadata)
     return {
         "prompt_tokens": prompt_tokens,
-        # Gemini 는 image_tokens 를 별도 분리 안 함 (prompt_token_count 에 포함).
-        # 향후 SDK 가 이미지 토큰 분리 시 여기서 추출.
-        "image_tokens": None,
+        "image_tokens": image_tokens,
         "output_tokens": output_tokens,
         "thinking_tokens": thinking_tokens,
         "estimated_cost": _estimate_cost(prompt_tokens, output_tokens, thinking_tokens),

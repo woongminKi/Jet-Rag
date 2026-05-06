@@ -1691,7 +1691,7 @@ class ExtractScanPdfReroutingTest(E2EBaseTest):
 
         with patch.object(extract_mod, "SupabaseBlobStorage", _FakeStorage), \
                 patch.object(
-                    extract_mod._image_parser, "parse", _mock_image_parse
+                    extract_mod._get_image_parser(), "parse", _mock_image_parse
                 ):
             result = extract_mod.run_extract_stage(job_id, doc_id)
 
@@ -1766,7 +1766,7 @@ class ExtractScanPdfReroutingTest(E2EBaseTest):
 
         with patch.object(extract_mod, "SupabaseBlobStorage", _FakeStorage), \
                 patch.object(
-                    extract_mod._image_parser, "parse", _mock_image_parse
+                    extract_mod._get_image_parser(), "parse", _mock_image_parse
                 ):
             result = extract_mod.run_extract_stage(job_id, doc_id)
 
