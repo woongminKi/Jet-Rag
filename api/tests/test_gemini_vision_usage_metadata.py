@@ -125,5 +125,37 @@ class ParseUsageMetadataModalityTest(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class CaptionRetryAttemptTest(unittest.TestCase):
+    """P2 — gemini_vision.caption() 의 attempts counter + exc 첨부 검증."""
+
+    def test_parse_includes_retry_attempt_in_usage(self) -> None:
+        """_parse 가 retry_attempt 인자를 받아 usage dict 에 포함."""
+        from app.adapters.impl.gemini_vision import GeminiVisionCaptioner
+
+        metadata = _make_metadata(prompt_token_count=100, candidates_token_count=50)
+        response = SimpleNamespace(usage_metadata=metadata, text=None)
+        text = '{"type": "기타", "ocr_text": "x", "caption": "y", "structured": null}'
+
+        caption = GeminiVisionCaptioner._parse(
+            text, response=response, model="gemini-2.5-flash", retry_attempt=2
+        )
+        assert caption.usage is not None
+        self.assertEqual(caption.usage["retry_attempt"], 2)
+
+    def test_parse_no_retry_attempt_when_none(self) -> None:
+        """retry_attempt=None 이면 usage dict 에 키 미추가."""
+        from app.adapters.impl.gemini_vision import GeminiVisionCaptioner
+
+        metadata = _make_metadata(prompt_token_count=100, candidates_token_count=50)
+        response = SimpleNamespace(usage_metadata=metadata, text=None)
+        text = '{"type": "기타", "ocr_text": "x", "caption": "y", "structured": null}'
+
+        caption = GeminiVisionCaptioner._parse(
+            text, response=response, model="gemini-2.5-flash"
+        )
+        assert caption.usage is not None
+        self.assertNotIn("retry_attempt", caption.usage)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -101,6 +101,7 @@ class ImageParser:
                 normalized_bytes, mime_type=normalized_mime
             )
         except Exception as exc:
+            # P2 — fail path retry_attempt: gemini_vision 이 exc 에 attribute 첨부.
             vision_metrics.record_call(
                 success=False,
                 quota_exhausted=is_quota_exhausted(exc),
@@ -108,14 +109,18 @@ class ImageParser:
                 source_type=effective_source_type,
                 doc_id=doc_id,
                 page=page,
+                retry_attempt=getattr(exc, "_jetrag_retry_attempt", None),
             )
             raise
+        # P2 — success path retry_attempt: caption.usage 의 retry_attempt 키 사용.
+        retry_attempt = (caption.usage or {}).get("retry_attempt")
         vision_metrics.record_call(
             success=True,
             source_type=effective_source_type,
             usage=caption.usage,
             doc_id=doc_id,
             page=page,
+            retry_attempt=retry_attempt,
         )
 
         sections: list[ExtractedSection] = []

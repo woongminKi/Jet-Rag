@@ -158,7 +158,12 @@ class GeminiVisionCaptioner:
             response_mime_type="application/json",
         )
 
+        # P2 — retry_attempt 추적: 성공 시점의 attempt 수를 record_call 로 전파.
+        # exception 시 마지막 attempt 수를 exc 속성에 첨부 (image_parser 가 읽어 record).
+        attempts_used = [0]
+
         def call() -> object:
+            attempts_used[0] += 1
             response = get_client().models.generate_content(
                 model=self._model,
                 contents=contents,
@@ -169,11 +174,28 @@ class GeminiVisionCaptioner:
                 raise RuntimeError(f"Gemini Vision 응답이 비어있습니다: {response}")
             return response
 
-        response = with_retry(call, label="gemini.vision.caption")
-        return self._parse(response.text, response=response, model=self._model)
+        try:
+            response = with_retry(call, label="gemini.vision.caption")
+        except Exception as exc:
+            # private 속성 — image_parser fail path 가 record_call retry_attempt 전달.
+            exc._jetrag_retry_attempt = attempts_used[0]  # type: ignore[attr-defined]
+            raise
+
+        return self._parse(
+            response.text,
+            response=response,
+            model=self._model,
+            retry_attempt=attempts_used[0],
+        )
 
     @staticmethod
-    def _parse(text: str, *, response: object | None = None, model: str | None = None) -> VisionCaption:
+    def _parse(
+        text: str,
+        *,
+        response: object | None = None,
+        model: str | None = None,
+        retry_attempt: int | None = None,
+    ) -> VisionCaption:
         try:
             data = json.loads(text)
         except json.JSONDecodeError as exc:
@@ -207,11 +229,14 @@ class GeminiVisionCaptioner:
             structured = None
 
         # Phase 1 S0 D1 — usage_metadata 파싱 (response 인자 옵션, 미전달 시 None).
+        # P2 — retry_attempt 키 추가 (success path).
         usage = (
             _parse_usage_metadata(response, model=model or _DEFAULT_MODEL)
             if response is not None
             else None
         )
+        if usage is not None and retry_attempt is not None:
+            usage["retry_attempt"] = retry_attempt
 
         return VisionCaption(
             type=type_,
