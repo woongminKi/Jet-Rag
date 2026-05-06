@@ -131,6 +131,11 @@ def record_call(
     quota_exhausted: bool = False,
     error_msg: str | None = None,
     source_type: str | None = None,
+    # Phase 1 S0 D1 — 마이그 014 신규 컬럼. 모두 default None → 회귀 0.
+    usage: dict | None = None,
+    doc_id: str | None = None,
+    page: int | None = None,
+    retry_attempt: int | None = None,
 ) -> None:
     """Vision API 1회 호출 결과 기록 — ImageParser.parse() 가 호출.
 
@@ -141,9 +146,15 @@ def record_call(
         - error_msg: success=False 시 Exception str.
           기본 200자 truncate, env JET_RAG_VISION_ERROR_MSG_MAX_LEN 으로 override (W16 Day 4 #84).
         - source_type (W16 Day 4 #90 — enum 강제):
-          'image' / 'pdf_scan' / 'pptx_rerouting' / 'pptx_augment'.
+          'image' / 'pdf_scan' / 'pptx_rerouting' / 'pptx_augment' / 'pdf_vision_enrich'.
           잘못된 값은 None 으로 fallback + warn log.
         - 둘 다 in-memory 카운터에는 영향 X, DB row 에만 보존.
+
+    `usage` / `doc_id` / `page` / `retry_attempt` (Phase 1 S0 D1 — 마이그 014):
+        - usage 는 dict — `prompt_tokens` / `image_tokens` / `output_tokens` /
+          `thinking_tokens` / `estimated_cost` / `model_used` 키 추출.
+        - dict 외 값 (None / 잘못된 타입) → 모든 토큰 컬럼 NULL 로 저장.
+        - doc_id/page/retry_attempt 도 모두 optional — 기존 호출처 영향 0.
     """
     global _total_calls, _success_calls, _error_calls
     global _last_called_at, _last_quota_exhausted_at
@@ -166,6 +177,10 @@ def record_call(
         error_msg=(error_msg or "")[:truncate_len] or None,
         quota_exhausted=quota_exhausted,
         source_type=_normalize_source_type(source_type),
+        usage=usage if isinstance(usage, dict) else None,
+        doc_id=doc_id,
+        page=page,
+        retry_attempt=retry_attempt,
     )
 
 
@@ -176,6 +191,10 @@ def _persist_to_db(
     error_msg: str | None,
     quota_exhausted: bool,
     source_type: str | None,
+    usage: dict | None = None,
+    doc_id: str | None = None,
+    page: int | None = None,
+    retry_attempt: int | None = None,
 ) -> None:
     """vision_usage_log 테이블 insert (비동기 dispatch).
 
@@ -193,6 +212,10 @@ def _persist_to_db(
             error_msg=error_msg,
             quota_exhausted=quota_exhausted,
             source_type=source_type,
+            usage=usage,
+            doc_id=doc_id,
+            page=page,
+            retry_attempt=retry_attempt,
         )
         return
     _get_persist_executor().submit(
@@ -202,7 +225,33 @@ def _persist_to_db(
         error_msg=error_msg,
         quota_exhausted=quota_exhausted,
         source_type=source_type,
+        usage=usage,
+        doc_id=doc_id,
+        page=page,
+        retry_attempt=retry_attempt,
     )
+
+
+# Phase 1 S0 D1 — usage dict 에서 추출할 키 화이트리스트.
+# 마이그 014 컬럼명과 1:1 매핑. 그 외 키는 무시 (forward-compat).
+_USAGE_KEYS: tuple[str, ...] = (
+    "prompt_tokens",
+    "image_tokens",
+    "output_tokens",
+    "thinking_tokens",
+    "estimated_cost",
+    "model_used",
+)
+
+
+def _extract_usage_columns(usage: dict | None) -> dict[str, object]:
+    """usage dict → 마이그 014 컬럼 매핑. 누락 키는 None.
+
+    usage 자체가 None / dict 아니면 모든 컬럼을 None 으로 반환.
+    """
+    if not isinstance(usage, dict):
+        return {key: None for key in _USAGE_KEYS}
+    return {key: usage.get(key) for key in _USAGE_KEYS}
 
 
 def _persist_to_db_sync(
@@ -212,11 +261,18 @@ def _persist_to_db_sync(
     error_msg: str | None,
     quota_exhausted: bool,
     source_type: str | None,
+    usage: dict | None = None,
+    doc_id: str | None = None,
+    page: int | None = None,
+    retry_attempt: int | None = None,
 ) -> None:
     """vision_usage_log 테이블 insert (sync). 실패는 log warning + swallow.
 
     마이그레이션 005 미적용 시 (테이블 부재) Supabase 가 PGRST 에러 → 본 함수 가 catch.
     그 후로도 호출은 이어서 시도 — 사용자가 005 적용하면 자연 회복.
+
+    마이그레이션 014 미적용 시: usage/doc_id/page/retry_attempt 컬럼 부재로 insert 실패 →
+    동일하게 graceful skip. 014 적용 후 자연 회복.
 
     background thread (`_persist_executor`) 또는 sync path (env=0) 에서 호출됨.
     """
@@ -225,15 +281,18 @@ def _persist_to_db_sync(
         from app.db import get_supabase_client
 
         client = get_supabase_client()
-        client.table("vision_usage_log").insert(
-            {
-                "called_at": called_at.isoformat(),
-                "success": success,
-                "error_msg": error_msg,
-                "quota_exhausted": quota_exhausted,
-                "source_type": source_type,
-            }
-        ).execute()
+        row: dict[str, object] = {
+            "called_at": called_at.isoformat(),
+            "success": success,
+            "error_msg": error_msg,
+            "quota_exhausted": quota_exhausted,
+            "source_type": source_type,
+            "doc_id": doc_id,
+            "page": page,
+            "retry_attempt": retry_attempt,
+        }
+        row.update(_extract_usage_columns(usage))
+        client.table("vision_usage_log").insert(row).execute()
     except Exception as exc:  # noqa: BLE001 — DB 부재 / 마이그레이션 미적용 graceful
         # W17 Day 3 #85 — 첫 1회만 warn, 이후는 debug (로그 노이즈 방지)
         global _first_persist_warn_logged
