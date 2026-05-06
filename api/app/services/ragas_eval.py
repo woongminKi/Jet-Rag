@@ -6,6 +6,10 @@ run_ragas_auto.py 와 차이:
 - judge LLM = Gemini 2.5 Flash (기존 GeminiLLMProvider 와 같은 모델)
 
 graceful: ragas/langchain_google_genai 의존성 누락 또는 GEMINI_API_KEY 부재 시 ImportError/RuntimeError → 호출부에서 catch + skipped 응답.
+
+Phase 1 S0 D2-A — RAGAS judge 는 LangChain wrapper (langchain_google_genai)
+경유라 factory 직접 채택 X (factory 는 Gemini SDK 네이티브). ENV 분기로 향후
+v1.5 OpenAI judge 추가 시 명시적 NotImplementedError 시나리오만 미리 고지.
 """
 
 from __future__ import annotations
@@ -68,6 +72,21 @@ def evaluate_single(
             metrics=RagasMetrics(faithfulness=0.0, answer_relevancy=0.0),
             judge_model=_JUDGE_MODEL,
             took_ms=int((time.monotonic() - start) * 1000),
+        )
+
+    # Phase 1 S0 D2-A — provider 분기 (RAGAS judge). 현재 Gemini 만 지원.
+    # OpenAI judge 는 v1.5 에서 langchain_openai.ChatOpenAI + OpenAI embeddings
+    # 어댑터 추가 시 활성화 — 구현 전까지는 NotImplementedError 시나리오로 명시.
+    provider = os.environ.get("JETRAG_LLM_PROVIDER", "gemini").strip().lower()
+    if provider == "openai":
+        raise RagasUnavailable(
+            "RAGAS judge OpenAI 분기 미구현 — v1.5 에서 추가. "
+            "JETRAG_LLM_PROVIDER=gemini 로 사용하거나 ragas_eval.py 의 LangChain "
+            "wrapper 분기를 추가하세요."
+        )
+    if provider != "gemini":
+        raise RagasUnavailable(
+            f"RAGAS judge: 알 수 없는 provider {provider!r}. gemini 또는 openai (미구현) 만 지원."
         )
 
     try:
