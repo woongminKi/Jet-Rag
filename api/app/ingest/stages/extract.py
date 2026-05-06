@@ -20,6 +20,7 @@ from typing import Any
 
 import fitz  # PyMuPDF — 스캔 PDF rerouting 시 페이지를 PNG 로 렌더
 
+from app.adapters.factory import get_vision_captioner
 from app.adapters.impl.docx_parser import DocxParser
 from app.adapters.impl.hwp_parser import Hwp5Parser
 from app.adapters.impl.hwpml_parser import HwpmlParser, is_hwpml_bytes
@@ -44,7 +45,9 @@ logger = logging.getLogger(__name__)
 _STAGE = "extract"
 _pdf_parser = PyMuPDFParser()
 _hwpx_parser = HwpxParser()
-_image_parser = ImageParser()
+# Phase 1 S0 D1 — image_parse purpose 의 VisionCaptioner 를 팩토리로 받음.
+# ENV (JETRAG_LLM_PROVIDER) 1줄로 OpenAI/Gemini 전환 가능 — master plan §6/§7.
+_image_parser = ImageParser(captioner=get_vision_captioner("image_parse"))
 _url_parser = UrlParser()
 _hwp_parser = Hwp5Parser()
 _hwpml_parser = HwpmlParser()
@@ -138,7 +141,10 @@ def run_extract_stage(job_id: str, doc_id: str) -> ExtractionResult | None:
                 doc_id,
             )
             result = _reroute_pdf_to_image(
-                data, file_name=file_name, image_parser=_image_parser
+                data,
+                file_name=file_name,
+                image_parser=_image_parser,
+                doc_id=doc_id,
             )
             _mark_scan_flag(client, doc_id, existing_flags=doc.get("flags") or {})
 
@@ -159,6 +165,7 @@ def run_extract_stage(job_id: str, doc_id: str) -> ExtractionResult | None:
                 file_name=file_name,
                 image_parser=_image_parser,
                 job_id=job_id,
+                doc_id=doc_id,
             )
 
     return result
@@ -204,7 +211,11 @@ def _mark_scan_flag(client: Any, doc_id: str, *, existing_flags: dict) -> None:
 
 
 def _reroute_pdf_to_image(
-    data: bytes, *, file_name: str, image_parser: ImageParser,
+    data: bytes,
+    *,
+    file_name: str,
+    image_parser: ImageParser,
+    doc_id: str | None = None,
 ) -> ExtractionResult:
     """스캔 PDF 의 각 페이지를 PNG 로 렌더 → ImageParser.parse() 호출.
 
@@ -244,6 +255,8 @@ def _reroute_pdf_to_image(
                     png_bytes,
                     file_name=f"{file_name}#page{page_num + 1}.png",
                     source_type="pdf_scan",  # W16 Day 4 #90 — vision_usage_log 명시
+                    doc_id=doc_id,
+                    page=page_num + 1,
                 )
                 for sec in page_result.sections:
                     base_title = sec.section_title or ""
@@ -284,6 +297,7 @@ def _enrich_pdf_with_vision(
     file_name: str,
     image_parser: ImageParser,
     job_id: str | None = None,
+    doc_id: str | None = None,
 ) -> ExtractionResult:
     """W25 D14 — 일반 PDF 의 표/그림/다이어그램 정보를 vision 으로 보강.
 
@@ -359,6 +373,8 @@ def _enrich_pdf_with_vision(
                         png_bytes,
                         file_name=f"{file_name}#page{page_num + 1}.png",
                         source_type="pdf_vision_enrich",
+                        doc_id=doc_id,
+                        page=page_num + 1,
                     )
                     # vision 결과의 sections 를 page 메타 보강해 추가
                     for sec in page_result.sections:

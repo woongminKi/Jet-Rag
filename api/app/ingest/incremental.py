@@ -85,6 +85,7 @@ def _vision_pages_with_sweep(
     pages: list[int],  # 1-indexed
     file_name: str,
     image_parser: ImageParser,
+    doc_id: str | None = None,
 ) -> tuple[list[ExtractedSection], list[str]]:
     """누락 페이지 list 만 vision 호출 + sweep. 성공한 페이지의 sections 반환.
 
@@ -123,6 +124,8 @@ def _vision_pages_with_sweep(
                         png,
                         file_name=f"{file_name}#page{page_idx + 1}.png",
                         source_type="pdf_vision_enrich",
+                        doc_id=doc_id,
+                        page=page_idx + 1,
                     )
                     for sec in page_result.sections:
                         base_title = (sec.section_title or "").strip()
@@ -249,6 +252,7 @@ def run_incremental_vision_pipeline(
             pages=missing,
             file_name=file_name,
             image_parser=_image_parser,
+            doc_id=doc_id,
         )
 
         # ChunkRecord 변환

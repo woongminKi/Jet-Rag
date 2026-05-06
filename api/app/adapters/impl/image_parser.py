@@ -64,6 +64,8 @@ class ImageParser:
         *,
         file_name: str,
         source_type: str | None = None,
+        doc_id: str | None = None,
+        page: int | None = None,
     ) -> ExtractionResult:
         """이미지 → ExtractionResult.
 
@@ -71,6 +73,10 @@ class ImageParser:
             None 시 cls.source_type ('image') 사용. 호출자 (PDF 스캔 rerouting /
             PPTX rerouting / PPTX augment) 가 'pdf_scan' / 'pptx_rerouting' /
             'pptx_augment' 명시 → vision_usage_log 의 source_type 컬럼에 정확 기록.
+
+        `doc_id` / `page` (Phase 1 S0 D1 — 마이그 014):
+            pdf_vision_enrich 같은 페이지 단위 호출처가 명시 — vision_usage_log 의
+            doc_id/page 컬럼에 기록. 모두 default None → 단독 이미지 호출 영향 0.
         """
         ext = PurePosixPath(file_name).suffix.lower()
         guessed_mime = _EXT_TO_MIME.get(ext, "image/jpeg")
@@ -89,6 +95,7 @@ class ImageParser:
         # W11 Day 1 — quota 시점 추적 (한계 #38 lite) — fast-fail 시점만 정확 capture.
         # W15 Day 3 — DB write-through (vision_usage_log).
         # W16 Day 4 — source_type 명시 (한계 #90).
+        # Phase 1 S0 D1 — caption.usage 전달 + doc_id/page 전달 (마이그 014).
         try:
             caption = self._captioner.caption(
                 normalized_bytes, mime_type=normalized_mime
@@ -99,11 +106,16 @@ class ImageParser:
                 quota_exhausted=is_quota_exhausted(exc),
                 error_msg=str(exc),
                 source_type=effective_source_type,
+                doc_id=doc_id,
+                page=page,
             )
             raise
         vision_metrics.record_call(
             success=True,
             source_type=effective_source_type,
+            usage=caption.usage,
+            doc_id=doc_id,
+            page=page,
         )
 
         sections: list[ExtractedSection] = []
