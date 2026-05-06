@@ -333,9 +333,11 @@ def search(
     )
     if hyde_enabled:
         try:
-            from app.adapters.impl.gemini_llm import GeminiLLMProvider
+            # Phase 1 S0 D2-A — factory 경유 (purpose=hyde). ENV 1줄 (JETRAG_LLM_PROVIDER)
+            # 로 OpenAI/Gemini 전환. JETRAG_LLM_MODEL_HYDE 로 모델 override 가능.
+            from app.adapters.factory import get_llm_provider
             from app.services.hyde import generate_hypothetical_doc
-            llm = GeminiLLMProvider()
+            llm = get_llm_provider("hyde")
             hypothetical = generate_hypothetical_doc(llm, clean_q)
             # query + hypothetical doc concat — query 의미 보존 + 가상 문단 의미 보강
             embed_input = f"{clean_q}\n{hypothetical}"

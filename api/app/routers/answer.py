@@ -28,16 +28,17 @@ from __future__ import annotations
 import logging
 import time
 import unicodedata
+from functools import lru_cache
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
 
+from app.adapters.factory import get_llm_provider
 from app.adapters.impl.bgem3_hf_embedding import (
     get_bgem3_provider,
     is_transient_hf_error,
 )
-from app.adapters.impl.gemini_llm import GeminiLLMProvider
-from app.adapters.llm import ChatMessage
+from app.adapters.llm import ChatMessage, LLMProvider
 from app.config import get_settings
 from app.db import get_supabase_client
 from app.routers.search import _build_pgroonga_query
@@ -51,11 +52,19 @@ _DEFAULT_TOP_K = 5
 _MAX_TOP_K = 10
 _RRF_K = 60
 _RPC_TOP_K = 50
+# 응답 schema 의 `model` 필드 표시값. 실 호출 모델은 factory 가 결정 (provider/ENV
+# override 반영). 다음 단계에서 응답에 실 모델명을 표시하려면 _get_llm() 인스턴스에서
+# `_model` 노출 + 응답 시 호출 — D2-D 시점 별도 commit 권고.
 _LLM_MODEL = "gemini-2.5-flash"
 # 청크 본문 prompt 주입 시 chunks 개당 최대 글자 (긴 chunk 절단). prompt token 폭주 방지.
 _CHUNK_TEXT_MAX = 1200
 
-_llm = GeminiLLMProvider()
+
+# Phase 1 S0 D2-A — module-level singleton 제거 + lazy factory 경유.
+# ENV (JETRAG_LLM_PROVIDER) 1줄로 OpenAI/Gemini 전환. JETRAG_LLM_MODEL_ANSWER override 가능.
+@lru_cache(maxsize=1)
+def _get_llm() -> LLMProvider:
+    return get_llm_provider("answer")
 
 
 class AnswerSource(BaseModel):
@@ -251,7 +260,7 @@ def answer(
 
     messages = _build_messages(clean_q, chunks)
     try:
-        llm_text = _llm.complete(messages, temperature=0.2)
+        llm_text = _get_llm().complete(messages, temperature=0.2)
     except Exception as exc:  # noqa: BLE001
         if is_quota_exhausted(exc):
             logger.warning("answer: Gemini quota 소진 — 503")
