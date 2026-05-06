@@ -1,4 +1,4 @@
-"""Gemini 2.5 Flash 기반 `VisionCaptioner` 구현체.
+"""Gemini 기반 `VisionCaptioner` 구현체 (master plan §4 — 2.0-flash default).
 
 기획서 §10.4 의 단일 호출 4필드 JSON 계약을 그대로 구현. 호출자는 정규화된 bytes 를
 넘기는 책임 (`ImageParser` 가 다운스케일·EXIF transpose 담당, QA 검수 C-2). 본 구현은:
@@ -9,6 +9,9 @@
 - 파싱 시 type 필드는 화이트리스트, 외 케이스는 보수적으로 "기타" 분류
 
 HEIC/HEIF 는 Gemini 가 직접 지원 (DE-17) — mime_type 만 정확히 전달하면 됨.
+
+D2-D — 단가는 `factory.get_gemini_pricing(model)` 로 위임 → 모델 변경 시
+estimated_cost 자동 정합.
 """
 
 from __future__ import annotations
@@ -18,12 +21,13 @@ import logging
 
 from google.genai import types
 
+from app.adapters.factory import get_gemini_pricing
 from app.adapters.impl._gemini_common import get_client, with_retry
 from app.adapters.vision import VisionCaption, VisionCategory
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "gemini-2.5-flash"
+_DEFAULT_MODEL = "gemini-2.0-flash"
 
 # 기획서 §10.4 의 단일 호출 JSON 프롬프트.
 # - type 은 8종 화이트리스트 (애매하면 "기타")
@@ -50,20 +54,27 @@ _VALID_TYPES: set[VisionCategory] = {
     "문서", "스크린샷", "메신저대화", "화이트보드", "명함", "차트", "표", "기타",
 }
 
-# Phase 1 S0 D1 — Gemini 2.5 Flash 단가 (USD per 1M token, 보수적 추정).
-# 출처: https://ai.google.dev/pricing — 2026-05 기준.
-# input  $0.10/1M, output $0.40/1M (image / video / audio 도 $0.10/1M 동일).
-# thinking 토큰은 output 단가 적용 (Gemini 가 별도 무료/할인 단가 X).
-# 모델 변경 시 (master plan §4 의 gemini-2.0-flash) 별도 단가 테이블 필요.
-_PRICE_INPUT_PER_1M_USD: float = 0.10
-_PRICE_OUTPUT_PER_1M_USD: float = 0.40
+# D2-D — 단가는 `factory._GEMINI_PRICING` dict 가 단일 출처.
+# `get_gemini_pricing(model)` 로 input/output/thinking 단가 lookup.
 
 
-def _estimate_cost(prompt_tokens: int, output_tokens: int, thinking_tokens: int) -> float:
-    """단순 단가 × 토큰 수. image_tokens 는 prompt_tokens 에 합산 (Gemini 가 별도 안 분리)."""
+def _estimate_cost(
+    *,
+    model: str,
+    prompt_tokens: int,
+    output_tokens: int,
+    thinking_tokens: int,
+) -> float:
+    """모델별 단가 × 토큰. image_tokens 는 prompt_tokens 에 합산 (Gemini 정책).
+
+    thinking 토큰은 별도 단가 dict 키 사용 — 일반 flash 는 output 과 동일하지만
+    thinking-exp 등 향후 분리 단가 도입 시 자동 정합.
+    """
+    pricing = get_gemini_pricing(model)
     return (
-        prompt_tokens * _PRICE_INPUT_PER_1M_USD
-        + (output_tokens + thinking_tokens) * _PRICE_OUTPUT_PER_1M_USD
+        prompt_tokens * pricing["input"]
+        + output_tokens * pricing["output"]
+        + thinking_tokens * pricing["thinking"]
     ) / 1_000_000
 
 
@@ -118,7 +129,12 @@ def _parse_usage_metadata(response: object, *, model: str) -> dict | None:
         "image_tokens": image_tokens,
         "output_tokens": output_tokens,
         "thinking_tokens": thinking_tokens,
-        "estimated_cost": _estimate_cost(prompt_tokens, output_tokens, thinking_tokens),
+        "estimated_cost": _estimate_cost(
+            model=model,
+            prompt_tokens=prompt_tokens,
+            output_tokens=output_tokens,
+            thinking_tokens=thinking_tokens,
+        ),
         "model_used": model,
     }
 
