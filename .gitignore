@@ -9,6 +9,15 @@ service-account.json
 .mcp.json
 .codex/
 
+# === 사용자 raw 자료 (개인정보 포함, public repo 노출 금지) ===
+# repo 루트에 업로드된 PDF/HWP/HWPX/DOCX/PPTX 자료는 git 추적 X
+# evals/pdf_samples/, evals/hwpx_samples/ 등 하위 디렉토리는 패턴에 안 걸림
+/*.pdf
+/*.hwp
+/*.hwpx
+/*.docx
+/*.pptx
+
 # === Claude Code (개인 권한 오버라이드, 팀 공유 대상 아님) ===
 .claude/settings.local.json
 

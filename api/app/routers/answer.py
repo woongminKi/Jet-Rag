@@ -55,7 +55,7 @@ _RRF_K = 60
 _RPC_TOP_K = 50
 # D2-D — 응답 schema `model` 필드는 LLM 인스턴스 `model` property 동적 표시.
 # 검색 결과 0 (LLM 호출 회피) 시 호출 회피로 인스턴스를 만들지 않으므로 fallback 필요.
-_LLM_MODEL_FALLBACK = "gemini-2.0-flash"
+_LLM_MODEL_FALLBACK = "gemini-2.5-flash"
 # 청크 본문 prompt 주입 시 chunks 개당 최대 글자 (긴 chunk 절단). prompt token 폭주 방지.
 _CHUNK_TEXT_MAX = 1200
 

@@ -22,11 +22,11 @@ from app.adapters.llm import ChatMessage
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "gemini-2.0-flash"
+_DEFAULT_MODEL = "gemini-2.5-flash"
 
 
 class GeminiLLMProvider:
-    """`LLMProvider` Protocol 구현체 (Gemini 2.0 Flash 기본)."""
+    """`LLMProvider` Protocol 구현체 (Gemini 2.5 Flash 기본 — 2.0 deprecated 후 회복)."""
 
     def __init__(self, *, model: str = _DEFAULT_MODEL) -> None:
         self._model = model

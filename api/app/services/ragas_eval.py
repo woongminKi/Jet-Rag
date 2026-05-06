@@ -11,9 +11,10 @@ Phase 1 S0 D2-A — RAGAS judge 는 LangChain wrapper (langchain_google_genai)
 경유라 factory 직접 채택 X (factory 는 Gemini SDK 네이티브). ENV 분기로 향후
 v1.5 OpenAI judge 추가 시 명시적 NotImplementedError 시나리오만 미리 고지.
 
-D2-D — _JUDGE_MODEL 을 master plan §4 정합 (gemini-2.0-flash) 으로 갱신.
-ENV `RAGAS_JUDGE_MODEL` 로 override 가능 — factory 의 `JETRAG_LLM_MODEL_RAGAS_JUDGE`
-와 분리한 이유: ragas judge 는 LangChain wrapper 경유라 factory pipeline 외 경로.
+D2-D — _JUDGE_MODEL 을 안정 모델 (gemini-2.5-flash) 로 회복. 2.0-flash 가
+신규 사용자에게 deprecated 라 동작 불가. ENV `RAGAS_JUDGE_MODEL` 로 override 가능.
+factory 의 `JETRAG_LLM_MODEL_RAGAS_JUDGE` 와 분리한 이유: ragas judge 는
+LangChain wrapper 경유라 factory pipeline 외 경로.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-_JUDGE_MODEL = os.environ.get("RAGAS_JUDGE_MODEL", "gemini-2.0-flash")
+_JUDGE_MODEL = os.environ.get("RAGAS_JUDGE_MODEL", "gemini-2.5-flash")
 _EMBEDDING_MODEL = os.environ.get("RAGAS_EMBEDDING_MODEL", "models/gemini-embedding-001")
 
 

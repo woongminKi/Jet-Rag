@@ -27,7 +27,7 @@ from app.adapters.vision import VisionCaption, VisionCategory
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "gemini-2.0-flash"
+_DEFAULT_MODEL = "gemini-2.5-flash"
 
 # 기획서 §10.4 의 단일 호출 JSON 프롬프트.
 # - type 은 8종 화이트리스트 (애매하면 "기타")

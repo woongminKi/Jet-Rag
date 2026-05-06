@@ -12,19 +12,22 @@ ENV 변수
 - `JETRAG_LLM_PROVIDER` (default `gemini`) — `gemini` | `openai`
   · `openai` 인데 `OPENAI_API_KEY` 미설정이면 Gemini fallback (warn log)
 - `JETRAG_LLM_MODEL_<PURPOSE>` — 특정 purpose 의 모델 override
-  예) `JETRAG_LLM_MODEL_TAG=gemini-2.0-flash-lite`
+  예) `JETRAG_LLM_MODEL_TAG=gemini-2.5-flash-lite`
 - `JETRAG_VISION_MODEL_<PURPOSE>` — Vision purpose 별 모델 override (D2-D 신규)
-  예) `JETRAG_VISION_MODEL_PDF_ENRICH=gemini-2.0-flash`
+  예) `JETRAG_VISION_MODEL_PDF_ENRICH=gemini-2.5-flash`
 
-모델 매핑 (master plan §4)
-- tag/summary/decomposition/hyde → `gemini-2.0-flash-lite` (무료 RPD 1500, 비용 우위)
-- answer/ragas_judge             → `gemini-2.0-flash` (사용자 액션, paid 허용)
-- reasoning                      → `gemini-2.0-flash-thinking-exp` (S3 cross-doc, experimental)
-- vision (모든 purpose 공통)     → `gemini-2.0-flash` (시각 추론 정확도 우선)
+모델 매핑 (D2-D 정정 — 2.0 계열 deprecated 후 2.5 계열로 회복)
+- tag/summary/decomposition/hyde → `gemini-2.5-flash-lite` (저렴 + 동작 검증 OK)
+- answer/ragas_judge             → `gemini-2.5-flash` (안정, 동작 검증 OK)
+- reasoning                      → `gemini-2.5-flash` (thinking-exp 미검증, 안전 모델 사용)
+- vision (모든 purpose 공통)     → `gemini-2.5-flash` (시각 추론 정확도 우선)
 
-단가 (USD per 1M tokens) — 2026년 1월 Gemini 공식 가격 기준 (검증 필요).
+D2-D 회복 사유: `gemini-2.0-flash` 가 신규 사용자에게 deprecated (404 NOT_FOUND).
+2.5-flash 와 2.5-flash-lite 만 호출 가능 검증됨 (2026-05-06 실측).
+
+단가 (USD per 1M tokens) — 2026년 1월 Gemini 공식 가격 기준.
 - `_GEMINI_PRICING` dict + `get_gemini_pricing(model)` lookup.
-- 알 수 없는 모델은 보수적으로 `gemini-2.0-flash` default 단가 + warn log.
+- 알 수 없는 모델은 보수적으로 `gemini-2.5-flash` default 단가 + warn log.
 """
 
 from __future__ import annotations
@@ -54,36 +57,38 @@ VisionPurpose = Literal[
     "pptx_rerouting",
 ]
 
-# Gemini default 모델 매핑 — master plan §4 정합 (D2-D).
-# - tag/summary/decomposition/hyde: 짧은 입출력, 비용 최소화 → 2.0-flash-lite (무료 RPD 1500)
-# - answer/ragas_judge: 사용자 액션·평가 정확도 우선 → 2.0-flash
-# - reasoning: cross-doc 추론 (S3 보강) → thinking-exp (experimental, 가용성 검증 필요)
+# Gemini default 모델 매핑 — D2-D 정정 (2.0 계열 deprecated, 2.5 계열로 회복).
+# - tag/summary/decomposition/hyde: 짧은 입출력, 비용 최소화 → 2.5-flash-lite
+# - answer/ragas_judge: 사용자 액션·평가 정확도 우선 → 2.5-flash (이전 default)
+# - reasoning: thinking-exp 검증 안 됨 → 안전 모델 (2.5-flash)
 _GEMINI_DEFAULT_MODELS: dict[LLMPurpose, str] = {
-    "tag": "gemini-2.0-flash-lite",
-    "summary": "gemini-2.0-flash-lite",
-    "answer": "gemini-2.0-flash",
-    "ragas_judge": "gemini-2.0-flash",
-    "decomposition": "gemini-2.0-flash-lite",
-    "reasoning": "gemini-2.0-flash-thinking-exp",
-    "hyde": "gemini-2.0-flash-lite",
+    "tag": "gemini-2.5-flash-lite",
+    "summary": "gemini-2.5-flash-lite",
+    "answer": "gemini-2.5-flash",
+    "ragas_judge": "gemini-2.5-flash",
+    "decomposition": "gemini-2.5-flash-lite",
+    "reasoning": "gemini-2.5-flash",
+    "hyde": "gemini-2.5-flash-lite",
 }
 
-# Vision default 모델 — purpose 별 분기 가능하지만 D2-D 시점은 통일.
-# 향후 image_parse 만 lite 로 내리는 것은 정확도 측정 후 결정.
-_GEMINI_VISION_DEFAULT_MODEL: str = "gemini-2.0-flash"
+# Vision default 모델 — 2.5-flash (이전 default, 동작 검증 OK).
+# 2.0-flash 는 신규 사용자 deprecated.
+_GEMINI_VISION_DEFAULT_MODEL: str = "gemini-2.5-flash"
 
 # 단가 (USD per 1M tokens) — 2026년 1월 Gemini 공식 가격.
 # input/output 분리, thinking 토큰은 output 단가 적용 (Gemini 정책).
 # 가격 변경 시 본 dict 만 갱신하면 모든 호출처 자동 적용.
 _GEMINI_PRICING: dict[str, dict[str, float]] = {
+    # 현재 default — 동작 검증 OK
+    "gemini-2.5-flash": {"input": 0.30, "output": 2.50, "thinking": 2.50},
+    "gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40, "thinking": 0.40},
+    # 2.0 계열 — 신규 사용자 deprecated, ENV override 시만 사용
     "gemini-2.0-flash": {"input": 0.10, "output": 0.40, "thinking": 0.40},
     "gemini-2.0-flash-lite": {"input": 0.075, "output": 0.30, "thinking": 0.30},
     "gemini-2.0-flash-thinking-exp": {"input": 0.10, "output": 0.40, "thinking": 0.40},
-    # 비교용 보존 — 기존 default 였음. master plan §4 전환 후 사용처 X.
-    "gemini-2.5-flash": {"input": 0.30, "output": 2.50, "thinking": 2.50},
 }
 
-_PRICING_FALLBACK_MODEL = "gemini-2.0-flash"
+_PRICING_FALLBACK_MODEL = "gemini-2.5-flash"
 
 _PROVIDER_ENV_KEY = "JETRAG_LLM_PROVIDER"
 _MODEL_ENV_PREFIX = "JETRAG_LLM_MODEL_"
@@ -145,7 +150,7 @@ def _resolve_llm_model(provider: str, purpose: LLMPurpose) -> str:
 def _resolve_vision_model(provider: str, purpose: VisionPurpose) -> str:
     """Vision purpose 별 모델 결정 — ENV override → provider default.
 
-    D2-D — 현재는 모든 purpose 가 동일 모델(`gemini-2.0-flash`).
+    D2-D 정정 — 현재는 모든 purpose 가 동일 모델(`gemini-2.5-flash`).
     향후 `image_parse` 를 lite 로 내리거나 `pdf_enrich` 만 thinking 으로 올리는
     분기를 도입할 때 본 함수만 갱신.
     """

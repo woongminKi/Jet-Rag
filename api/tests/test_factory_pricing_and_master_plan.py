@@ -52,29 +52,29 @@ class PricingLookupTest(unittest.TestCase):
     def test_pricing_lookup_known_model(self) -> None:
         from app.adapters.factory import get_gemini_pricing
 
-        pricing = get_gemini_pricing("gemini-2.0-flash")
-        self.assertEqual(pricing["input"], 0.10)
-        self.assertEqual(pricing["output"], 0.40)
-        self.assertEqual(pricing["thinking"], 0.40)
+        pricing = get_gemini_pricing("gemini-2.5-flash")
+        self.assertEqual(pricing["input"], 0.30)
+        self.assertEqual(pricing["output"], 2.50)
+        self.assertEqual(pricing["thinking"], 2.50)
 
     def test_pricing_lookup_lite_model(self) -> None:
-        """2.0-flash-lite 가 2.0-flash 보다 저렴한지 검증."""
+        """2.5-flash-lite 가 2.5-flash 보다 저렴한지 검증."""
         from app.adapters.factory import get_gemini_pricing
 
-        flash = get_gemini_pricing("gemini-2.0-flash")
-        lite = get_gemini_pricing("gemini-2.0-flash-lite")
+        flash = get_gemini_pricing("gemini-2.5-flash")
+        lite = get_gemini_pricing("gemini-2.5-flash-lite")
         self.assertLess(lite["input"], flash["input"])
         self.assertLess(lite["output"], flash["output"])
 
     def test_pricing_lookup_unknown_model_fallback(self) -> None:
-        """알 수 없는 모델 — default(2.0-flash) 단가 + warn 로그."""
+        """알 수 없는 모델 — default(2.5-flash) 단가 + warn 로그."""
         from app.adapters.factory import get_gemini_pricing
 
         with self.assertLogs("app.adapters.factory", level="WARNING") as cm:
             pricing = get_gemini_pricing("gemini-3.0-future-x")
 
-        self.assertEqual(pricing["input"], 0.10)
-        self.assertEqual(pricing["output"], 0.40)
+        self.assertEqual(pricing["input"], 0.30)
+        self.assertEqual(pricing["output"], 2.50)
         self.assertTrue(
             any("알 수 없는 Gemini 모델 단가" in r.getMessage() for r in cm.records),
             f"warn 로그에 'default 적용' 기대 — got {[r.getMessage() for r in cm.records]}",
@@ -85,23 +85,24 @@ class DefaultModelsMasterPlanTest(unittest.TestCase):
     """_GEMINI_DEFAULT_MODELS 가 master plan §4 매핑 그대로인지 회귀 보호."""
 
     def test_default_models_match_master_plan(self) -> None:
+        """D2-D 정정 — 2.0 계열 deprecated 후 2.5 계열로 회복."""
         from app.adapters.factory import _GEMINI_DEFAULT_MODELS
 
         expected = {
-            "tag": "gemini-2.0-flash-lite",
-            "summary": "gemini-2.0-flash-lite",
-            "answer": "gemini-2.0-flash",
-            "ragas_judge": "gemini-2.0-flash",
-            "decomposition": "gemini-2.0-flash-lite",
-            "reasoning": "gemini-2.0-flash-thinking-exp",
-            "hyde": "gemini-2.0-flash-lite",
+            "tag": "gemini-2.5-flash-lite",
+            "summary": "gemini-2.5-flash-lite",
+            "answer": "gemini-2.5-flash",
+            "ragas_judge": "gemini-2.5-flash",
+            "decomposition": "gemini-2.5-flash-lite",
+            "reasoning": "gemini-2.5-flash",
+            "hyde": "gemini-2.5-flash-lite",
         }
         self.assertEqual(_GEMINI_DEFAULT_MODELS, expected)
 
-    def test_vision_default_is_2_0_flash(self) -> None:
+    def test_vision_default_is_2_5_flash(self) -> None:
         from app.adapters.factory import _GEMINI_VISION_DEFAULT_MODEL
 
-        self.assertEqual(_GEMINI_VISION_DEFAULT_MODEL, "gemini-2.0-flash")
+        self.assertEqual(_GEMINI_VISION_DEFAULT_MODEL, "gemini-2.5-flash")
 
 
 class VisionPurposeFactoryTest(_VisionEnvIsolation):
@@ -137,13 +138,13 @@ class VisionPurposeFactoryTest(_VisionEnvIsolation):
         mock_cls.assert_called_once_with(model=factory._GEMINI_VISION_DEFAULT_MODEL)
 
 
-class EstimatedCostWith2_0FlashTest(unittest.TestCase):
-    """gemini_vision._parse_usage_metadata 가 2.0-flash 단가로 정확히 계산."""
+class EstimatedCostWith2_5FlashTest(unittest.TestCase):
+    """gemini_vision._parse_usage_metadata 가 2.5-flash 단가로 정확히 계산."""
 
-    def test_estimated_cost_with_2_0_flash(self) -> None:
+    def test_estimated_cost_with_2_5_flash(self) -> None:
         from app.adapters.impl.gemini_vision import _parse_usage_metadata
 
-        # 1M input + 1M output 으로 단순 계산 — 단가 = 0.10 + 0.40 = $0.50
+        # 1M input + 1M output — 단가 = 0.30 + 2.50 = $2.80
         metadata = SimpleNamespace(
             prompt_token_count=1_000_000,
             candidates_token_count=1_000_000,
@@ -152,12 +153,12 @@ class EstimatedCostWith2_0FlashTest(unittest.TestCase):
         )
         response = SimpleNamespace(usage_metadata=metadata)
 
-        result = _parse_usage_metadata(response, model="gemini-2.0-flash")
+        result = _parse_usage_metadata(response, model="gemini-2.5-flash")
         assert result is not None
-        # 0.10 (input) + 0.40 (output) = 0.50 USD
-        self.assertAlmostEqual(result["estimated_cost"], 0.50, places=6)
+        # 0.30 (input) + 2.50 (output) = 2.80 USD
+        self.assertAlmostEqual(result["estimated_cost"], 2.80, places=6)
 
-    def test_estimated_cost_with_2_0_flash_lite_cheaper(self) -> None:
+    def test_estimated_cost_with_2_5_flash_lite_cheaper(self) -> None:
         """동일 토큰 수 — lite 가 일반보다 저렴."""
         from app.adapters.impl.gemini_vision import _parse_usage_metadata
 
@@ -169,8 +170,8 @@ class EstimatedCostWith2_0FlashTest(unittest.TestCase):
         )
         response = SimpleNamespace(usage_metadata=metadata)
 
-        flash = _parse_usage_metadata(response, model="gemini-2.0-flash")
-        lite = _parse_usage_metadata(response, model="gemini-2.0-flash-lite")
+        flash = _parse_usage_metadata(response, model="gemini-2.5-flash")
+        lite = _parse_usage_metadata(response, model="gemini-2.5-flash-lite")
         assert flash is not None
         assert lite is not None
         self.assertLess(lite["estimated_cost"], flash["estimated_cost"])
@@ -182,15 +183,15 @@ class GeminiLLMModelPropertyTest(unittest.TestCase):
     def test_model_property_returns_init_value(self) -> None:
         from app.adapters.impl.gemini_llm import GeminiLLMProvider
 
-        provider = GeminiLLMProvider(model="gemini-2.0-flash-lite")
-        self.assertEqual(provider.model, "gemini-2.0-flash-lite")
+        provider = GeminiLLMProvider(model="gemini-2.5-flash-lite")
+        self.assertEqual(provider.model, "gemini-2.5-flash-lite")
 
     def test_model_property_returns_default(self) -> None:
-        """model 인자 미전달 시 default(2.0-flash) 반환."""
+        """model 인자 미전달 시 default(2.5-flash) 반환."""
         from app.adapters.impl.gemini_llm import GeminiLLMProvider
 
         provider = GeminiLLMProvider()
-        self.assertEqual(provider.model, "gemini-2.0-flash")
+        self.assertEqual(provider.model, "gemini-2.5-flash")
 
 
 if __name__ == "__main__":
