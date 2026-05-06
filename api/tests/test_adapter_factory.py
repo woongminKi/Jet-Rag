@@ -168,11 +168,12 @@ class GeminiInstantiationTest(_FactoryEnvIsolation):
         mock_cls.assert_called_once_with(model="gemini-2.5-flash-test-override")
 
     def test_get_vision_captioner_returns_gemini(self) -> None:
+        """D2-D 이후 — Vision factory 도 LLM 과 동일하게 model 인자 명시 전달."""
         from app.adapters import factory
 
         with patch("app.adapters.impl.gemini_vision.GeminiVisionCaptioner") as mock_cls:
             factory.get_vision_captioner("image_parse")
-        mock_cls.assert_called_once_with()
+        mock_cls.assert_called_once_with(model=factory._GEMINI_VISION_DEFAULT_MODEL)
 
 
 if __name__ == "__main__":

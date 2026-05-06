@@ -1,6 +1,7 @@
 """LLM / Vision Provider 팩토리.
 
 Phase 1 S0 D1 — master plan §6 어댑터 인터페이스 / §7 OpenAI 보험 인터페이스.
+Phase 1 S0 D2-D — master plan §4 모델 매핑 정합 + 단가 테이블 분리.
 
 원칙
 - 모든 호출처는 `GeminiLLMProvider()` / `GeminiVisionCaptioner()` 를 직접 import 하지 말고
@@ -12,11 +13,18 @@ ENV 변수
   · `openai` 인데 `OPENAI_API_KEY` 미설정이면 Gemini fallback (warn log)
 - `JETRAG_LLM_MODEL_<PURPOSE>` — 특정 purpose 의 모델 override
   예) `JETRAG_LLM_MODEL_TAG=gemini-2.0-flash-lite`
+- `JETRAG_VISION_MODEL_<PURPOSE>` — Vision purpose 별 모델 override (D2-D 신규)
+  예) `JETRAG_VISION_MODEL_PDF_ENRICH=gemini-2.0-flash`
 
-모델 매핑
-- D1 시점은 현재 코드의 `gemini-2.5-flash` 하드코딩을 default 보존 (회귀 0).
-- master plan §4 의 `gemini-2.0-flash` / `gemini-2.0-flash-lite` 변경은 D1 종료 후 별도 commit.
-- TODO 주석으로 명시.
+모델 매핑 (master plan §4)
+- tag/summary/decomposition/hyde → `gemini-2.0-flash-lite` (무료 RPD 1500, 비용 우위)
+- answer/ragas_judge             → `gemini-2.0-flash` (사용자 액션, paid 허용)
+- reasoning                      → `gemini-2.0-flash-thinking-exp` (S3 cross-doc, experimental)
+- vision (모든 purpose 공통)     → `gemini-2.0-flash` (시각 추론 정확도 우선)
+
+단가 (USD per 1M tokens) — 2026년 1월 Gemini 공식 가격 기준 (검증 필요).
+- `_GEMINI_PRICING` dict + `get_gemini_pricing(model)` lookup.
+- 알 수 없는 모델은 보수적으로 `gemini-2.0-flash` default 단가 + warn log.
 """
 
 from __future__ import annotations
@@ -46,27 +54,56 @@ VisionPurpose = Literal[
     "pptx_rerouting",
 ]
 
-# Gemini default 모델 매핑 (master plan §4 정합 — D1 은 default 보존).
-# TODO (D1 종료 후 별도 commit): master plan §4 에 맞춰 다음으로 변경
-#   tag/summary/decomposition → gemini-2.0-flash-lite
-#   answer/ragas_judge/hyde   → gemini-2.0-flash
-#   reasoning                 → gemini-2.0-flash-thinking-exp (S3)
-_GEMINI_DEFAULT_MODELS: dict[str, str] = {
-    "tag": "gemini-2.5-flash",
-    "summary": "gemini-2.5-flash",
-    "answer": "gemini-2.5-flash",
-    "ragas_judge": "gemini-2.5-flash",
-    "decomposition": "gemini-2.5-flash",
-    "reasoning": "gemini-2.5-flash",
-    "hyde": "gemini-2.5-flash",
+# Gemini default 모델 매핑 — master plan §4 정합 (D2-D).
+# - tag/summary/decomposition/hyde: 짧은 입출력, 비용 최소화 → 2.0-flash-lite (무료 RPD 1500)
+# - answer/ragas_judge: 사용자 액션·평가 정확도 우선 → 2.0-flash
+# - reasoning: cross-doc 추론 (S3 보강) → thinking-exp (experimental, 가용성 검증 필요)
+_GEMINI_DEFAULT_MODELS: dict[LLMPurpose, str] = {
+    "tag": "gemini-2.0-flash-lite",
+    "summary": "gemini-2.0-flash-lite",
+    "answer": "gemini-2.0-flash",
+    "ragas_judge": "gemini-2.0-flash",
+    "decomposition": "gemini-2.0-flash-lite",
+    "reasoning": "gemini-2.0-flash-thinking-exp",
+    "hyde": "gemini-2.0-flash-lite",
 }
 
-# Vision default 모델 — 현재 GeminiVisionCaptioner 의 _DEFAULT_MODEL 과 동일.
-# TODO (D1 종료 후 별도 commit): master plan §4 = gemini-2.0-flash.
-_GEMINI_VISION_DEFAULT_MODEL: str = "gemini-2.5-flash"
+# Vision default 모델 — purpose 별 분기 가능하지만 D2-D 시점은 통일.
+# 향후 image_parse 만 lite 로 내리는 것은 정확도 측정 후 결정.
+_GEMINI_VISION_DEFAULT_MODEL: str = "gemini-2.0-flash"
+
+# 단가 (USD per 1M tokens) — 2026년 1월 Gemini 공식 가격.
+# input/output 분리, thinking 토큰은 output 단가 적용 (Gemini 정책).
+# 가격 변경 시 본 dict 만 갱신하면 모든 호출처 자동 적용.
+_GEMINI_PRICING: dict[str, dict[str, float]] = {
+    "gemini-2.0-flash": {"input": 0.10, "output": 0.40, "thinking": 0.40},
+    "gemini-2.0-flash-lite": {"input": 0.075, "output": 0.30, "thinking": 0.30},
+    "gemini-2.0-flash-thinking-exp": {"input": 0.10, "output": 0.40, "thinking": 0.40},
+    # 비교용 보존 — 기존 default 였음. master plan §4 전환 후 사용처 X.
+    "gemini-2.5-flash": {"input": 0.30, "output": 2.50, "thinking": 2.50},
+}
+
+_PRICING_FALLBACK_MODEL = "gemini-2.0-flash"
 
 _PROVIDER_ENV_KEY = "JETRAG_LLM_PROVIDER"
 _MODEL_ENV_PREFIX = "JETRAG_LLM_MODEL_"
+_VISION_MODEL_ENV_PREFIX = "JETRAG_VISION_MODEL_"
+
+
+def get_gemini_pricing(model: str) -> dict[str, float]:
+    """모델 단가 lookup — 알 수 없는 모델은 안전한 default + warn.
+
+    `vision_usage_log.estimated_cost` 등 비용 집계가 모델 갱신 시 자동 정합되도록
+    하드코딩 회피. 호출처는 dict 의 input/output/thinking 키만 사용.
+    """
+    if model not in _GEMINI_PRICING:
+        logger.warning(
+            "알 수 없는 Gemini 모델 단가 — default %s 적용: %s",
+            _PRICING_FALLBACK_MODEL,
+            model,
+        )
+        return _GEMINI_PRICING[_PRICING_FALLBACK_MODEL]
+    return _GEMINI_PRICING[model]
 
 
 def _resolve_provider() -> str:
@@ -105,6 +142,25 @@ def _resolve_llm_model(provider: str, purpose: LLMPurpose) -> str:
     )
 
 
+def _resolve_vision_model(provider: str, purpose: VisionPurpose) -> str:
+    """Vision purpose 별 모델 결정 — ENV override → provider default.
+
+    D2-D — 현재는 모든 purpose 가 동일 모델(`gemini-2.0-flash`).
+    향후 `image_parse` 를 lite 로 내리거나 `pdf_enrich` 만 thinking 으로 올리는
+    분기를 도입할 때 본 함수만 갱신.
+    """
+    env_key = f"{_VISION_MODEL_ENV_PREFIX}{purpose.upper()}"
+    override = os.environ.get(env_key)
+    if override:
+        return override
+    if provider == "gemini":
+        return _GEMINI_VISION_DEFAULT_MODEL
+    raise NotImplementedError(
+        f"Provider {provider!r} 의 Vision 모델 매핑이 미구현입니다. "
+        f"{env_key} ENV 로 모델을 명시하거나 provider=gemini 를 사용하세요."
+    )
+
+
 def get_llm_provider(purpose: LLMPurpose) -> LLMProvider:
     """purpose 에 맞는 LLMProvider 반환.
 
@@ -128,15 +184,14 @@ def get_llm_provider(purpose: LLMPurpose) -> LLMProvider:
 def get_vision_captioner(purpose: VisionPurpose) -> VisionCaptioner:
     """purpose 에 맞는 VisionCaptioner 반환.
 
-    현재 모든 purpose 가 Gemini Vision 1종 — purpose 인자는 향후 확장
-    (예: `image_parse` → 로컬 LLaVA, `pdf_enrich` → Gemini) 대비.
+    D2-D — purpose 인자가 활성화돼 ENV (`JETRAG_VISION_MODEL_<PURPOSE>`) 로
+    purpose 별 모델 override 가능. provider 분기는 LLM 과 동일.
     """
     provider = _resolve_provider()
     if provider == "gemini":
+        model = _resolve_vision_model(provider, purpose)
         from app.adapters.impl.gemini_vision import GeminiVisionCaptioner
-        # D1 — 현재 GeminiVisionCaptioner _DEFAULT_MODEL 보존 (회귀 0).
-        # master plan §4 모델 변경은 별도 commit.
-        return GeminiVisionCaptioner()
+        return GeminiVisionCaptioner(model=model)
     if provider == "openai":
         raise NotImplementedError(
             "OpenAI Vision 어댑터 미구현 — v1.5 에서 추가 예정. "
