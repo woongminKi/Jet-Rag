@@ -9,7 +9,7 @@
 
 ## 0. 한 줄 요약
 
-> **다른 컴퓨터 진입 baseline 회복 완료 (단위 테스트 460/0 OK, Supabase 마이그 3개 테이블·15컬럼 정합)** + **사용자 ETA 보고 (어제 PDF "3분" 표시 vs 실측 6~7분) 를 신규 sprint E1 으로 격상** — Explore 로 코드 정독 → senior-planner 로 plan 작성 → 별도 파일 ship. 문제 PDF 가 다른 컴퓨터에 있어 진단·구현은 다른 컴퓨터에서 진입. 본 컴퓨터에선 plan + SQL 준비까지 ship.
+> **D3 진입 — 8 commit push** (`a5cfc2a`→`f1c87b4`). baseline 회복 + E1 sprint plan 신설 (ETA "3분" vs 실측 6~7분 격상) + S0 D4 자동 POST 제거 (비용 누수 fix) + S0 D4 P2 follow-up 3건 + S1 D1 잔여 (`auto_goldenset.py` v2 + 30 신규 테스트) + **E2 fixture 인프라 1·2·3차 ship** (`assets/public/` 8건 git 추적, 5단계 우선순위로 다른 컴퓨터 자료 위치 4 시나리오 자동 인식). 단위 테스트 460 → **494 통과 / skipped 0 / 회귀 0**. E1 진단·구현은 PDF 보유 다른 컴퓨터에서 진입.
 
 ---
 
@@ -175,6 +175,8 @@ ORDER BY ordinal_position;
 | P2 `retry_attempt` 컬럼 활성화 | 503 회복 시점 추적 | S0 D1 follow-up |
 | **E1 sprint plan** (오늘) | 사용자 ETA 보고 격상 | master plan §6 외 신규 라인, S2 직교, D2-B 흡수 |
 | **E2 1차 ship** (오늘) — 테스트 fixture 인프라 보강 | 공개 자료 3건 git 추적 + assets/public README + test_pymupdf_heading 경로 갱신 + skip 7→5 | mock + 메모리 합성 binary 한계 보강. 다른 컴퓨터·CI 자동 회귀 보호 진입 |
+| **E2 2차 ship** (오늘, 사용자 지적 반영) — assets/ 직속 자동 진입 | `_pdf_path`·`_hwpx_path` 우선순위에 `<repo>/assets/` 직속 단계 추가 + `test_hwpx_heading` 마이그 (잘못된 경로 제거) | 사용자 PC 에서 ENV 매뉴얼 없이 private 자료 자동 회귀 (skip 5→0) |
+| **E2 3차 ship** (오늘) — 라이센스 5건 마이그 + 다른 컴퓨터 루트 직속 자동 인식 + HWP 테스트 신규 | `assets/public/` 5건 추가 (대법원 판결·결정 3 + 대전시설관리공단 규정 2) + 5단계 우선순위 (`<repo>/<name>` 루트 직속 신설) + `test_hwp_heading.py` 신규 (Hwp5Parser 회귀 4 테스트) | 다른 컴퓨터에서 자료가 repo 루트 직속에 있어도 ENV 0 줄로 자동 인식. public 8건 / 약 11 MB / 모든 컴퓨터·CI 자동 회귀. 단위 테스트 490→**494**, skipped 0 |
 
 ### 4.5 다음 작업 우선순위 (오늘 결정 + 향후)
 
@@ -185,6 +187,8 @@ ORDER BY ordinal_position;
 | 1 | ~~S0 D4 — `/search/eval-precision` 자동 POST 제거~~ | ✅ **ship** | 2026-05-07 완료 (commit 미진입 — 사용자 명시 요청 대기) |
 | 2 | ~~S1 D1 잔여 — `auto_goldenset.py` v2 갱신~~ | ✅ **ship** | 2026-05-07 완료 — S1 D2 진입 가능 |
 | 3 | ~~E2 1차 ship — 테스트 fixture 인프라 보강~~ | ✅ **ship** | 2026-05-07 완료 — 공개 3건 git 추적, skip 7→5 |
+| 3-2 | ~~E2 2차 ship — assets/ 직속 자동 진입~~ | ✅ **ship** | `_pdf_path`·`_hwpx_path` 직속 단계 추가, skip 5→0 |
+| 3-3 | ~~E2 3차 ship — 라이센스 5건 + 루트 직속 자동 인식 + HWP 테스트~~ | ✅ **ship** | public 8건 / 5단계 우선순위 / 494 통과 |
 | 4 | E2 follow-up — 기관 규정·법률 샘플 라이센스 검토 | 0.5일 | `직제_규정.hwpx`·`한마음생활체육관_운영_내규.hwpx`·`law_sample` 시리즈 출처 / 공개 가능성 사용자 확인 후 추가 이동 |
 | 5 | S1 D2 — 자동 골든셋 100+ 확장 + v1 통합 | 1일 | Gemini quota 의존 |
 | 6 | E1 1차 ship 일부 (E1-A1 + E1-A5) | 1일 | 진단 없이도 진입 가능 (덜 정확) |
@@ -209,7 +213,7 @@ S1 D3~D5 → S1.5 (옵션) → S2 → S3 → S4 → S5 master plan 순차 진입
 
 ## 5. 남은 이슈 (다른 컴퓨터에서 수행)
 
-### 4.1 즉시 (E1 진단)
+### 5.1 즉시 (E1 진단)
 
 1. `git pull` 로 본 work-log + plan 파일 동기화
 2. 어제 6~7분 걸린 PDF 1건 재업로드
@@ -218,7 +222,7 @@ S1 D3~D5 → S1.5 (옵션) → S2 → S3 → S4 → S5 master plan 순차 진입
 5. 종료 후 plan 파일 §3 의 SQL S1~S4 paste → plan 파일 §10 에 결과 기록
 6. plan 파일 §10.4 의 1차 ship 진입 결정 체크리스트 진행
 
-### 4.2 사용자 결정 필요 (1차 ship 진입 전)
+### 5.2 사용자 결정 필요 (E1 1차 ship 진입 전)
 
 | # | 항목 | senior-planner 권고 default |
 |---|---|---|
@@ -227,7 +231,7 @@ S1 D3~D5 → S1.5 (옵션) → S2 → S3 → S4 → S5 master plan 순차 진입
 
 (2·3·4번은 ship 중 default 로 진행 후 review 시 조정)
 
-### 4.3 후속 sprint (E1 후)
+### 5.3 후속 sprint (E1 후)
 
 E1 1차 ship 후 권고 순서:
 - E1 2차 ship (D2-B 흡수, latency 본진입)
@@ -269,7 +273,7 @@ E1 진입 중에도 병렬 가능한 작업:
 
 ## 9. 한 문장 요약
 
-> 2026-05-07 D3 진입 — baseline 회복 + ETA 보고를 E1 sprint 로 격상해 plan 본문 ship + S0 D4 자동 POST 제거 + S1 D1 잔여 (`auto_goldenset.py` v2) + **E2 1차 ship (assets/public/ 신설 + 공개 PDF 3건 git 추적, skip 7→5)**. E1 진단·구현은 PDF 보유 다른 컴퓨터에서 진입, 본 컴퓨터에선 plan + 측정 SQL 준비까지.
+> 2026-05-07 D3 진입 — 8 commit push (`a5cfc2a`→`f1c87b4`). baseline 회복 + E1 sprint plan 본문 ship + S0 D4 자동 POST 제거 (+ P2 follow-up 3건) + S1 D1 잔여 (`auto_goldenset.py` v2 + 30 테스트) + **E2 1·2·3차 ship** (`assets/public/` 8건 git 추적, `_pdf_path`·`_hwpx_path`·`_hwp_path` 5단계 우선순위로 다른 컴퓨터 4 시나리오 자동 인식, `test_hwp_heading.py` 신규). 단위 테스트 460→494 / skipped 0 / 회귀 0. E1 진단·구현은 PDF 보유 다른 컴퓨터에서 진입.
 
 ---
 
