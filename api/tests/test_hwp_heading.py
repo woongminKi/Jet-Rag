@@ -43,11 +43,20 @@ _PUBLIC_HWP_FILES = [
 ]
 
 # 비공개 자료 — OLE2 아닌 자료 (`cosmetic_law_sample.hwp`, `law sample2.hwp`) 는
-# Hwp5Parser 가 인제스트 단계에서 거부 → fixture 부적합. private 도 비어 있음.
+# Hwp5Parser 가 인제스트 단계에서 거부 → 정상 추출 fixture 부적합 (positive set 에서 제외).
+# 단, **거부 동작 자체는 회귀 보호 대상** — `Hwp5ParserRejectNonOle2Test` 가 negative path 검증.
 _PRIVATE_HWP_FILES: list[str] = []
 
 # 회귀 가능 자산 = 공개 + 비공개 (호출부에서 부재 시 skip)
 _HWP_FILES = _PUBLIC_HWP_FILES + _PRIVATE_HWP_FILES
+
+# negative fixture (OLE2 컨테이너 아님) — `Hwp5ParserRejectNonOle2Test` 전용.
+# 거부 동작 + 사용자 안내 메시지 회귀 보호. `.gitignore` `/assets/*` 로 다른 컴퓨터에는
+# 부재 — 자료 부재 시 자동 skipTest (CI 호환). 5단계 우선순위 그대로 활용.
+_NEGATIVE_HWP_FILES = [
+    "cosmetic_law_sample.hwp",
+    "law sample2.hwp",
+]
 
 
 def _hwp_path(name: str) -> Path:
@@ -138,6 +147,41 @@ class Hwp5ParserRealAssetTest(unittest.TestCase):
             0,
             f"first section empty: {result.sections[0]!r}",
         )
+
+
+class Hwp5ParserRejectNonOle2Test(unittest.TestCase):
+    """OLE2 형식이 아닌 HWP 자산 — `Hwp5Parser` 가 정상적으로 거부 + 한국어 안내 메시지 반환.
+
+    페르소나 A 정합 (사용자 점검, 2026-05-07 E2 5차 ship)
+    - 사용자가 잘못된 형식 (OLE2 아닌 HWP) 업로드 시 PDF 또는 HWPX 로 변환 안내를 명확히 받기.
+    - backend 의 안내 메시지는 `ingest_jobs.error_msg` 에 그대로 보존 → frontend
+      `upload-item.tsx` 의 failed 상태 카드 (`text-destructive` 영역) 에 노출.
+
+    검증 범위
+    - `RuntimeError` raise (`Hwp5ParserBadInputTest` 와 동일 예외 클래스)
+    - 메시지에 변환 안내 키워드 포함 — `OLE2` 또는 (`PDF` AND `HWPX`)
+    - 자료 부재 시 자동 skipTest (private fixture, `.gitignore` `/assets/*`)
+    """
+
+    def test_reject_with_korean_conversion_hint(self) -> None:
+        from app.adapters.impl.hwp_parser import Hwp5Parser
+
+        parser = Hwp5Parser()
+        for name in _NEGATIVE_HWP_FILES:
+            with self.subTest(name=name):
+                path = _hwp_path(name)
+                if not path.exists():
+                    self.skipTest(f"비정형 HWP fixture 부재 (private): {name}")
+                data = path.read_bytes()
+
+                with self.assertRaises(RuntimeError) as ctx:
+                    parser.parse(data, file_name=name)
+                msg = str(ctx.exception)
+                # 변환 안내 키워드 — OLE2 (원인) 또는 PDF+HWPX (해결책) 둘 중 하나는 노출
+                self.assertTrue(
+                    ("OLE2" in msg) or ("PDF" in msg and "HWPX" in msg),
+                    f"안내 메시지에 변환 가이드 키워드 부재: {msg}",
+                )
 
 
 if __name__ == "__main__":

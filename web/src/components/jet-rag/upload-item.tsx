@@ -163,7 +163,7 @@ export function UploadItem({
                 )
               )}
               {job?.status === 'failed' && job.error_msg && (
-                <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                <p className="break-words rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
                   {job.error_msg}
                 </p>
               )}

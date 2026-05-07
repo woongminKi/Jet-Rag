@@ -313,7 +313,7 @@ function DocStatusSection({ doc }: { doc: DocumentDetailResponse }) {
           </p>
         </div>
         {job.error_msg && (
-          <p className="rounded-md border border-destructive/20 bg-card px-3 py-2 text-xs text-destructive">
+          <p className="break-words rounded-md border border-destructive/20 bg-card px-3 py-2 text-xs text-destructive">
             {job.error_msg}
           </p>
         )}
