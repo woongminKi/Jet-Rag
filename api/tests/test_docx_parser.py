@@ -9,6 +9,16 @@
 - iter_inner_content 의 paragraph + table 순서 보존
 - corrupted DOCX → RuntimeError wrap
 
+E2 4차 ship — 실 DOCX 자산 fixture 회귀 추가 (`DocxParserRealAssetTest`).
+메모리 합성 binary 로는 잡히지 않는 실 파일 회귀를 보호. 자산 미존재 시 자동 skip.
+
+자산 디렉토리 우선순위 (5단계, `test_pymupdf_heading.py` 패턴과 정합)
+- 1순위: `<repo>/assets/public/` — 모든 컴퓨터·CI 자동 회귀
+- 2순위: `<repo>/assets/` 직속 (사용자 PC raw 자료)
+- 3순위: `<repo>/` 루트 직속 (다른 컴퓨터 패턴)
+- 4순위: `JETRAG_TEST_DOCX_DIR` ENV 폴백
+- 5단계: 자산 부재 시 자동 skip
+
 stdlib unittest + python-docx 로 합성 — 외부 자료 의존 0.
 """
 
@@ -17,10 +27,58 @@ from __future__ import annotations
 import io
 import os
 import unittest
+from pathlib import Path
 
 import docx as python_docx
 
 os.environ.setdefault("HF_API_TOKEN", "dummy-test-token")
+
+
+# repo root 자동 인식: api/tests/test_*.py → parents[2] = repo root
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_PUBLIC_DOCX_DIR = _REPO_ROOT / "assets" / "public"
+
+# 공개 fixture (현재 0건 — follow-up 후보, 라이센스 검토 통과 시 추가)
+_PUBLIC_DOCX_FILES: list[str] = []
+
+# 비공개 자료 (사용자 PC `assets/` 직속, `.gitignore` 로 다른 컴퓨터엔 부재)
+_PRIVATE_DOCX_FILES = [
+    "승인글 템플릿1.docx",
+    "승인글 템플릿3.docx",
+]
+
+# 회귀 가능 자산 = 공개 + 비공개 (5단계 우선순위로 자동 해석)
+_DOCX_FILES = _PUBLIC_DOCX_FILES + _PRIVATE_DOCX_FILES
+
+
+def _docx_path(name: str) -> Path:
+    """5단계 우선순위로 DOCX fixture 경로 해석. 부재 시 부재 path 반환 (호출부 skipTest).
+
+    1) `<repo>/assets/public/<name>` — 공개 fixture
+    2) `<repo>/assets/<name>` — 사용자 PC raw 자료
+    3) `<repo>/<name>` — 다른 컴퓨터 repo 루트 직속
+    4) `$JETRAG_TEST_DOCX_DIR/<name>` — ENV 폴백
+    5) 부재 → public path 반환 (exists() False)
+    """
+    public = _PUBLIC_DOCX_DIR / name
+    if public.exists():
+        return public
+
+    assets_direct = _REPO_ROOT / "assets" / name
+    if assets_direct.exists():
+        return assets_direct
+
+    repo_root_direct = _REPO_ROOT / name
+    if repo_root_direct.exists():
+        return repo_root_direct
+
+    env_base = os.environ.get("JETRAG_TEST_DOCX_DIR")
+    if env_base:
+        env_path = Path(env_base) / name
+        if env_path.exists():
+            return env_path
+
+    return public  # exists() False — 호출부에서 skipTest
 
 
 def _build_docx(*, title: str | None = None, body: list[tuple[str, str]] | None = None,
@@ -175,6 +233,48 @@ class RawTextTest(unittest.TestCase):
         self.assertIn("요약", result.raw_text)
         self.assertIn("본문 단락이다.", result.raw_text)
         self.assertIn("A | B", result.raw_text)
+
+
+class DocxParserRealAssetTest(unittest.TestCase):
+    """E2 4차 ship — 실 DOCX 자산에 대한 회귀 보호.
+
+    메모리 합성 (`_build_docx`) 으로는 잡히지 않는 케이스:
+    - 실제 워드프로세서로 생성된 스타일 변형
+    - 한국어 글꼴·복합 단락·승인 양식 표 등 외부 도구 산출물
+    - 실 사용자 자산의 인코딩·메타데이터 정합
+
+    자산 부재 시 자동 skip (CI 호환). 사용자 PC `assets/` 직속에 자료 있으면 자동 진입.
+    """
+
+    def setUp(self) -> None:
+        self._target_name: str | None = None
+        self._target_path: Path | None = None
+        for name in _DOCX_FILES:
+            path = _docx_path(name)
+            if path.exists():
+                self._target_name = name
+                self._target_path = path
+                return
+        self.skipTest("실 DOCX 자산 부재 — public/private 모두 미존재")
+
+    def test_can_parse_real_docx(self) -> None:
+        """실 DOCX 파싱 — section 1건 이상 + 첫 section text non-empty."""
+        from app.adapters.impl.docx_parser import DocxParser
+
+        assert self._target_path is not None and self._target_name is not None
+        data = self._target_path.read_bytes()
+        result = DocxParser().parse(data, file_name=self._target_name)
+
+        self.assertGreaterEqual(
+            len(result.sections), 1,
+            f"실 DOCX 파싱 시 section 1건 이상 — got {len(result.sections)}",
+        )
+        # text 가 1건 이상 있는 section 이 존재 (heading-only 단락만 있는 경우 회피)
+        non_empty = [s for s in result.sections if s.text.strip()]
+        self.assertGreaterEqual(
+            len(non_empty), 1,
+            "non-empty text section 0건 — 파서가 텍스트 회수 실패",
+        )
 
 
 if __name__ == "__main__":

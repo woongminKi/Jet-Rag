@@ -5,16 +5,72 @@
 - 외부 sample 파일 의존성 0 — fixture 불필요
 - 케이스: title placeholder · 텍스트 박스 · 표 · GroupShape 재귀 · 빈 슬라이드
 
+E2 4차 ship — 실 PPTX 자산 fixture 회귀 추가 (`PptxParserRealAssetTest`).
+메모리 합성 binary 로는 잡히지 않는 실 파일 회귀를 보호한다. 자산 미존재 시 자동 skip.
+
+자산 디렉토리 우선순위 (5단계, `test_pymupdf_heading.py` 패턴과 정합)
+- 1순위: 공개 fixture `<repo>/assets/public/` — 모든 컴퓨터·CI 자동 회귀
+- 2순위: `<repo>/assets/` 직속 (사용자 PC raw 자료, `.gitignore` `/assets/*`)
+- 3순위: `<repo>/` 루트 직속 (다른 컴퓨터 패턴)
+- 4순위: `JETRAG_TEST_PPTX_DIR` ENV 폴백
+- 5단계: 자산 부재 시 자동 skip (CI 호환)
+
 stdlib unittest + python-pptx (이미 의존성). 의존성 추가 0.
 """
 
 from __future__ import annotations
 
 import io
+import os
 import unittest
+from pathlib import Path
 
 from pptx import Presentation
 from pptx.util import Inches
+
+
+# repo root 자동 인식: api/tests/test_*.py → parents[2] = repo root
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_PUBLIC_PPTX_DIR = _REPO_ROOT / "assets" / "public"
+
+# 공개 fixture (현재 0건 — follow-up 후보, 라이센스 검토 통과 시 추가)
+_PUBLIC_PPTX_FILES: list[str] = []
+
+# 비공개 자료 (사용자 PC `assets/` 직속, `.gitignore` 로 다른 컴퓨터엔 부재)
+_PRIVATE_PPTX_FILES = ["브랜딩_스튜디오앤드오어.pptx"]
+
+# 회귀 가능 자산 = 공개 + 비공개 (5단계 우선순위로 자동 해석)
+_PPTX_FILES = _PUBLIC_PPTX_FILES + _PRIVATE_PPTX_FILES
+
+
+def _pptx_path(name: str) -> Path:
+    """5단계 우선순위로 PPTX fixture 경로 해석. 부재 시 부재 path 반환 (호출부 skipTest).
+
+    1) `<repo>/assets/public/<name>` — 공개 fixture, 모든 컴퓨터·CI 자동
+    2) `<repo>/assets/<name>` — 사용자 PC raw 자료 (`.gitignore` `/assets/*`)
+    3) `<repo>/<name>` — 다른 컴퓨터에서 자료가 repo 루트 직속에 있을 때
+    4) `$JETRAG_TEST_PPTX_DIR/<name>` — 외장 디스크·별 위치 보강용 ENV 폴백
+    5) 부재 → public path 반환 (exists() False, 호출부 skipTest)
+    """
+    public = _PUBLIC_PPTX_DIR / name
+    if public.exists():
+        return public
+
+    assets_direct = _REPO_ROOT / "assets" / name
+    if assets_direct.exists():
+        return assets_direct
+
+    repo_root_direct = _REPO_ROOT / name
+    if repo_root_direct.exists():
+        return repo_root_direct
+
+    env_base = os.environ.get("JETRAG_TEST_PPTX_DIR")
+    if env_base:
+        env_path = Path(env_base) / name
+        if env_path.exists():
+            return env_path
+
+    return public  # exists() False — 호출부에서 skipTest
 
 
 def _make_pptx_bytes(build_fn) -> bytes:
@@ -592,6 +648,64 @@ class PptxVisionAugmentTest(unittest.TestCase):
 
         self.assertEqual(len(parse_calls), 5, "augment 도 max 5 cap 적용")
         self.assertEqual(len(result.sections), 6, "6 슬라이드 모두 section 생성 (텍스트만)")
+
+
+class PptxParserRealAssetTest(unittest.TestCase):
+    """E2 4차 ship — 실 PPTX 자산에 대한 회귀 보호.
+
+    메모리 합성 (`_make_pptx_bytes`) 으로는 잡히지 않는 케이스:
+    - 실제 디자인 도구로 생성된 슬라이드 마스터·레이아웃 변형
+    - 한국어 글꼴·복합 단락·SmartArt 등 외부 도구 산출물
+    - 실 사용자 자산의 인코딩·메타데이터 정합
+
+    자산 부재 시 자동 skip (CI 호환). 사용자 PC `assets/` 직속에 자료 있으면 자동 진입.
+    """
+
+    def setUp(self) -> None:
+        self._target_name: str | None = None
+        self._target_path: Path | None = None
+        for name in _PPTX_FILES:
+            path = _pptx_path(name)
+            if path.exists():
+                self._target_name = name
+                self._target_path = path
+                return
+        self.skipTest("실 PPTX 자산 부재 — public/private 모두 미존재")
+
+    def test_can_parse_real_pptx(self) -> None:
+        """실 PPTX 파싱이 raise 없이 정상 종료 + ExtractionResult 정합 + 텍스트/메타데이터 검증.
+
+        텍스트 슬라이드가 있는 자산: sections >= 1 + text non-empty + page 정수 검증.
+        picture-only 자산 (디자인 PPTX 등): image_parser=None 기본 동작으로 sections=0 정상.
+        둘 다 ExtractionResult schema 정합·raise 0 회귀 보호.
+        """
+        from app.adapters.impl.pptx_parser import PptxParser
+
+        assert self._target_path is not None and self._target_name is not None
+        data = self._target_path.read_bytes()
+        result = PptxParser().parse(data, file_name=self._target_name)
+
+        # 정합 — 모든 케이스 공통 (raise 0 + ExtractionResult schema)
+        self.assertEqual(result.source_type, "pptx")
+        self.assertIsInstance(result.sections, list)
+        self.assertIsInstance(result.raw_text, str)
+        self.assertIsInstance(result.warnings, list)
+
+        # 텍스트 슬라이드 자산은 추가 검증 (picture-only 자산이면 아래는 skip)
+        if result.sections:
+            self.assertTrue(
+                result.sections[0].text.strip(),
+                "section[0].text 가 비어 있음 — 파서 텍스트 회수 실패",
+            )
+            for sec in result.sections:
+                self.assertIsInstance(
+                    sec.page, int,
+                    f"page 가 정수가 아님: {sec.page!r}",
+                )
+                self.assertGreaterEqual(
+                    sec.page, 1,
+                    f"page 가 1 미만: {sec.page}",
+                )
 
 
 if __name__ == "__main__":

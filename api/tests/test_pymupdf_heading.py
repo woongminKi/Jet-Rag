@@ -37,6 +37,8 @@ _PUBLIC_PDF_FILES = [
     # E2 3차 ship — 한국 저작권법 §7 (대법원 판결문 등) 비보호 자료
     "law sample3.pdf",
     "law_sample2.pdf",
+    # E2 4차 ship — 사용자 명시 공공데이터 (`assets/public/` 추적 중이나 등록 누락이었음)
+    "sample-report.pdf",
 ]
 
 # 비공개 자료 (사용자 PC `assets/` 직속 또는 repo 루트 직속, `.gitignore` 로 다른 컴퓨터엔 부재)
