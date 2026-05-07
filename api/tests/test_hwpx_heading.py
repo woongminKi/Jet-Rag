@@ -7,8 +7,13 @@
 - sticky propagate — heading 다음 본문 단락이 직전 heading text 를 상속
 - BadZipFile 시 RuntimeError raise
 
-실 HWPX 자산은 프로젝트 루트(.../piLab/Jet-Rag/) 에 위치 — 복사 금지, 절대 경로 참조.
-환경 변수 `JETRAG_TEST_HWPX_DIR` 로 override 가능. 파일 부재 시 skip (CI 환경 호환).
+자산 디렉토리 우선순위 (PDF 테스트 (`test_pymupdf_heading.py`) 와 동일 패턴)
+- 1순위: 공개 fixture `<repo>/assets/public/` — 모든 컴퓨터·CI 자동 회귀
+- 2순위: `<repo>/assets/` 직속 (사용자 PC raw 자료, `.gitignore` 로 다른 컴퓨터엔 부재) — 자동 진입
+- 3순위: `JETRAG_TEST_HWPX_DIR` ENV 폴백 — assets/ 외 위치 보강용 옵션
+- 자산 부재 시 자동 skip (CI 호환)
+
+> 공개 fixture HWPX 0건 — 라이센스 검토 follow-up 후 `assets/public/` 추가 예정.
 """
 
 from __future__ import annotations
@@ -21,14 +26,48 @@ from pathlib import Path
 os.environ.setdefault("HF_API_TOKEN", "dummy-test-token")
 
 
-_DEFAULT_HWPX_DIR = "/Users/kiwoongmin/Desktop/piLab/Jet-Rag"
+# repo root 자동 인식: api/tests/test_*.py → parents[2] = repo root
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_PUBLIC_HWPX_DIR = _REPO_ROOT / "assets" / "public"
+
+# 공개 fixture (assets/public 안, 모든 컴퓨터·CI 자동 회귀)
+# 현재 라이센스 검토 follow-up 진행 전이므로 비어 있음
+_PUBLIC_HWPX_FILES: list[str] = []
+
+# 비공개 자료 (사용자 PC `assets/` 직속, `.gitignore` 로 다른 컴퓨터엔 부재)
+# 사용자 PC 에서는 자동 회귀 진입 / 다른 컴퓨터·CI 에서는 부재 → 자동 skip
+_PRIVATE_HWPX_FILES = [
+    "직제_규정(2024.4.30.개정).hwpx",
+    "한마음생활체육관_운영_내규(2024.4.30.개정).hwpx",
+]
+
+# 기존 변수 호환 유지 — 다른 테스트 클래스 에서 사용
 _FILE_A = "직제_규정(2024.4.30.개정).hwpx"
 _FILE_B = "한마음생활체육관_운영_내규(2024.4.30.개정).hwpx"
 
+# 회귀 가능 자산 = 공개 + 비공개 (호출부에서 부재 시 skip)
+_HWPX_FILES = _PUBLIC_HWPX_FILES + _PRIVATE_HWPX_FILES
+
 
 def _hwpx_path(name: str) -> Path:
-    base = os.environ.get("JETRAG_TEST_HWPX_DIR", _DEFAULT_HWPX_DIR)
-    return Path(base) / name
+    """공개 fixture → assets/ 직속 → ENV 폴백 순. 부재 시 부재 path 반환 (호출부 skipTest)."""
+    public = _PUBLIC_HWPX_DIR / name
+    if public.exists():
+        return public
+
+    # assets/ 직속 (사용자 PC raw 자료, .gitignore 로 다른 컴퓨터엔 없음)
+    assets_direct = _REPO_ROOT / "assets" / name
+    if assets_direct.exists():
+        return assets_direct
+
+    # ENV 폴백 — assets/ 외 다른 위치 (예: 사용자가 자료를 외장 디스크로 옮겼을 때)
+    env_base = os.environ.get("JETRAG_TEST_HWPX_DIR")
+    if env_base:
+        env_path = Path(env_base) / name
+        if env_path.exists():
+            return env_path
+
+    return public  # exists() False — 호출부에서 skipTest
 
 
 class IsHeadingParagraphTest(unittest.TestCase):
