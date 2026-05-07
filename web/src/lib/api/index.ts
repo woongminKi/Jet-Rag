@@ -1,6 +1,7 @@
 import { ApiError, apiGet, apiPost, apiPostFormData } from './client';
 import type {
   ActiveDocsResponse,
+  AdminFeedbackStatsResponse,
   AdminQueriesStatsResponse,
   AdminRange,
   AnswerResponse,
@@ -210,6 +211,17 @@ export const getAdminQueriesStats = (range: AdminRange = '7d') => {
   const qs = new URLSearchParams({ range });
   return apiGet<AdminQueriesStatsResponse>(
     `/admin/queries/stats?${qs.toString()}`,
+  );
+};
+
+/** S1 D4 — `/admin/feedback/stats` 사용자 피드백 통합 분석.
+ *  - range: '7d' / '14d' / '30d' (default '7d')
+ *  - 마이그 011 미적용 시 graceful — error_code='migrations_pending'.
+ *  - 코멘트 자동 분류는 룰 기반 (LLM 호출 0). 1주 누적 후 룰 정합성 검증. */
+export const getAdminFeedbackStats = (range: AdminRange = '7d') => {
+  const qs = new URLSearchParams({ range });
+  return apiGet<AdminFeedbackStatsResponse>(
+    `/admin/feedback/stats?${qs.toString()}`,
   );
 };
 

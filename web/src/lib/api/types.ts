@@ -327,6 +327,48 @@ export interface AdminQueriesStatsResponse {
   generated_at: string;
 }
 
+/** S1 D4 — `/admin/feedback/stats` 응답 (answer_feedback 통합 분석).
+ *  - error_code='migrations_pending': 마이그 011 미적용 graceful (모든 집계 빈 값).
+ *  - daily: range 일수 만큼 row, KST 자정 기준 zero-fill (오래된→최신 순).
+ *  - rating_distribution: 항상 2 키 (up/down) 노출.
+ *  - comment_categories: 항상 4 키 노출 (sample 0건이라도).
+ *  - recent_comments: 코멘트 첨부된 최근 10건. 빈 코멘트는 분류·노출 X.
+ *  - satisfaction_rate: 전체 sample 0건 시 null. */
+export type AdminFeedbackRating = 'up' | 'down';
+export type AdminFeedbackCategory =
+  | 'search_issue'
+  | 'answer_issue'
+  | 'source_issue'
+  | 'other';
+
+export interface AdminFeedbackDailyBucket {
+  date: string; // YYYY-MM-DD (KST)
+  up: number;
+  down: number;
+  total: number;
+}
+
+export interface AdminFeedbackComment {
+  query: string;
+  rating: AdminFeedbackRating;
+  comment: string;
+  category: AdminFeedbackCategory;
+  ts: string;
+}
+
+export interface AdminFeedbackStatsResponse {
+  range: AdminRange;
+  daily: AdminFeedbackDailyBucket[];
+  rating_distribution: Record<AdminFeedbackRating, number>;
+  satisfaction_rate: number | null;
+  comment_categories: Record<AdminFeedbackCategory, number>;
+  recent_comments: AdminFeedbackComment[];
+  total_feedback: number;
+  comment_count: number;
+  error_code: 'migrations_pending' | null;
+  generated_at: string;
+}
+
 /** W25 D12 — `/answer` 라우터 응답 (LLM RAG PoC).
  *  faithfulness: 답변에 인라인 [N] 으로 sources[] 인용 명시. */
 export interface AnswerSource {

@@ -1,16 +1,16 @@
-"""GET /admin/queries/stats — 실 query 로그 시각화 대시보드 backend.
+"""admin 영역 통계 endpoint 모음.
 
-S1 D3 ship (master plan §6) — `search_metrics_log` 기반 일별 query 분포 + 9 query_type
-자동 분류 + 실패 케이스 추출. 1주 누적 후 실 query 분포 확인 → S1 D5 모델 회귀 측정의
-사전 자료. single-user MVP 라 별도 인증 없음 (production 진입 시 별도 sprint).
+- `GET /admin/queries/stats` — S1 D3 ship. `search_metrics_log` 기반 query 로그 대시보드.
+- `GET /admin/feedback/stats` — S1 D4 ship (master plan §6). `answer_feedback` 기반
+  사용자 평가(👍/👎) 누적 + 코멘트 룰 분류 (검색/답변/출처/그 외) 대시보드.
+
+single-user MVP 라 별도 인증 없음 (production 진입 시 별도 sprint).
 
 설계 메모
-- `search_metrics_log` 직접 SELECT (mig 006). 일별 GROUP BY 만 필요해 RPC 신설 X.
-- `query_type` 자동 분류 — `evals/auto_goldenset.py:classify_query_type` 재사용
-  (기존 `tests/test_auto_goldenset.py:21` 의 sys.path 보정 패턴 동일).
-- 마이그 006 미적용 환경 graceful — `error_code='migrations_pending'` (mig stats_trend 패턴).
-- 실패 케이스 분류: `fallback_reason` 우선 → `permanent_4xx`/`transient_5xx`,
-  그 외 `fused == 0` 이면 `no_hits`. 그 외는 success.
+- 두 endpoint 모두 동일한 KST 일별 GROUP BY 패턴 + `error_code='migrations_pending'`
+  graceful fallback. queries 패턴을 그대로 답변 피드백에 이식.
+- 코멘트 자동 분류는 룰 기반 (LLM 호출 0, 비용 0). 1주 누적 후 D3 처럼 실 데이터로
+  룰 정합성 검증. 매칭 우선순위: source_issue > search_issue > answer_issue → 그 외 other.
 """
 
 from __future__ import annotations
@@ -309,3 +309,237 @@ def _extract_failed_samples(rows: list[dict]) -> list[FailedSample]:
             )
         )
     return samples
+
+
+# ============================================================================
+# S1 D4 ship — `GET /admin/feedback/stats` (answer_feedback 통합 분석)
+# ============================================================================
+#
+# answer_feedback (마이그 011) 기반 사용자 평가 누적 + 코멘트 룰 분류.
+# DoD: 1주 누적 후 사용자 평가 누적 신호 확인 → 답변 품질 회귀 추적의 사전 자료.
+
+# 코멘트 카테고리 4종 — 룰 기반 분류. master plan §6 S1 D4 명세.
+_COMMENT_CATEGORIES: tuple[str, ...] = (
+    "search_issue",  # 검색 결과 문제
+    "answer_issue",  # 답변 정확도 문제
+    "source_issue",  # 출처/근거 문제
+    "other",  # 그 외 (분류 불가)
+)
+
+# 룰 매칭 키워드 — 한국어 사용자 코멘트 패턴 가정. 1주 누적 후 D3 처럼 실 데이터로 검증.
+# 매칭 우선순위는 _classify_comment 함수 내 dict iteration 순서 + 코드 흐름이 결정.
+_KEYWORDS_SOURCE_ISSUE: tuple[str, ...] = (
+    "출처", "근거 없", "어디서", "인용", "페이지", "이상한 자료",
+)
+_KEYWORDS_SEARCH_ISSUE: tuple[str, ...] = (
+    "검색", "찾을 수 없", "관련 없", "나오지 않", "chunk", "검색 결과",
+)
+_KEYWORDS_ANSWER_ISSUE: tuple[str, ...] = (
+    "답변", "정확하지 않", "잘못", "틀린", "오답", "환각",
+)
+
+# 최근 코멘트 (코멘트 첨부된 것만) 노출 수.
+_RECENT_COMMENTS_LIMIT = 10
+
+
+def classify_comment(text: str) -> str:
+    """사용자 코멘트를 4 카테고리 중 하나로 분류.
+
+    매칭 우선순위 — 출처가 명시된 코멘트는 검색·답변 보다 명확한 신호이므로
+    `source_issue` 가 최우선. 그 다음 검색 → 답변 → 그 외.
+
+    빈 문자열 / 공백만 / 키워드 매칭 0건 → "other".
+    """
+    if not text:
+        return "other"
+    normalized = text.strip().lower()
+    if not normalized:
+        return "other"
+    # 1순위: source_issue (출처/근거 명시) — 가장 구체적인 불만.
+    if any(kw in normalized for kw in _KEYWORDS_SOURCE_ISSUE):
+        return "source_issue"
+    # 2순위: search_issue (검색 결과 문제) — chunk 가 안 잡힌 케이스.
+    if any(kw in normalized for kw in _KEYWORDS_SEARCH_ISSUE):
+        return "search_issue"
+    # 3순위: answer_issue (답변 정확도) — chunk 는 잡혔지만 LLM 답변 자체가 틀린 케이스.
+    if any(kw in normalized for kw in _KEYWORDS_ANSWER_ISSUE):
+        return "answer_issue"
+    return "other"
+
+
+class FeedbackDailyBucket(BaseModel):
+    """일별 👍/👎 카운트 — KST 기준 YYYY-MM-DD."""
+
+    date: str  # YYYY-MM-DD (KST)
+    up: int
+    down: int
+    total: int
+
+
+class FeedbackComment(BaseModel):
+    """최근 코멘트 1건 — 코멘트 첨부된 것만 노출."""
+
+    query: str
+    rating: Literal["up", "down"]
+    comment: str
+    category: Literal["search_issue", "answer_issue", "source_issue", "other"]
+    ts: str  # ISO 8601 (UTC)
+
+
+class AdminFeedbackStatsResponse(BaseModel):
+    """`GET /admin/feedback/stats` 응답.
+
+    - error_code='migrations_pending': 마이그 011 미적용 환경. 모든 집계 빈 값.
+    - satisfaction_rate: 전체 sample 0건 시 None.
+    - rating_distribution: 항상 2 키 (up/down) 노출.
+    - comment_categories: 항상 4 키 노출 (sample 0건이라도).
+    - recent_comments: 코멘트 첨부된 최근 N건. up/down 무관.
+    """
+
+    range: Literal["7d", "14d", "30d"]
+    daily: list[FeedbackDailyBucket]
+    rating_distribution: dict[str, int]
+    satisfaction_rate: float | None
+    comment_categories: dict[str, int]
+    recent_comments: list[FeedbackComment]
+    total_feedback: int
+    comment_count: int
+    error_code: str | None = None
+    generated_at: str
+
+
+@router.get("/feedback/stats", response_model=AdminFeedbackStatsResponse)
+def admin_feedback_stats(
+    range: Literal["7d", "14d", "30d"] = Query("7d", description="조회 범위"),
+) -> AdminFeedbackStatsResponse:
+    """`answer_feedback` 기반 사용자 평가 누적 통계.
+
+    1. 마이그 011 미적용 환경 graceful → `error_code='migrations_pending'`
+    2. 정상: 일별 GROUP BY (KST 일자) + rating 분포 + 코멘트 4 카테고리 + 최근 10건
+    """
+    generated_at = datetime.now(timezone.utc).isoformat()
+    days = _RANGE_TO_DAYS[range]
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # ---- DB SELECT ----
+    try:
+        supabase = get_supabase_client()
+        rows = (
+            supabase.table("answer_feedback")
+            .select("created_at, helpful, comment, query")
+            .gte("created_at", since.isoformat())
+            .order("created_at", desc=True)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:  # noqa: BLE001 — 마이그 011 미적용 graceful
+        logger.warning("admin_feedback_stats DB graceful skip: %s", exc)
+        return AdminFeedbackStatsResponse(
+            range=range,
+            daily=[],
+            rating_distribution={"up": 0, "down": 0},
+            satisfaction_rate=None,
+            comment_categories={k: 0 for k in _COMMENT_CATEGORIES},
+            recent_comments=[],
+            total_feedback=0,
+            comment_count=0,
+            error_code="migrations_pending",
+            generated_at=generated_at,
+        )
+
+    # ---- 일별 집계 (KST) ----
+    daily_buckets = _build_feedback_daily_buckets(rows, days)
+
+    # ---- rating 분포 ----
+    up_count = sum(1 for r in rows if r.get("helpful") is True)
+    down_count = sum(1 for r in rows if r.get("helpful") is False)
+    total = up_count + down_count
+    satisfaction = round(up_count / total, 4) if total else None
+
+    # ---- 코멘트 카테고리 + 최근 N건 ----
+    categories, recent_comments = _build_comment_analysis(rows)
+
+    return AdminFeedbackStatsResponse(
+        range=range,
+        daily=daily_buckets,
+        rating_distribution={"up": up_count, "down": down_count},
+        satisfaction_rate=satisfaction,
+        comment_categories=categories,
+        recent_comments=recent_comments,
+        total_feedback=total,
+        comment_count=sum(categories.values()),
+        error_code=None,
+        generated_at=generated_at,
+    )
+
+
+# ---------------------- feedback helpers ----------------------
+
+
+def _build_feedback_daily_buckets(
+    rows: list[dict], days: int
+) -> list[FeedbackDailyBucket]:
+    """일별 👍/👎 집계 — KST 자정 기준. 빈 날짜도 0 row 로 채움 (sparkline zero-fill).
+
+    오래된 → 최신 순서 (queries 의 `_build_daily_buckets` 와 동일 패턴).
+    """
+    today_kst = datetime.now(KST).date()
+    counts: dict[str, dict[str, int]] = {}
+    for row in rows:
+        recorded_at = _parse_recorded_at_kst(row.get("created_at"))
+        if recorded_at is None:
+            continue
+        date_str = recorded_at.date().isoformat()
+        bucket = counts.setdefault(date_str, {"up": 0, "down": 0})
+        # helpful 컬럼은 NOT NULL BOOLEAN — None 방어는 로깅 차원만.
+        if row.get("helpful") is True:
+            bucket["up"] += 1
+        elif row.get("helpful") is False:
+            bucket["down"] += 1
+
+    result: list[FeedbackDailyBucket] = []
+    for i in range(days - 1, -1, -1):
+        d = today_kst - timedelta(days=i)
+        date_str = d.isoformat()
+        bucket = counts.get(date_str, {"up": 0, "down": 0})
+        result.append(
+            FeedbackDailyBucket(
+                date=date_str,
+                up=bucket["up"],
+                down=bucket["down"],
+                total=bucket["up"] + bucket["down"],
+            )
+        )
+    return result
+
+
+def _build_comment_analysis(
+    rows: list[dict],
+) -> tuple[dict[str, int], list[FeedbackComment]]:
+    """코멘트 카테고리 분포 + 최근 N건 (코멘트 첨부된 것만).
+
+    rows 는 `created_at desc` 정렬 입력 가정 — 그대로 순회해 최근 N건 컷.
+    빈 코멘트 (None / 공백만) 는 분류·노출 모두 X.
+    """
+    categories: dict[str, int] = {k: 0 for k in _COMMENT_CATEGORIES}
+    comments: list[FeedbackComment] = []
+    for row in rows:
+        raw = (row.get("comment") or "").strip()
+        if not raw:
+            continue
+        category = classify_comment(raw)
+        categories[category] += 1
+        if len(comments) < _RECENT_COMMENTS_LIMIT:
+            helpful = row.get("helpful")
+            rating: Literal["up", "down"] = "up" if helpful else "down"
+            comments.append(
+                FeedbackComment(
+                    query=(row.get("query") or "")[:200],
+                    rating=rating,
+                    comment=raw[:500],
+                    category=category,  # type: ignore[arg-type]
+                    ts=str(row.get("created_at") or ""),
+                )
+            )
+    return categories, comments
