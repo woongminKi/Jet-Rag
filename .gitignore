@@ -55,7 +55,10 @@ pnpm-debug.log*
 /evals/runs/
 /uploads/
 /tmp/
-/assets/
+# `/assets/` 직속 파일은 사용자 raw 자료 → ignore. 단 `/assets/public/` 하위는 공개 fixture (E2)
+/assets/*
+!/assets/public/
+!/assets/public/**
 
 # === IDE / OS ===
 .vscode/

@@ -3,12 +3,14 @@
 검증 범위
 - `_page_median_size` / `_block_max_size` / `_block_text` 헬퍼
 - `_is_heading_block` 의 (A) font size 비율 / (B) 텍스트 패턴 / 길이 cap
-- 실 자산 4건에 대한 KPI §13.1 "PDF 평균 section_title 채움 비율 ≥ 30%" 충족
+- 실 자산에 대한 KPI §13.1 "PDF 평균 section_title 채움 비율 ≥ 30%" 충족
 - sticky propagate — page 경계 넘어 직전 heading 상속
 - `get_text("dict")` 실패 시 `get_text("blocks")` fallback graceful degrade
 
-실 PDF 자산은 프로젝트 루트 (`piLab/Jet-Rag/`) 에 위치 — 복사 금지, 절대 경로 참조.
-환경 변수 `JETRAG_TEST_PDF_DIR` override 가능. 자산 부재 시 skip (CI 호환).
+자산 디렉토리 우선순위
+- 공개 fixture 는 `<repo>/assets/public/` (E2 — 모든 컴퓨터·CI 자동 회귀)
+- 비공개 자료는 `JETRAG_TEST_PDF_DIR` ENV 로 추가 base 지정 시 함께 검사
+- 자산 부재 시 자동 skip (CI 호환)
 """
 
 from __future__ import annotations
@@ -22,18 +24,36 @@ from unittest.mock import patch
 os.environ.setdefault("HF_API_TOKEN", "dummy-test-token")
 
 
-_DEFAULT_PDF_DIR = "/Users/kiwoongmin/Desktop/piLab/Jet-Rag"
-_PDF_FILES = [
-    "sonata-the-edge_catalog.pdf",
-    "law sample3.pdf",
+# repo root 자동 인식: api/tests/test_*.py → parents[2] = repo root
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_PUBLIC_PDF_DIR = _REPO_ROOT / "assets" / "public"
+
+# 공개 fixture (assets/public 안, 모든 컴퓨터·CI 자동 회귀)
+_PUBLIC_PDF_FILES = [
     "(붙임2) 2025년 데이터센터 산업 활성화 지원 사업 통합_안내서.pdf",
     "보건의료_빅데이터_플랫폼_시범사업_추진계획(안).pdf",
 ]
 
+# 비공개 자료 (assets/ 직속 또는 사용자 PC 다른 경로) — JETRAG_TEST_PDF_DIR ENV 로 추가 검사
+_PRIVATE_PDF_FILES = [
+    "sonata-the-edge_catalog.pdf",
+    "law sample3.pdf",
+]
+
 
 def _pdf_path(name: str) -> Path:
-    base = os.environ.get("JETRAG_TEST_PDF_DIR", _DEFAULT_PDF_DIR)
-    return Path(base) / name
+    """공개 fixture 를 우선 조회, 없으면 ENV (`JETRAG_TEST_PDF_DIR`) 의 비공개 경로 조회."""
+    public = _PUBLIC_PDF_DIR / name
+    if public.exists():
+        return public
+    private_base = os.environ.get("JETRAG_TEST_PDF_DIR")
+    if private_base:
+        return Path(private_base) / name
+    return public  # exists() False — 호출부에서 skip
+
+
+# 회귀 가능 자산 = 공개 + (ENV 가 있을 때) 비공개 (KPI 평균 산출용)
+_PDF_FILES = _PUBLIC_PDF_FILES + _PRIVATE_PDF_FILES
 
 
 def _make_span(text: str, size: float) -> dict:
@@ -240,7 +260,10 @@ class PyMuPDFParserDictFallbackTest(unittest.TestCase):
 
 
 class PyMuPDFParserRealAssetKpiTest(unittest.TestCase):
-    """실 PDF 자산 4건의 평균 section_title 채움 비율 ≥ 30% (KPI §13.1)."""
+    """실 PDF 자산의 평균 section_title 채움 비율 ≥ 30% (KPI §13.1).
+
+    공개 fixture 2건은 항상 검사, 비공개 2건은 `JETRAG_TEST_PDF_DIR` ENV 가 있을 때 추가 검사.
+    """
 
     def _parse_one(self, file_name: str):
         from app.adapters.impl.pymupdf_parser import PyMuPDFParser
@@ -252,7 +275,7 @@ class PyMuPDFParserRealAssetKpiTest(unittest.TestCase):
         return PyMuPDFParser().parse(data, file_name=file_name)
 
     def test_average_fill_ratio_meets_kpi(self) -> None:
-        """4건 중 존재하는 자산의 평균 채움 비율 ≥ 30%."""
+        """존재하는 자산의 평균 채움 비율 ≥ 30%."""
         ratios: list[tuple[str, float, int, int]] = []
         for name in _PDF_FILES:
             result = self._parse_one(name)

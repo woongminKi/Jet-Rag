@@ -35,6 +35,7 @@
 | ship | **S0 D4 P2 follow-up 3건 일괄 fix** (senior-qa 리포트 → senior-developer 구현) | aria-label Label-in-Name + KRW 표기, handleMeasure race guard (useRef cancelRef), mobile responsive (flex-col sm:flex-row + shadcn Button) |
 | commit/push | `79aa455` (origin/main) | P2 follow-up |
 | ship | **S1 D1 잔여 — `auto_goldenset.py` v2 갱신** (senior-developer 구현) | 12 컬럼 통합 schema (v0.5+v0.6) + 9 query_type 룰 분류 + must_include/source_hint/expected_answer_summary 추출 + 5건 negative query 사전 정의 + DoD 분포 측정 + 단위 테스트 30건 신규. 460 → **490 통과 회귀 0**. v0.5 보존 (옵션 A) |
+| ship | **E2 1차 ship — 테스트 fixture 인프라 보강 (Hybrid)** (senior-developer 구현) | `assets/public/` 신설 + 공개 라이센스 PDF 3건 git 추적 (KOGL 1유형 2건 + 사용자 명시 공공데이터 1건, 총 10.6 MB) + `.gitignore` negative pattern (`/assets/*` + `!/assets/public/**`) + `assets/public/README.md` 신규 + `test_pymupdf_heading.py` 경로 갱신 (repo root 자동 인식, public/private 분리). **490 통과 / skipped 7 → 5 (public 2건 CI 자동 회귀 진입), 회귀 0**. 다른 컴퓨터는 `git pull` 만으로 fixture 동기화 |
 
 ### 1.2 변경 파일
 
@@ -53,6 +54,10 @@
 | `web/src/components/jet-rag/search-precision-card.tsx` (P2 fix) | sr-only span + aria-describedby (Label-in-Name), useRef cancelRef (race guard), shadcn Button + flex-col responsive | **S0 D4 P2 follow-up** — senior-qa 리포트 3건 close |
 | `evals/auto_goldenset.py` (v1 → v2) | 12 컬럼 schema, 9 query_type 룰 분류, must_include/source_hint 추출, 5건 negative 사전 정의, DoD 분포 측정 | **S1 D1 잔여** ship — S1 D2 (자동 100+ 확장) 의 선행 |
 | `api/tests/test_auto_goldenset.py` (신규) | 30 테스트 (분류 10 / 추출 8 / negative 5 / schema 4 등) | 회귀 보호 |
+| `.gitignore` | `/assets/` → `/assets/*` + `!/assets/public/` + `!/assets/public/**` (negative pattern) | **E2 1차 ship** — 공개 fixture 만 git 추적, 직속 비공개 자료는 ignore 유지 |
+| `assets/public/` (신규 디렉토리) | KOGL 1유형 2건 + 사용자 명시 공공데이터 1건 = PDF 3건, 약 10.6 MB | 모든 컴퓨터·CI 자동 회귀 보호 |
+| `assets/public/README.md` (신규) | 자료 표 / 라이센스 / 추가 절차 / 비공개 ENV 안내 / 다른 컴퓨터 진입 1줄 | 새 자료 추가 시 검토 절차 의무화 |
+| `api/tests/test_pymupdf_heading.py` | 하드코딩 `_DEFAULT_PDF_DIR` → repo root 자동 인식 + public/private fixture 분리 + ENV `JETRAG_TEST_PDF_DIR` 폴백 | dict fallback 테스트가 CI 환경에서도 자동 실행 (skip 7→5) |
 
 ---
 
@@ -160,6 +165,7 @@ ORDER BY ordinal_position;
 | 모델 정정 (2.0 deprecated → 2.5-flash + 2.5-flash-lite) | master plan §4.1 정합 회복 | D2-D 정정 |
 | P2 `retry_attempt` 컬럼 활성화 | 503 회복 시점 추적 | S0 D1 follow-up |
 | **E1 sprint plan** (오늘) | 사용자 ETA 보고 격상 | master plan §6 외 신규 라인, S2 직교, D2-B 흡수 |
+| **E2 1차 ship** (오늘) — 테스트 fixture 인프라 보강 | 공개 자료 3건 git 추적 + assets/public README + test_pymupdf_heading 경로 갱신 + skip 7→5 | mock + 메모리 합성 binary 한계 보강. 다른 컴퓨터·CI 자동 회귀 보호 진입 |
 
 ### 4.5 다음 작업 우선순위 (오늘 결정 + 향후)
 
@@ -169,8 +175,10 @@ ORDER BY ordinal_position;
 |---|---|---|---|
 | 1 | ~~S0 D4 — `/search/eval-precision` 자동 POST 제거~~ | ✅ **ship** | 2026-05-07 완료 (commit 미진입 — 사용자 명시 요청 대기) |
 | 2 | ~~S1 D1 잔여 — `auto_goldenset.py` v2 갱신~~ | ✅ **ship** | 2026-05-07 완료 — S1 D2 진입 가능 |
-| 3 | S1 D2 — 자동 골든셋 100+ 확장 + v1 통합 | 1일 | Gemini quota 의존 |
-| 4 | E1 1차 ship 일부 (E1-A1 + E1-A5) | 1일 | 진단 없이도 진입 가능 (덜 정확) |
+| 3 | ~~E2 1차 ship — 테스트 fixture 인프라 보강~~ | ✅ **ship** | 2026-05-07 완료 — 공개 3건 git 추적, skip 7→5 |
+| 4 | E2 follow-up — 기관 규정·법률 샘플 라이센스 검토 | 0.5일 | `직제_규정.hwpx`·`한마음생활체육관_운영_내규.hwpx`·`law_sample` 시리즈 출처 / 공개 가능성 사용자 확인 후 추가 이동 |
+| 5 | S1 D2 — 자동 골든셋 100+ 확장 + v1 통합 | 1일 | Gemini quota 의존 |
+| 6 | E1 1차 ship 일부 (E1-A1 + E1-A5) | 1일 | 진단 없이도 진입 가능 (덜 정확) |
 
 **B. 다른 컴퓨터 (PDF 보유)**
 
@@ -252,4 +260,15 @@ E1 진입 중에도 병렬 가능한 작업:
 
 ## 9. 한 문장 요약
 
-> 2026-05-07 D3 진입 — baseline 회복 + ETA 보고를 E1 sprint 로 격상해 plan 본문 ship. 진단·구현은 PDF 보유 다른 컴퓨터에서 진입, 본 컴퓨터에선 plan + 측정 SQL 준비까지.
+> 2026-05-07 D3 진입 — baseline 회복 + ETA 보고를 E1 sprint 로 격상해 plan 본문 ship + S0 D4 자동 POST 제거 + S1 D1 잔여 (`auto_goldenset.py` v2) + **E2 1차 ship (assets/public/ 신설 + 공개 PDF 3건 git 추적, skip 7→5)**. E1 진단·구현은 PDF 보유 다른 컴퓨터에서 진입, 본 컴퓨터에선 plan + 측정 SQL 준비까지.
+
+---
+
+## 10. 다른 컴퓨터 진입 안내
+
+`git pull` 만으로 본 컴퓨터의 누적 ship 이 모두 동기화된다.
+
+- **work-log + plan**: 본 문서, E1 plan, S0 D4 / S1 D1 / **E2 1차 ship** 코드 변경 동시 반영
+- **`assets/public/` 의 공개 PDF 3건**: `git pull` 시 자동 동기화 → 별도 scp / cloud 동기화 불필요. 단위 테스트 (`cd api && uv run python -m unittest discover tests`) 가 자동 발견 → CI 회귀 자동 보호
+- **`assets/` 직속 비공개 자료** (예: `sonata-the-edge_catalog.pdf`, `law sample3.pdf`, `직제_규정.hwpx`): 컴퓨터별로 따로 보유. 사용자 PC 정밀 회귀는 `JETRAG_TEST_PDF_DIR` / `JETRAG_TEST_HWPX_DIR` ENV 로 base 지정
+- **다음 진입 절차**: §5.1 (E1 진단) 단계 그대로. PDF 보유 다른 컴퓨터에서 어제 6~7분 PDF 1건 reingest → plan 파일 §10 paste
