@@ -7,11 +7,12 @@
 - sticky propagate — page 경계 넘어 직전 heading 상속
 - `get_text("dict")` 실패 시 `get_text("blocks")` fallback graceful degrade
 
-자산 디렉토리 우선순위
+자산 디렉토리 우선순위 (5단계)
 - 1순위: 공개 fixture `<repo>/assets/public/` — 모든 컴퓨터·CI 자동 회귀
-- 2순위: `<repo>/assets/` 직속 (사용자 PC raw 자료, `.gitignore` 로 다른 컴퓨터엔 부재) — 자동 진입
-- 3순위: `JETRAG_TEST_PDF_DIR` ENV 폴백 — assets/ 외 위치 (예: 외장 디스크) 보강용 옵션
-- 자산 부재 시 자동 skip (CI 호환)
+- 2순위: `<repo>/assets/` 직속 (사용자 PC raw 자료, `.gitignore` `/assets/*` 로 다른 컴퓨터엔 부재) — 자동 진입
+- 3순위: `<repo>/` 루트 직속 (다른 컴퓨터에서 자료가 repo 루트에 있을 때, `.gitignore` `/*.pdf` 로 추적 X) — 자동 진입
+- 4순위: `JETRAG_TEST_PDF_DIR` ENV 폴백 — 외장 디스크·별 위치 보강용 옵션
+- 5단계: 자산 부재 시 자동 skip (CI 호환)
 """
 
 from __future__ import annotations
@@ -33,28 +34,44 @@ _PUBLIC_PDF_DIR = _REPO_ROOT / "assets" / "public"
 _PUBLIC_PDF_FILES = [
     "(붙임2) 2025년 데이터센터 산업 활성화 지원 사업 통합_안내서.pdf",
     "보건의료_빅데이터_플랫폼_시범사업_추진계획(안).pdf",
+    # E2 3차 ship — 한국 저작권법 §7 (대법원 판결문 등) 비보호 자료
+    "law sample3.pdf",
+    "law_sample2.pdf",
 ]
 
-# 비공개 자료 (사용자 PC `assets/` 직속, `.gitignore` 로 다른 컴퓨터엔 부재)
+# 비공개 자료 (사용자 PC `assets/` 직속 또는 repo 루트 직속, `.gitignore` 로 다른 컴퓨터엔 부재)
 # 사용자 PC 에서는 자동 회귀 진입 / 다른 컴퓨터·CI 에서는 부재 → 자동 skip
 _PRIVATE_PDF_FILES = [
     "sonata-the-edge_catalog.pdf",
-    "law sample3.pdf",
+    # law sample3 / law_sample2 는 E2 3차 ship 으로 public 이동
 ]
 
 
 def _pdf_path(name: str) -> Path:
-    """공개 fixture → assets/ 직속 → ENV 폴백 순. 부재 시 부재 path 반환 (호출부 skipTest)."""
+    """5단계 우선순위로 PDF fixture 경로 해석. 부재 시 부재 path 반환 (호출부 skipTest).
+
+    1) `<repo>/assets/public/<name>` — 공개 fixture, 모든 컴퓨터·CI 자동
+    2) `<repo>/assets/<name>` — 사용자 PC raw 자료 (`.gitignore` `/assets/*`)
+    3) `<repo>/<name>` — 다른 컴퓨터에서 자료가 repo 루트 직속에 있을 때
+       (`.gitignore` `/*.pdf` 로 추적 X — 사용자 자료 노출 방지)
+    4) `$JETRAG_TEST_PDF_DIR/<name>` — 외장 디스크·별 위치 보강용 ENV 폴백
+    5) 부재 → public path 반환 (exists() False, 호출부 skipTest)
+    """
     public = _PUBLIC_PDF_DIR / name
     if public.exists():
         return public
 
-    # assets/ 직속 (사용자 PC raw 자료, .gitignore 로 다른 컴퓨터엔 없음)
+    # assets/ 직속 (사용자 PC raw 자료, .gitignore /assets/* 로 다른 컴퓨터엔 없음)
     assets_direct = _REPO_ROOT / "assets" / name
     if assets_direct.exists():
         return assets_direct
 
-    # ENV 폴백 — assets/ 외 다른 위치 (예: 사용자가 자료를 외장 디스크로 옮겼을 때)
+    # repo 루트 직속 (다른 컴퓨터 패턴, .gitignore /*.pdf 로 추적 X)
+    repo_root_direct = _REPO_ROOT / name
+    if repo_root_direct.exists():
+        return repo_root_direct
+
+    # ENV 폴백 — 외장 디스크 등 위 3순위 외 위치
     env_base = os.environ.get("JETRAG_TEST_PDF_DIR")
     if env_base:
         env_path = Path(env_base) / name

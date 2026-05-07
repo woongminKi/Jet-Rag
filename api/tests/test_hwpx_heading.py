@@ -7,13 +7,15 @@
 - sticky propagate — heading 다음 본문 단락이 직전 heading text 를 상속
 - BadZipFile 시 RuntimeError raise
 
-자산 디렉토리 우선순위 (PDF 테스트 (`test_pymupdf_heading.py`) 와 동일 패턴)
+자산 디렉토리 우선순위 (5단계, `test_pymupdf_heading.py` 와 동일 패턴)
 - 1순위: 공개 fixture `<repo>/assets/public/` — 모든 컴퓨터·CI 자동 회귀
-- 2순위: `<repo>/assets/` 직속 (사용자 PC raw 자료, `.gitignore` 로 다른 컴퓨터엔 부재) — 자동 진입
-- 3순위: `JETRAG_TEST_HWPX_DIR` ENV 폴백 — assets/ 외 위치 보강용 옵션
-- 자산 부재 시 자동 skip (CI 호환)
+- 2순위: `<repo>/assets/` 직속 (사용자 PC raw 자료, `.gitignore` `/assets/*` 로 다른 컴퓨터엔 부재) — 자동 진입
+- 3순위: `<repo>/` 루트 직속 (다른 컴퓨터에서 자료가 repo 루트에 있을 때, `.gitignore` `/*.hwpx`) — 자동 진입
+- 4순위: `JETRAG_TEST_HWPX_DIR` ENV 폴백 — 외장 디스크·별 위치 보강용 옵션
+- 5단계: 자산 부재 시 자동 skip (CI 호환)
 
-> 공개 fixture HWPX 0건 — 라이센스 검토 follow-up 후 `assets/public/` 추가 예정.
+> E2 3차 ship — KOGL 1유형 추정 자료 2건 (`직제_규정`·`한마음생활체육관_운영_내규`) 을
+> `assets/public/` 으로 이동, 모든 컴퓨터·CI 자동 회귀 진입.
 """
 
 from __future__ import annotations
@@ -31,15 +33,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PUBLIC_HWPX_DIR = _REPO_ROOT / "assets" / "public"
 
 # 공개 fixture (assets/public 안, 모든 컴퓨터·CI 자동 회귀)
-# 현재 라이센스 검토 follow-up 진행 전이므로 비어 있음
-_PUBLIC_HWPX_FILES: list[str] = []
-
-# 비공개 자료 (사용자 PC `assets/` 직속, `.gitignore` 로 다른 컴퓨터엔 부재)
-# 사용자 PC 에서는 자동 회귀 진입 / 다른 컴퓨터·CI 에서는 부재 → 자동 skip
-_PRIVATE_HWPX_FILES = [
+# E2 3차 ship — KOGL 1유형 추정 자료 2건 이동
+_PUBLIC_HWPX_FILES = [
     "직제_규정(2024.4.30.개정).hwpx",
     "한마음생활체육관_운영_내규(2024.4.30.개정).hwpx",
 ]
+
+# 비공개 자료 — E2 3차 ship 으로 모두 public 이동, 현재 0건
+_PRIVATE_HWPX_FILES: list[str] = []
 
 # 기존 변수 호환 유지 — 다른 테스트 클래스 에서 사용
 _FILE_A = "직제_규정(2024.4.30.개정).hwpx"
@@ -50,17 +51,30 @@ _HWPX_FILES = _PUBLIC_HWPX_FILES + _PRIVATE_HWPX_FILES
 
 
 def _hwpx_path(name: str) -> Path:
-    """공개 fixture → assets/ 직속 → ENV 폴백 순. 부재 시 부재 path 반환 (호출부 skipTest)."""
+    """5단계 우선순위로 HWPX fixture 경로 해석. 부재 시 부재 path 반환 (호출부 skipTest).
+
+    1) `<repo>/assets/public/<name>` — 공개 fixture, 모든 컴퓨터·CI 자동
+    2) `<repo>/assets/<name>` — 사용자 PC raw 자료 (`.gitignore` `/assets/*`)
+    3) `<repo>/<name>` — 다른 컴퓨터에서 자료가 repo 루트 직속에 있을 때
+       (`.gitignore` `/*.hwpx` 로 추적 X — 사용자 자료 노출 방지)
+    4) `$JETRAG_TEST_HWPX_DIR/<name>` — 외장 디스크·별 위치 보강용 ENV 폴백
+    5) 부재 → public path 반환 (exists() False, 호출부 skipTest)
+    """
     public = _PUBLIC_HWPX_DIR / name
     if public.exists():
         return public
 
-    # assets/ 직속 (사용자 PC raw 자료, .gitignore 로 다른 컴퓨터엔 없음)
+    # assets/ 직속 (사용자 PC raw 자료, .gitignore /assets/* 로 다른 컴퓨터엔 없음)
     assets_direct = _REPO_ROOT / "assets" / name
     if assets_direct.exists():
         return assets_direct
 
-    # ENV 폴백 — assets/ 외 다른 위치 (예: 사용자가 자료를 외장 디스크로 옮겼을 때)
+    # repo 루트 직속 (다른 컴퓨터 패턴, .gitignore /*.hwpx 로 추적 X)
+    repo_root_direct = _REPO_ROOT / name
+    if repo_root_direct.exists():
+        return repo_root_direct
+
+    # ENV 폴백 — 외장 디스크 등 위 3순위 외 위치
     env_base = os.environ.get("JETRAG_TEST_HWPX_DIR")
     if env_base:
         env_path = Path(env_base) / name

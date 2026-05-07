@@ -37,6 +37,7 @@
 | ship | **S1 D1 잔여 — `auto_goldenset.py` v2 갱신** (senior-developer 구현) | 12 컬럼 통합 schema (v0.5+v0.6) + 9 query_type 룰 분류 + must_include/source_hint/expected_answer_summary 추출 + 5건 negative query 사전 정의 + DoD 분포 측정 + 단위 테스트 30건 신규. 460 → **490 통과 회귀 0**. v0.5 보존 (옵션 A) |
 | ship | **E2 1차 ship — 테스트 fixture 인프라 보강 (Hybrid)** (senior-developer 구현) | `assets/public/` 신설 + 공개 라이센스 PDF 3건 git 추적 (KOGL 1유형 2건 + 사용자 명시 공공데이터 1건, 총 10.6 MB) + `.gitignore` negative pattern (`/assets/*` + `!/assets/public/**`) + `assets/public/README.md` 신규 + `test_pymupdf_heading.py` 경로 갱신 (repo root 자동 인식, public/private 분리). **490 통과 / skipped 7 → 5 (public 2건 CI 자동 회귀 진입), 회귀 0**. 다른 컴퓨터는 `git pull` 만으로 fixture 동기화 |
 | ship | **E2 2차 ship — assets/ 직속 자동 진입** (senior-developer 구현, 사용자 지적 반영) | `_pdf_path()`·`_hwpx_path()` 우선순위 변경: `assets/public/` → **`<repo>/assets/` 직속 (자동, .gitignore 로 다른 컴퓨터엔 부재)** → ENV 폴백. `test_hwpx_heading.py` 도 같은 패턴으로 마이그 (`_DEFAULT_HWPX_DIR` 잘못된 경로 제거, public/private 분리). **사용자 PC: 490 통과 / skipped 5 → 0 (PDF private 2 + HWPX private 2 + 알파 1 자동 진입, 모두 통과)**. 다른 컴퓨터·CI: assets/ 직속 부재 → 자동 skip 유지, 회귀 차단 0 |
+| ship | **E2 3차 ship — 라이센스 5건 마이그 + repo 루트 직속 자동 인식 + HWP 테스트 신규** (senior-developer 구현) | (1) `assets/` 직속 5건 (`law sample3.pdf`·`law_sample2.pdf`·`직제_규정.hwpx`·`한마음생활체육관_운영_내규.hwpx`·`law_sample1.hwp`) → `assets/public/` 이동 (저작권법 §7 + KOGL 1유형). (2) `_pdf_path()`·`_hwpx_path()` 5단계 우선순위 — `<repo>/<name>` 루트 직속 단계 신설 (다른 컴퓨터 자동 인식). (3) `test_hwp_heading.py` 신규 작성 (Hwp5Parser 회귀, 4 테스트). (4) `assets/public/README.md` 8건 표 + 5단계 우선순위 + 다른 컴퓨터 4 시나리오. **사용자 PC: 490 → 494 통과 / skipped 0 / 회귀 0**. 다른 컴퓨터·CI 자동 회귀 진입 자료 8건 (PDF 4 + HWPX 2 + HWP 1 + 사용자 명시 sample-report 1) |
 
 ### 1.2 변경 파일
 
@@ -61,6 +62,11 @@
 | `api/tests/test_pymupdf_heading.py` | 하드코딩 `_DEFAULT_PDF_DIR` → repo root 자동 인식 + public/private fixture 분리 + ENV `JETRAG_TEST_PDF_DIR` 폴백 | dict fallback 테스트가 CI 환경에서도 자동 실행 (skip 7→5) |
 | `api/tests/test_pymupdf_heading.py` (E2 2차) | `_pdf_path()` 우선순위 추가: public → **`assets/` 직속 자동** → ENV → 부재 skip | 사용자 PC 에서 ENV 매뉴얼 없이 private 2건 자동 진입 |
 | `api/tests/test_hwpx_heading.py` (E2 2차) | `_DEFAULT_HWPX_DIR` 잘못된 경로 제거 + repo root 자동 인식 + `_PUBLIC_HWPX_FILES`·`_PRIVATE_HWPX_FILES` 분리 + 같은 우선순위 적용 | HWPX 2건 (`직제_규정`·`한마음생활체육관_운영_내규`) 사용자 PC 자동 회귀, 다른 컴퓨터는 자동 skip |
+| `assets/public/` (E2 3차) | 사용자 라이센스 5건 마이그: `law sample3.pdf`·`law_sample2.pdf`·`직제_규정.hwpx`·`한마음생활체육관_운영_내규.hwpx`·`law_sample1.hwp` → 모든 컴퓨터·CI 자동 회귀 (총 8건, 약 11 MB) | 저작권법 §7 (대법원 판결·결정) + KOGL 1유형 (대전시설관리공단) 모두 자유 이용 가능 |
+| `assets/public/README.md` (E2 3차) | 자료 표 8건 row + 5단계 우선순위 표 + 다른 컴퓨터 4 시나리오 | 새 자료 추가 시 senior-developer 가 fixture 변수 갱신 의무 명시 |
+| `api/tests/test_pymupdf_heading.py` (E2 3차) | `_pdf_path()` 5단계 우선순위 — `<repo>/<name>` 루트 직속 신설 + `_PUBLIC_PDF_FILES` 4건 (law sample 2건 추가) | 다른 컴퓨터 (자료 repo 루트 직속) 자동 인식 — ENV 0 줄 |
+| `api/tests/test_hwpx_heading.py` (E2 3차) | `_hwpx_path()` 5단계 + `_PUBLIC_HWPX_FILES` 2건 (모두 public 이동, private 0건) | HWPX 모든 컴퓨터·CI 자동 회귀 |
+| `api/tests/test_hwp_heading.py` (E2 3차, 신규) | Hwp5Parser 회귀 4 테스트 — `can_parse` 2건 + bad input 1건 + 실 자산 (`law_sample1.hwp`) 1건. 같은 5단계 우선순위 (`JETRAG_TEST_HWP_DIR`) | HWP 의 OLE2 추출 회귀 보호 진입 |
 
 ---
 
@@ -272,7 +278,7 @@ E1 진입 중에도 병렬 가능한 작업:
 ### 10.1 기본 동기화 (`git pull` 만으로 즉시 동작)
 
 ```bash
-# 1) 코드 + fixture + 문서 동기화 (assets/public/ PDF 3건 10.6 MB 포함)
+# 1) 코드 + fixture + 문서 동기화 (assets/public/ 자료 8건 약 11 MB 포함)
 git pull origin main
 
 # 2) 의존성 동기화
@@ -281,8 +287,8 @@ cd ../web && pnpm install
 
 # 3) 단위 테스트 — public fixture 자동 회귀
 cd ../api && uv run python -m unittest discover tests
-# 사용자 PC 기대: Ran 490 tests in ~14s, OK  (PDF private 2 + HWPX 2 자동 진입, skipped=0)
-# 다른 컴퓨터·CI 기대: Ran 490 tests in ~14s, OK (skipped=4~5)  (assets/ 직속 부재 → 자동 skip)
+# 사용자 PC 기대: Ran 494 tests in ~14s, OK  (PDF 4 + HWPX 2 + HWP 1 + private sonata 모두 자동 진입, skipped=0)
+# 다른 컴퓨터·CI 기대: Ran 494 tests in ~14s, OK (skipped 1~3)  (assets/ 직속 부재 → private sonata + alpha 자동 skip)
 ```
 
 `git pull` 한 시점에 본 컴퓨터의 모든 ship 이 동시에 들어옴:
@@ -290,50 +296,80 @@ cd ../api && uv run python -m unittest discover tests
 | 항목 | 자동 동기화 | 비고 |
 |---|---|---|
 | work-log / plan / 종합 마스터 | ✅ | 본 문서, E1 plan, master plan 등 |
-| 코드 변경 | ✅ | `search-precision-card.tsx`, `auto_goldenset.py`, `test_pymupdf_heading.py`, `test_hwpx_heading.py`, `.gitignore` 등 |
-| **`assets/public/` 공개 PDF 3건 (10.6 MB)** | ✅ **별도 scp/cloud 불필요** | KOGL 1유형 2건 + 사용자 명시 공공데이터 1건 |
-| **`assets/` 직속 자료** (PDF·HWPX 비공개) | ❌ git ignore | 사용자 PC 에서는 `_pdf_path()`·`_hwpx_path()` 가 자동 회귀 진입 / 다른 컴퓨터 부재 시 자동 skip |
-| 단위 테스트 회귀 | ✅ 자동 | public fixture (PDF 2건) → `assets/` 직속 (PDF 2 + HWPX 2) → ENV 폴백 순으로 우선순위 |
+| 코드 변경 | ✅ | `search-precision-card.tsx`, `auto_goldenset.py`, `test_pymupdf_heading.py`, `test_hwpx_heading.py`, `test_hwp_heading.py` (신규), `.gitignore` 등 |
+| **`assets/public/` 공개 자료 8건 (약 11 MB)** | ✅ **별도 scp/cloud 불필요** | PDF 4건 (KOGL 2 + 사용자 명시 1 + 저작권법 §7 2건) + HWPX 2건 (KOGL 1유형 추정) + HWP 1건 (저작권법 §7) |
+| **`assets/` 직속 자료** (private) | ❌ git ignore | 사용자 PC 에서는 `_pdf_path()` 등이 자동 회귀 진입 / 다른 컴퓨터 부재 시 자동 skip |
+| **`<repo>/` 루트 직속 자료** (다른 컴퓨터 패턴) | ❌ git ignore (`/*.pdf` 등) | 다른 컴퓨터에서 자료를 repo 루트에 두면 3순위 자동 인식 — ENV 0 줄 |
+| 단위 테스트 회귀 | ✅ 자동 | 5단계 우선순위 (§10.2) 로 자동 해석 |
 
-### 10.2 ENV 설정 (선택, 외장 디스크 등 assets/ 외 위치 보강)
+### 10.2 다른 컴퓨터 진입 시 자료 위치별 시나리오
 
-기본 동작: 사용자 PC `assets/` 직속에 자료가 있으면 자동 진입하므로 **ENV 매뉴얼 불필요**.
-다음의 경우에만 ENV 폴백 사용:
+`_pdf_path()` / `_hwpx_path()` / `_hwp_path()` 의 **5단계 우선순위** 로 컴퓨터별 자료 위치를 자동 인식한다. ENV 변수 매뉴얼 0 줄이 default.
 
-| 시나리오 | ENV 변수 | 값 |
-|---|---|---|
-| PDF 자료를 외장 디스크로 옮김 | `JETRAG_TEST_PDF_DIR` | `/Volumes/<...>/jetrag-fixtures` |
-| HWPX 자료를 다른 디렉토리에 보관 | `JETRAG_TEST_HWPX_DIR` | `/Users/<...>/another/path` |
+**5단계 우선순위 표**
 
-```bash
-# 예: 외장 디스크에 자료를 모은 경우 (assets/ 직속에서 옮겼을 때만 필요)
-export JETRAG_TEST_PDF_DIR=/Volumes/Jetrag-Fixtures/pdf
-export JETRAG_TEST_HWPX_DIR=/Volumes/Jetrag-Fixtures/hwpx
+| # | 위치 | 정합 정책 | 자동 인식 |
+|---|---|---|---|
+| 1 | `<repo>/assets/public/<name>` | git 추적 (모든 컴퓨터·CI) | ✅ |
+| 2 | `<repo>/assets/<name>` | `.gitignore` `/assets/*` (사용자 PC raw) | ✅ |
+| 3 | `<repo>/<name>` (repo 루트 직속) | `.gitignore` `/*.{pdf,hwp,hwpx,docx,pptx}` (다른 컴퓨터 패턴) | ✅ |
+| 4 | `$JETRAG_TEST_*_DIR/<name>` | ENV 폴백 (외장 디스크) | ENV 1줄 |
+| 5 | 부재 → skipTest | CI 호환 | — |
+
+**시나리오별 동작**
+
+```text
+시나리오 1: 자료가 <repo>/assets/ 직속에 있는 컴퓨터 (사용자 PC 패턴)
+  → 2순위 자동 진입, ENV 0
+  → 단위 테스트 494 통과 / skipped 0
+
+시나리오 2: 자료가 <repo>/ 루트 직속에 있는 컴퓨터 (다른 컴퓨터 패턴)
+  → 3순위 자동 진입, ENV 0
+  → 단위 테스트 494 통과 / skipped 0
+  → E2 3차 ship 으로 신규 지원
+
+시나리오 3: 자료가 외장 디스크 / 별 위치 (예: /Volumes/External/...)
+  → 4순위 ENV 폴백, 1줄 설정 필요
+     export JETRAG_TEST_PDF_DIR=/Volumes/External/jetrag-data
+     export JETRAG_TEST_HWPX_DIR=/Volumes/External/jetrag-data
+     export JETRAG_TEST_HWP_DIR=/Volumes/External/jetrag-data
+  → 단위 테스트 494 통과 / skipped 0
+
+시나리오 4: 자료가 없는 컴퓨터 (CI 포함)
+  → public 자료 (PDF 4 + HWPX 2 + HWP 1 + alpha) 만 회귀
+  → private 자료 자동 skip → 회귀 차단 0
+  → 단위 테스트 494 통과 / skipped 1~3
 ```
 
-> 우선순위: `assets/public/` → `<repo>/assets/` 직속 → ENV. 1·2순위 자동 동작이 default 이므로 대부분의 경우 ENV 0 줄로 충분. master plan §10.2 의 `JETRAG_PDF_VISION_ENRICH=true`, `JETRAG_GEMINI_RETRY=3` 와는 별개 변수.
+> master plan §10.2 의 `JETRAG_PDF_VISION_ENRICH=true`, `JETRAG_GEMINI_RETRY=3` 와는 별개 변수 (테스트 fixture 전용).
 
 ### 10.3 비공개 자료 다른 컴퓨터로 옮길 때
 
-git 추적 X 정책 (`.gitignore` 의 `/assets/*`) → 다음 중 하나로 동기화:
+git 추적 X 정책 (`.gitignore` 의 `/assets/*` + `/*.{pdf,hwp,hwpx,docx,pptx}`) → 다음 중 하나로 동기화:
 
-1. **USB / 외장 디스크** — 가장 단순, 라이센스 위험 0
+1. **USB / 외장 디스크** — 가장 단순, 라이센스 위험 0. 옮긴 후 ENV 1줄 (`JETRAG_TEST_PDF_DIR=<dir>`) 또는 `<repo>/assets/` 또는 `<repo>/` 루트로 복사 → 자동 회귀
 2. **iCloud / 사용자 클라우드** (라이센스 안전 디렉토리) — 자동 동기화 가능
-3. **인제스트 후 폐기** — Supabase 에 chunks 만 남기고 raw PDF 폐기 (다음 컴퓨터에서 reingest 불필요)
-
-옮긴 후 같은 디렉토리 구조 (`<repo>/assets/<file>.pdf`) 로 두면 `JETRAG_TEST_PDF_DIR=<repo>/assets` 한 줄로 회귀 자동.
+3. **인제스트 후 폐기** — Supabase 에 chunks 만 남기고 raw 파일 폐기 (다음 컴퓨터에서 reingest 불필요)
 
 ### 10.4 새 자료 추가 정책
 
-| 자료 종류 | 어디에 둘까 | git 추적 |
-|---|---|---|
-| 공개 라이센스 (KOGL / CC / 퍼블릭 도메인) | `assets/public/` | ✅ |
-| 사용자 raw 자료 (개인정보 포함) | `assets/` 직속 | ❌ ignore 유지 |
-| 새 공개 자료 추가 시 | `assets/public/README.md` 의 자료 표 갱신 + 출처·라이센스 명시 의무 | 본문에 절차 1줄 |
+| 자료 종류 | 어디에 둘까 | git 추적 | 추가 의무 |
+|---|---|---|---|
+| 공개 라이센스 (KOGL / CC / 퍼블릭 도메인 / 저작권법 §7) | `assets/public/` | ✅ | README 표 + 출처·라이센스 명시 + senior-developer 가 fixture 변수 갱신 |
+| 사용자 raw 자료 (개인정보 포함) | `assets/` 직속 또는 `<repo>/` 루트 | ❌ ignore 유지 | 0 |
+
+E2 3차 ship 이후 public 자료 8건 (PDF 4 + HWPX 2 + HWP 1 + 사용자 명시 sample-report 1). 다음 자료 추가 시:
+1. `assets/public/README.md` 표 row 추가
+2. 해당 형식의 `_PUBLIC_*_FILES` 변수 갱신 (`test_pymupdf_heading.py` / `test_hwpx_heading.py` / `test_hwp_heading.py`)
+3. 회귀 검증 — `cd api && uv run python -m unittest discover tests`
 
 ### 10.5 다음 진입 절차
 
 - **E1 진단** (다른 컴퓨터, PDF 보유 시) — §5.1 절차 그대로. PDF 1건 reingest → E1 plan 파일 §10 paste
-- **E2 follow-up** — 기관 규정 2건 / 법률 샘플 5건 라이센스 검토 후 `assets/public/` 추가 (HWPX 공개 fixture 0건 → 검토 통과 시 채움)
-  - ~~`test_hwpx_heading.py` 의 하드코딩 경로 마이그~~ ✅ **2026-05-07 ship** (E2 2차) — PDF 와 동일 우선순위 (`assets/public/` → `assets/` 직속 → ENV) 적용, 사용자 PC `_DEFAULT_HWPX_DIR` 잘못된 경로 (`Desktop/piLab/Jet-Rag`) 제거
+- **E2 follow-up (남은 항목)**:
+  - DOCX/PPTX 형식의 fixture 테스트 (현재 자료 0) — 자료 출처 미상이므로 신규 공개 자료 발굴 필요
+  - HWP 의 OLE2 아닌 자료 (`cosmetic_law_sample.hwp`, `law sample2.hwp`) 처리 가이드 — Hwp5Parser 가 인제스트 단계에서 거부하므로 fixture 자체 부적합 (private 유지). 향후 hwp_parser.py 가 OLE2 아닌 컨테이너도 지원하도록 확장 시 fixture 추가 가능
+  - ~~기관 규정 2건 / 법률 샘플 5건 라이센스 검토~~ ✅ **2026-05-07 E2 3차 ship** — 5건 마이그, 남은 비공개 자료는 출처 미상 (`브랜딩_스튜디오앤드오어.pptx`, `승인글 템플릿`) 또는 라이센스 부적합 (`sonata-the-edge_catalog.pdf` 현대차 마케팅)
+  - ~~`test_hwpx_heading.py` 의 하드코딩 경로 마이그~~ ✅ **2026-05-07 ship** (E2 2차)
+  - ~~`test_hwp_heading.py` 신규 작성~~ ✅ **2026-05-07 E2 3차 ship**
 - **S1 D2** (자동 골든셋 100+ 확장) — Gemini quota 1회 (~$0.05) 소진. `auto_goldenset.py` v2 로 `--chunks-per-doc 10` 실행
