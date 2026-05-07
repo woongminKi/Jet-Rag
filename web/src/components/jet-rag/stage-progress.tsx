@@ -45,6 +45,12 @@ export function StageProgress({
   // W25 D14 Sprint B — ETA 표시 (running/queued 만, completed/failed 시 null).
   const remainingLabel =
     !isDone && !isFailed ? formatRemainingMs(estimatedRemainingMs) : null;
+  // E1 1차 ship (2026-05-07) — 첫 ingest (백엔드 sample <3) 시 ETA None.
+  // estimatedRemainingMs == null + 진행 중 → 안내 카피 노출 (plan §8-5 default).
+  const showFirstIngestNotice =
+    !isDone && !isFailed && remainingLabel == null &&
+    (estimatedRemainingMs == null) &&
+    (status === 'running' || status === 'queued');
   // W25 D14 — stage 내 sub-step (예: "12/41 페이지").
   const subProgressLabel =
     !isDone && !isFailed ? formatStageProgress(stageProgress) : null;
@@ -107,6 +113,14 @@ export function StageProgress({
         <span className="flex items-center gap-2">
           {remainingLabel && (
             <span className="text-muted-foreground/70">{remainingLabel}</span>
+          )}
+          {showFirstIngestNotice && (
+            <span
+              className="text-muted-foreground/70"
+              title="ingest_logs sample 이 충분히 쌓이면 정확도가 올라갑니다"
+            >
+              처음에는 시간 추정이 부정확합니다
+            </span>
           )}
           <span>
             {isDone
