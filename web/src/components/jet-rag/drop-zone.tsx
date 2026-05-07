@@ -30,7 +30,6 @@ export function DropZone({ onFiles }: DropZoneProps) {
         setActive(false);
         handleFiles(e.dataTransfer.files);
       }}
-      onClick={() => inputRef.current?.click()}
       className={cn(
         'relative flex h-64 cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed bg-card text-center transition-colors',
         active
