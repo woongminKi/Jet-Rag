@@ -292,6 +292,32 @@ def _mark_budget_exceeded_flag(
     client.table("documents").update({"flags": updated}).eq("id", doc_id).execute()
 
 
+def _mark_page_cap_exceeded_flag(
+    client: Any,
+    doc_id: str,
+    *,
+    existing_flags: dict,
+    status: budget_guard.BudgetStatus,
+) -> None:
+    """S2 D2 — vision 페이지 cap 도달 시 flags 마킹.
+
+    cost cap (S0 D4) 의 `vision_budget_exceeded` 와 직교한 신규 flag —
+    같은 doc 안에서 두 cap 이 동시에 도달 가능 (page cap 먼저 도달 후
+    나중에 cost cap 도 도달). 분리 저장으로 사용자에게 어느 한도가 문제였는지
+    명확히 표시. UI 후속 sprint (S2 D3) 가 활용.
+
+    기존 flags 보존 — scan/has_pii/vision_budget_exceeded 등 다른 시그널 유지.
+    """
+    updated = dict(existing_flags)
+    updated["vision_page_cap_exceeded"] = True
+    updated["vision_page_cap"] = {
+        "called_pages": int(status.used_usd),  # used_usd 에 called_pages 저장 (page_cap scope)
+        "page_cap": int(status.cap_usd),
+        "reason": status.reason,
+    }
+    client.table("documents").update({"flags": updated}).eq("id", doc_id).execute()
+
+
 def _reroute_pdf_to_image(
     data: bytes,
     *,
@@ -481,6 +507,14 @@ def _enrich_pdf_with_vision(
         skipped_by_need_score: list[int] = []
         called_count = 0
 
+        # S2 D2 (2026-05-08) — page cap 운영 hook. master plan §6 S2 D2.
+        # `called_count` 가 sweep 간 누적 in-memory 카운터 — 본 카운터를 page cap
+        # 검사에 그대로 사용 (needs_vision skip 페이지는 increment X — 사용자 가치
+        # 페이지만 cap 차감, cap 도달 지연 정합). cost cap 과 직교 — 둘 중 먼저
+        # 닿는 지점 stop. ENV `JETRAG_VISION_PAGE_CAP_PER_DOC=0` 시 무한 (회복 토글).
+        page_cap = settings.vision_page_cap_per_doc
+        page_cap_exceeded_status: budget_guard.BudgetStatus | None = None
+
         # W25 D14 Sprint 4 — sweep 로직: 503 random 실패 페이지 자동 재시도.
         pending_pages: list[int] = list(range(process_count))
         for sweep_idx in range(1, _VISION_ENRICH_MAX_SWEEPS + 1):
@@ -488,6 +522,8 @@ def _enrich_pdf_with_vision(
                 break
             if budget_exceeded_status is not None:
                 break  # 이전 sweep 에서 cap 도달 — sweep 추가 호출도 차단
+            if page_cap_exceeded_status is not None:
+                break  # S2 D2 — page cap 도달 sweep 추가 진입도 차단
             if sweep_idx > 1:
                 logger.info(
                     "vision_enrich sweep %d/%d: 누락 %d 페이지 재시도 %s (file=%s)",
@@ -519,6 +555,24 @@ def _enrich_pdf_with_vision(
                         logger.warning("%s (file=%s)", msg, file_name)
                         break
                 budget_pages_since_check += 1
+
+                # S2 D2 — page cap 검사 (cost cap 직후, needs_vision 직전).
+                # in-memory 카운터 비교라 매 페이지 검사해도 latency 0.
+                # needs_vision False 페이지는 called_count 증가 X 라 자연스럽게
+                # cap 도달이 지연됨 (사용자 가치 페이지만 차감).
+                page_cap_status = budget_guard.check_doc_page_cap(
+                    called_pages=called_count, page_cap=page_cap,
+                )
+                if not page_cap_status.allowed:
+                    page_cap_exceeded_status = page_cap_status
+                    msg = (
+                        f"vision_enrich: page cap 도달 — "
+                        f"{page_cap_status.reason} "
+                        f"(남은 페이지 {len(pending_pages) - pending_pages.index(page_num)} skip)"
+                    )
+                    warnings.append(msg)
+                    logger.warning("%s (file=%s)", msg, file_name)
+                    break
 
                 try:
                     page = doc[page_num]
@@ -608,16 +662,20 @@ def _enrich_pdf_with_vision(
         if job_id:
             clear_stage_progress(job_id)
 
-    # S2 D1 — vision_need_score 메트릭 1줄 log (사용자 노출 X, 운영 진단용).
+    # S2 D1 + D2 — vision_need_score + page cap 메트릭 1줄 log (사용자 노출 X, 운영 진단용).
     # need_score_enabled=false 시 skipped 0 + called=process_count 로 기록 → 회복 토글 검증.
+    # page_cap=0 시 무한 모드 — page_cap_exceeded 발생 X.
     logger.info(
-        "vision_enrich: file=%s processed=%d called=%d skipped_need_score=%d (pages=%s) need_score_enabled=%s",
+        "vision_enrich: file=%s processed=%d called=%d skipped_need_score=%d "
+        "(pages=%s) need_score_enabled=%s page_cap=%d page_cap_exceeded=%s",
         file_name,
         len(completed_pages),
         called_count,
         len(skipped_by_need_score),
         skipped_by_need_score[:20],
         need_score_enabled,
+        page_cap,
+        page_cap_exceeded_status is not None,
     )
 
     # S0 D4 — 페이지 루프 중 cap 도달 시 flags 마킹 (graceful: chunks 는 정상 적재).
@@ -634,6 +692,25 @@ def _enrich_pdf_with_vision(
         except Exception as exc:  # noqa: BLE001 — flags 마킹 실패해도 인제스트는 graceful 진행
             logger.warning(
                 "vision_budget_exceeded flags 마킹 실패 (graceful): %s (doc_id=%s)",
+                exc, doc_id,
+            )
+
+    # S2 D2 — 페이지 루프 중 page cap 도달 시 flags 마킹 (graceful: chunks 정상 적재).
+    # cost cap 의 vision_budget_exceeded 와 직교 — 같은 doc 안 둘 다 도달 가능
+    # (page cap 먼저 도달 후 후속 reingest 시 cost cap 도 도달 case).
+    if page_cap_exceeded_status is not None and doc_id:
+        try:
+            db_client = client or get_supabase_client()
+            existing_flags = _fetch_document(db_client, doc_id).get("flags") or {}
+            _mark_page_cap_exceeded_flag(
+                db_client,
+                doc_id,
+                existing_flags=existing_flags,
+                status=page_cap_exceeded_status,
+            )
+        except Exception as exc:  # noqa: BLE001 — flags 마킹 실패해도 인제스트는 graceful 진행
+            logger.warning(
+                "vision_page_cap_exceeded flags 마킹 실패 (graceful): %s (doc_id=%s)",
                 exc, doc_id,
             )
 

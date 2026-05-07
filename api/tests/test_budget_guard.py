@@ -711,5 +711,95 @@ class BudgetGuardCostSumHelperTest(unittest.TestCase):
         self.assertAlmostEqual(total, 0.03)
 
 
+class BudgetGuardPageCapTest(unittest.TestCase):
+    """S2 D2 (2026-05-08) — `check_doc_page_cap` 페이지 cap 검사.
+
+    in-memory 카운터라 DB 미접근 — mock 불필요. ENV 비활성 토글 + 무한 모드 (cap=0) +
+    cap 미만/도달 4 case 전수 커버.
+    """
+
+    def setUp(self) -> None:
+        from app.services import budget_guard
+        budget_guard._reset_first_warn_for_test()
+        os.environ.pop("JETRAG_BUDGET_GUARD_DISABLE", None)
+
+    def test_page_cap_within_limit_allowed(self) -> None:
+        from app.services import budget_guard
+
+        status = budget_guard.check_doc_page_cap(called_pages=10, page_cap=50)
+        self.assertTrue(status.allowed)
+        self.assertEqual(status.scope, "page_cap")
+        self.assertEqual(status.used_usd, 10.0)
+        self.assertEqual(status.cap_usd, 50.0)
+        self.assertIn("페이지 한도 내", status.reason)
+
+    def test_page_cap_at_limit_blocked(self) -> None:
+        """called_pages == page_cap 시 차단 (다음 호출부터 stop)."""
+        from app.services import budget_guard
+
+        status = budget_guard.check_doc_page_cap(called_pages=50, page_cap=50)
+        self.assertFalse(status.allowed)
+        self.assertEqual(status.scope, "page_cap")
+        self.assertEqual(status.used_usd, 50.0)
+        self.assertEqual(status.cap_usd, 50.0)
+        self.assertIn("페이지 한도 도달", status.reason)
+        self.assertIn("50/50", status.reason)
+
+    def test_page_cap_over_limit_blocked(self) -> None:
+        """called_pages > page_cap (방어적 case) 도 차단."""
+        from app.services import budget_guard
+
+        status = budget_guard.check_doc_page_cap(called_pages=51, page_cap=50)
+        self.assertFalse(status.allowed)
+        self.assertEqual(status.used_usd, 51.0)
+        self.assertIn("51/50", status.reason)
+
+    def test_page_cap_disabled_when_zero_returns_allowed(self) -> None:
+        """ENV 0 (무한 모드) — called_pages 무관 항상 allowed=True (회복 토글)."""
+        from app.services import budget_guard
+
+        # 매우 큰 called_pages 도 cap=0 시 통과.
+        status = budget_guard.check_doc_page_cap(called_pages=10000, page_cap=0)
+        self.assertTrue(status.allowed)
+        self.assertEqual(status.scope, "page_cap")
+        self.assertIn("무한", status.reason)
+
+    def test_page_cap_negative_treated_as_unlimited(self) -> None:
+        """page_cap 음수도 무한 모드로 처리 (방어적 — _parse_int 가 음수 허용)."""
+        from app.services import budget_guard
+
+        status = budget_guard.check_doc_page_cap(called_pages=999, page_cap=-1)
+        self.assertTrue(status.allowed)
+
+    def test_page_cap_disabled_env_returns_allowed(self) -> None:
+        """ENV `JETRAG_BUDGET_GUARD_DISABLE=1` 시 cap 도달해도 allowed=True."""
+        from app.services import budget_guard
+
+        os.environ["JETRAG_BUDGET_GUARD_DISABLE"] = "1"
+        try:
+            status = budget_guard.check_doc_page_cap(called_pages=100, page_cap=50)
+            self.assertTrue(status.allowed)
+            self.assertEqual(status.scope, "page_cap")
+            self.assertIn("가드 비활성", status.reason)
+        finally:
+            os.environ.pop("JETRAG_BUDGET_GUARD_DISABLE", None)
+
+
+class BudgetGuardScopeLiteralTest(unittest.TestCase):
+    """S2 D2 — BudgetScope literal 에 'page_cap' 추가 회귀 보호.
+
+    JSON flags 에 그대로 저장되는 string 이라 spelling 회귀 시 UI 처리 깨짐.
+    """
+
+    def test_page_cap_scope_value(self) -> None:
+        from app.services import budget_guard
+
+        status = budget_guard.check_doc_page_cap(called_pages=10, page_cap=5)
+        # flags 저장 시 그대로 str 화되는 값이라 string 비교 검증.
+        self.assertEqual(status.scope, "page_cap")
+        # 다른 scope 들과 충돌 X
+        self.assertNotIn(status.scope, ("doc", "daily", "24h_sliding"))
+
+
 if __name__ == "__main__":
     unittest.main()

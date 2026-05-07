@@ -63,7 +63,8 @@ class TestIncrementalVisionNeedScoreHook(unittest.TestCase):
             inc_mod, "_page_needs_vision",
             side_effect=lambda page, *, page_num, file_name: decisions.get(page_num, True),
         ):
-            sections, warnings = inc_mod._vision_pages_with_sweep(
+            # S2 D2 — _vision_pages_with_sweep 시그니처 (sections, warnings, page_cap_status)
+            sections, warnings, page_cap_status = inc_mod._vision_pages_with_sweep(
                 data,
                 pages=[1, 2, 3],
                 file_name="test.pdf",
@@ -77,6 +78,8 @@ class TestIncrementalVisionNeedScoreHook(unittest.TestCase):
         self.assertEqual(pages_seen, {2, 3})
         # warnings 에 누락 알림 X (skip 은 정상 동작)
         self.assertFalse(any("sweep 후에도 누락" in w for w in warnings))
+        # page cap 도달 X (default 50 > 호출 2회)
+        self.assertIsNone(page_cap_status)
 
     def test_needs_vision_false_not_in_sweep_retry(self) -> None:
         # page 1 = False (skip), page 2 = True (sweep 1 실패 → sweep 2 회복).
@@ -95,7 +98,7 @@ class TestIncrementalVisionNeedScoreHook(unittest.TestCase):
             inc_mod, "_page_needs_vision",
             side_effect=lambda page, *, page_num, file_name: decisions.get(page_num, True),
         ):
-            sections, warnings = inc_mod._vision_pages_with_sweep(
+            sections, warnings, page_cap_status = inc_mod._vision_pages_with_sweep(
                 data,
                 pages=[1, 2],
                 file_name="test.pdf",
@@ -109,6 +112,8 @@ class TestIncrementalVisionNeedScoreHook(unittest.TestCase):
         self.assertEqual(sections[0].page, 2)
         # 누락 warning 없음 (sweep 2 회복)
         self.assertFalse(any("sweep 후에도 누락" in w for w in warnings))
+        # page cap 도달 X
+        self.assertIsNone(page_cap_status)
 
     def test_env_disabled_calls_all_pages(self) -> None:
         # ENV `JETRAG_VISION_NEED_SCORE_ENABLED=false` 시 모든 페이지 호출.
@@ -125,11 +130,12 @@ class TestIncrementalVisionNeedScoreHook(unittest.TestCase):
             doc_budget_usd=0.10, daily_budget_usd=0.50,
             sliding_24h_budget_usd=0.50, budget_krw_per_usd=1380.0,
             vision_need_score_enabled=False,
+            vision_page_cap_per_doc=50,  # S2 D2 — default
         )
         with patch.object(
             inc_mod, "_page_needs_vision", return_value=False,
         ), patch.object(inc_mod, "get_settings", return_value=mock_settings):
-            sections, warnings = inc_mod._vision_pages_with_sweep(
+            sections, warnings, page_cap_status = inc_mod._vision_pages_with_sweep(
                 data,
                 pages=[1, 2],
                 file_name="test.pdf",
@@ -138,6 +144,79 @@ class TestIncrementalVisionNeedScoreHook(unittest.TestCase):
         # ENV false → needs_vision 영향 0, 모든 페이지 호출
         self.assertEqual(parser.parse.call_count, 2)
         self.assertEqual(len(sections), 2)
+        # page cap (50) 미도달 (호출 2회)
+        self.assertIsNone(page_cap_status)
+
+
+class TestIncrementalVisionPageCap(unittest.TestCase):
+    """S2 D2 (2026-05-08) — incremental sweep 의 page cap 회귀 보호.
+
+    extract.py 의 `_enrich_pdf_with_vision` 와 동일 정책 — cap 도달 시 sweep
+    즉시 break + page_cap_status 반환 (caller 가 flags 마킹 책임).
+    """
+
+    def test_page_cap_break_mid_sweep(self) -> None:
+        """called_count >= cap 시 sweep break + page_cap_status 반환."""
+        data = _make_pdf_bytes(5)
+        per_page = [
+            [ExtractedSection(text=f"p{i + 1}", page=None, section_title=None)]
+            for i in range(5)
+        ]
+        parser = _stub_parser(per_page)
+        mock_settings = Settings(
+            supabase_url="", supabase_key="", supabase_service_role_key="",
+            supabase_storage_bucket="documents", gemini_api_key="", hf_api_token="",
+            default_user_id="00000000-0000-0000-0000-000000000001",
+            doc_budget_usd=0.10, daily_budget_usd=0.50,
+            sliding_24h_budget_usd=0.50, budget_krw_per_usd=1380.0,
+            vision_need_score_enabled=False,
+            vision_page_cap_per_doc=2,  # cap=2 — page 1,2 호출 후 break
+        )
+        with patch.object(inc_mod, "get_settings", return_value=mock_settings):
+            sections, warnings, page_cap_status = inc_mod._vision_pages_with_sweep(
+                data,
+                pages=[1, 2, 3, 4, 5],
+                file_name="test.pdf",
+                image_parser=parser,
+            )
+        # cap=2 → page 1,2 호출 후 page 3 진입 시 break.
+        self.assertEqual(parser.parse.call_count, 2)
+        self.assertEqual(len(sections), 2)
+        # page_cap_status 반환 — caller 가 flags 마킹.
+        self.assertIsNotNone(page_cap_status)
+        self.assertEqual(page_cap_status.scope, "page_cap")
+        self.assertEqual(int(page_cap_status.cap_usd), 2)
+        # warnings 에 page cap 도달 메시지
+        self.assertTrue(any("page cap 도달" in w for w in warnings))
+
+    def test_page_cap_zero_unlimited(self) -> None:
+        """ENV cap=0 → 무한 모드 (회복 토글). 모든 누락 페이지 호출."""
+        data = _make_pdf_bytes(3)
+        per_page = [
+            [ExtractedSection(text=f"p{i + 1}", page=None, section_title=None)]
+            for i in range(3)
+        ]
+        parser = _stub_parser(per_page)
+        mock_settings = Settings(
+            supabase_url="", supabase_key="", supabase_service_role_key="",
+            supabase_storage_bucket="documents", gemini_api_key="", hf_api_token="",
+            default_user_id="00000000-0000-0000-0000-000000000001",
+            doc_budget_usd=0.10, daily_budget_usd=0.50,
+            sliding_24h_budget_usd=0.50, budget_krw_per_usd=1380.0,
+            vision_need_score_enabled=False,
+            vision_page_cap_per_doc=0,  # 무한
+        )
+        with patch.object(inc_mod, "get_settings", return_value=mock_settings):
+            sections, warnings, page_cap_status = inc_mod._vision_pages_with_sweep(
+                data,
+                pages=[1, 2, 3],
+                file_name="test.pdf",
+                image_parser=parser,
+            )
+        # 모든 페이지 호출 — cap 영향 0
+        self.assertEqual(parser.parse.call_count, 3)
+        self.assertEqual(len(sections), 3)
+        self.assertIsNone(page_cap_status)
 
 
 if __name__ == "__main__":

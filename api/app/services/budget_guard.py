@@ -1,10 +1,11 @@
-"""S0 D4~D5 (2026-05-07) — vision 비용 cap 가드.
+"""S0 D4~D5 + S2 D2 (2026-05-07~08) — vision 비용/페이지 cap 가드.
 
-master plan §6 S0 D4 + D5 + §7.4 정합:
+master plan §6 S0 D4 + D5 + S2 D2 + §7.4 정합:
 
     if doc_cost      > doc_budget_usd      → BudgetStatus(allowed=False, scope='doc')
     if daily_cost    > daily_budget_usd    → BudgetStatus(allowed=False, scope='daily')
     if sliding_24h   > 24h_budget_usd      → BudgetStatus(allowed=False, scope='24h_sliding')
+    if called_pages >= page_cap_per_doc    → BudgetStatus(allowed=False, scope='page_cap')  # S2 D2
     else                                    → BudgetStatus(allowed=True)
 
 호출 시점
@@ -28,11 +29,22 @@ master plan §6 S0 D4 + D5 + §7.4 정합:
     - 24h_sliding (D5): now() - 24h ~ now() 의 누적. calendar day 리셋과
       독립적으로 24시간 rolling window 강제 — 자정 직전 폭주 후 자정 직후
       재폭주 가능한 calendar-day 한계 보완.
+    - page_cap (S2 D2): 단일 doc 안 vision API 호출 페이지 누적 카운터.
+      DB SUM 불필요 — 호출 측의 in-memory 카운터를 인자로 받음 (latency 0).
+      cost cap (3중) 과 직교 — 페이지 수 자체를 한도로 보호 (50p PDF · 100p 대형
+      PDF 의 latency / RPM cap). 둘 중 먼저 닿는 지점에서 stop.
 
 24h sliding 의 의미 (D5)
     daily 가 calendar 기준이면 23:59 에 daily cap 도달했어도 00:00 에 reset.
     sliding 은 "최근 24시간" 단위라 폭주 직후에는 다음 폭주를 24시간 차단.
     두 가드가 동시 적용되어도 어느 한쪽만 fail 해도 차단되므로 보수적 안전망.
+
+page cap 의 의미 (S2 D2)
+    cost cap (S0 D4) 은 비용 누적 한도라 정상 동작 흐름에서도 50~100 페이지
+    PDF 1건 인제스트 시 cap 미도달 가능. page cap 은 "한 doc 당 vision call
+    페이지 수" 자체를 한도로 두어 (default 50) latency / RPM 폭주를 직교
+    방어. needs_vision False 페이지 (S2 D1) 는 카운터 증가 X — 사용자 가치
+    있는 페이지만 cap 에 차감 (cap 도달 지연 정합).
 
 반환값 일관성
     - allowed=True : 인제스트는 vision 호출 진행
@@ -58,7 +70,8 @@ _DISABLE_ENV_KEY = "JETRAG_BUDGET_GUARD_DISABLE"
 _first_warn_logged: bool = False
 
 # scope literal — JSON flags 에 그대로 저장됨.
-BudgetScope = Literal["doc", "daily", "24h_sliding"]
+# S2 D2 — `page_cap` 추가 (in-memory 카운터, cost cap 과 직교).
+BudgetScope = Literal["doc", "daily", "24h_sliding", "page_cap"]
 
 # D5 — 24h sliding window 길이. 외부 ENV 로 변경 X (의미가 24시간으로 고정).
 _SLIDING_WINDOW_HOURS = 24
@@ -274,6 +287,65 @@ def check_combined(
 
     # sliding 인자 없으면 daily 반환 (D4 호환).
     return daily_status
+
+
+def check_doc_page_cap(
+    *,
+    called_pages: int,
+    page_cap: int,
+) -> BudgetStatus:
+    """S2 D2 — 단일 doc 안 vision call 페이지 누적이 page_cap 도달했는지.
+
+    DB 미접근 — 호출 측의 in-memory 카운터를 인자로 받아 즉시 비교 (latency 0).
+    cost cap (S0 D4 의 doc/daily/24h_sliding) 과 직교. 호출자는 cost cap 검사
+    직후에 본 함수를 호출해 두 cap 중 먼저 닿는 지점에서 stop.
+
+    인자
+        called_pages: 현재까지 vision call 한 페이지 수 (sweep 간 누적,
+            needs_vision skip 페이지는 포함 X — 사용자 가치 페이지만 차감).
+        page_cap: ENV `JETRAG_VISION_PAGE_CAP_PER_DOC` (default 50).
+            0 이하면 무한 (회복 토글) — 항상 allowed=True.
+
+    반환
+        allowed=True : called_pages < page_cap (호출 진행)
+        allowed=False: called_pages >= page_cap (이번 호출 부터 차단)
+    """
+    # ENV 비활성 토글 — cost cap 과 동일 정책.
+    if is_disabled():
+        return BudgetStatus(
+            allowed=True,
+            used_usd=0.0,
+            cap_usd=float(page_cap),
+            scope="page_cap",
+            reason="가드 비활성 (ENV)",
+        )
+    # 무한 모드 (0 또는 음수) — S1.5 이전 동작 100% 보존.
+    if page_cap <= 0:
+        return BudgetStatus(
+            allowed=True,
+            used_usd=float(called_pages),
+            cap_usd=0.0,
+            scope="page_cap",
+            reason="페이지 cap 무한 (ENV 0)",
+        )
+    if called_pages >= page_cap:
+        return BudgetStatus(
+            allowed=False,
+            used_usd=float(called_pages),
+            cap_usd=float(page_cap),
+            scope="page_cap",
+            reason=(
+                f"문서당 vision 페이지 한도 도달 "
+                f"({called_pages}/{page_cap}) — vision 보강 일부 생략"
+            ),
+        )
+    return BudgetStatus(
+        allowed=True,
+        used_usd=float(called_pages),
+        cap_usd=float(page_cap),
+        scope="page_cap",
+        reason="페이지 한도 내",
+    )
 
 
 # ----------------------- DB 헬퍼 -----------------------

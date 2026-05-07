@@ -117,7 +117,7 @@ def _vision_pages_with_sweep(
     image_parser: ImageParser,
     doc_id: str | None = None,
     sha256: str | None = None,
-) -> tuple[list[ExtractedSection], list[str]]:
+) -> tuple[list[ExtractedSection], list[str], budget_guard.BudgetStatus | None]:
     """누락 페이지 list 만 vision 호출 + sweep. 성공한 페이지의 sections 반환.
 
     extract.py 의 `_enrich_pdf_with_vision()` 의 sweep 패턴 재사용.
@@ -125,17 +125,21 @@ def _vision_pages_with_sweep(
     Phase 1 S0 D2 — sha256 전달 시 ImageParser 가 vision_page_cache lookup → hit 시
     호출 0. incremental 이 누락 페이지만 처리하므로 보통 cache miss 가 default 지만,
     중복 reingest / 동시성 race 시 hit 가능.
+
+    S2 D2 — 반환 tuple 3번째 = page_cap_exceeded_status (도달 시 BudgetStatus,
+    아니면 None). caller 가 flags 마킹에 사용. (시그니처 변경 회귀 — 단위 테스트
+    test_incremental_vision.py 도 함께 갱신.)
     """
     sections: list[ExtractedSection] = []
     warnings: list[str] = []
     if not pages:
-        return sections, warnings
+        return sections, warnings, None
 
     try:
         doc = fitz.open(stream=pdf_data, filetype="pdf")
     except Exception as exc:  # noqa: BLE001
         warnings.append(f"incremental_vision: PDF 열기 실패: {exc}")
-        return sections, warnings
+        return sections, warnings, None
 
     settings = get_settings()
     budget_pages_since_check = 0
@@ -146,6 +150,14 @@ def _vision_pages_with_sweep(
     skipped_by_need_score: list[int] = []
     called_count = 0
 
+    # S2 D2 — page cap 운영 hook (extract.py 와 동일 정책). called_count 카운터 공유.
+    # incremental 은 "누락 페이지만 sweep" — 본 흐름 안에서 page cap 도달은 이전
+    # extract 시점부터 누적된 chunks 상태와 무관 (vision call 페이지 수만 cap).
+    # 첫 진입 시 called_count=0 부터 시작 — full extract 와 incremental 누적 합산이
+    # 필요한 case 는 cost cap (DB SUM) 이 책임 (page cap 은 단일 sweep run 한도).
+    page_cap = settings.vision_page_cap_per_doc
+    page_cap_exceeded_status: budget_guard.BudgetStatus | None = None
+
     try:
         # 1-indexed → 0-indexed for PyMuPDF
         pending = [p - 1 for p in pages if 0 < p <= len(doc)]
@@ -154,6 +166,8 @@ def _vision_pages_with_sweep(
                 break
             if budget_exceeded_status is not None:
                 break
+            if page_cap_exceeded_status is not None:
+                break  # S2 D2 — page cap 도달 sweep 추가 진입도 차단
             if sweep_idx > 1:
                 logger.info(
                     "incremental_vision sweep %d/%d: 누락 %d 재시도 %s (file=%s)",
@@ -185,6 +199,23 @@ def _vision_pages_with_sweep(
                         logger.warning("%s (file=%s)", msg, file_name)
                         break
                 budget_pages_since_check += 1
+
+                # S2 D2 — page cap 검사 (cost cap 직후, needs_vision 직전).
+                # called_count 가 sweep 간 누적 카운터 — needs_vision skip 페이지는
+                # 증가 X (사용자 가치 페이지만 cap 차감).
+                page_cap_status = budget_guard.check_doc_page_cap(
+                    called_pages=called_count, page_cap=page_cap,
+                )
+                if not page_cap_status.allowed:
+                    page_cap_exceeded_status = page_cap_status
+                    msg = (
+                        f"incremental_vision: page cap 도달 — "
+                        f"{page_cap_status.reason} "
+                        f"(남은 페이지 {len(pending) - pending.index(page_idx)} skip)"
+                    )
+                    warnings.append(msg)
+                    logger.warning("%s (file=%s)", msg, file_name)
+                    break
 
                 try:
                     page = doc[page_idx]
@@ -248,17 +279,23 @@ def _vision_pages_with_sweep(
     finally:
         doc.close()
 
-    # S2 D1 — vision_need_score 메트릭 1줄 log (운영 진단용).
+    # S2 D1 + D2 — vision_need_score + page cap 메트릭 1줄 log (운영 진단용).
     logger.info(
-        "incremental_vision: file=%s called=%d skipped_need_score=%d (pages=%s) need_score_enabled=%s",
+        "incremental_vision: file=%s called=%d skipped_need_score=%d (pages=%s) "
+        "need_score_enabled=%s page_cap=%d page_cap_exceeded=%s",
         file_name,
         called_count,
         len(skipped_by_need_score),
         skipped_by_need_score[:20],
         need_score_enabled,
+        page_cap,
+        page_cap_exceeded_status is not None,
     )
 
-    return sections, warnings
+    # S2 D2 — page cap status 를 caller 가 flags 마킹에 활용 가능하도록 반환.
+    # `run_incremental_vision_pipeline` 이 sweep 후 마킹 처리. 시그니처 변경 1회 —
+    # 단위 테스트 (test_incremental_vision.py) 도 함께 갱신.
+    return sections, warnings, page_cap_exceeded_status
 
 
 def _sections_to_chunks(
@@ -385,7 +422,8 @@ def run_incremental_vision_pipeline(
             }
 
         # 누락 페이지 vision 호출 (sweep)
-        sections, warnings = _vision_pages_with_sweep(
+        # S2 D2 — 반환 tuple 3번째 = page_cap_exceeded_status (도달 시 BudgetStatus).
+        sections, warnings, page_cap_status = _vision_pages_with_sweep(
             pdf_data,
             pages=missing,
             file_name=file_name,
@@ -429,6 +467,35 @@ def run_incremental_vision_pipeline(
             client.table("documents").update({"flags": updated_flags}).eq(
                 "id", doc_id
             ).execute()
+
+        # S2 D2 — page cap 도달 시 flags 마킹 (cost cap 와 직교). graceful — DB 실패해도
+        # incremental 결과는 정상 반환. extract.py 의 _mark_page_cap_exceeded_flag 와
+        # 같은 payload 구조 (UI 가 양쪽 흐름 공통 처리 가능).
+        if page_cap_status is not None:
+            try:
+                existing_flags = (
+                    client.table("documents")
+                    .select("flags")
+                    .eq("id", doc_id)
+                    .limit(1)
+                    .execute()
+                    .data[0].get("flags") or {}
+                )
+                updated_flags = dict(existing_flags)
+                updated_flags["vision_page_cap_exceeded"] = True
+                updated_flags["vision_page_cap"] = {
+                    "called_pages": int(page_cap_status.used_usd),
+                    "page_cap": int(page_cap_status.cap_usd),
+                    "reason": page_cap_status.reason,
+                }
+                client.table("documents").update({"flags": updated_flags}).eq(
+                    "id", doc_id
+                ).execute()
+            except Exception as exc:  # noqa: BLE001 — graceful
+                logger.warning(
+                    "incremental_vision page_cap flags 마킹 실패 (graceful): %s "
+                    "(doc_id=%s)", exc, doc_id,
+                )
 
         # 다시 누락 detect (sweep 후 여전히 실패한 페이지)
         new_processed = _vision_processed_pages(client, doc_id)

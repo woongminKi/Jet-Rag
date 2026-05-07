@@ -33,6 +33,12 @@ class Settings:
     # default true (S1.5 D3 골든셋 recall 5/6 = 83.3% baseline 반영 채택).
     # false 시 모든 페이지 vision 호출 (S1.5 이전 동작 100% 보존, 회복 토글).
     vision_need_score_enabled: bool
+    # S2 D2 (2026-05-08) — 문서당 vision call 페이지 cap. master plan §6 S2 D2.
+    # cost cap (doc/daily/24h_sliding) 과 직교 — 둘 중 먼저 닿는 지점 stop.
+    # default 50 (S0 D3 본 PC 측정 평균 21.5p/doc × 2.3배 안전 margin).
+    # 0 또는 음수 시 무한 (회복 토글 — S2 D1 이전 동작 100% 보존).
+    # in-memory 카운터 — DB SUM 불필요 (sweep 간 누적, needs_vision skip 제외).
+    vision_page_cap_per_doc: int
 
 
 # 잠정값 — 데이터 누적 부족 시 fallback. master plan §7.5 default 채택.
@@ -40,6 +46,10 @@ class Settings:
 _DOC_BUDGET_USD_DEFAULT = 0.10
 _DAILY_BUDGET_USD_DEFAULT = 0.50  # 5 docs/일 가정.
 _BUDGET_KRW_PER_USD_DEFAULT = 1380.0
+
+# S2 D2 — page cap default. master plan §6 S2 D2 + 핸드오프 §6 Q-S2-4.
+# S0 D3 본 PC 5 PDF 측정 평균 21.5p/doc × 2.3배 안전 margin = 49.5 → round 50.
+_VISION_PAGE_CAP_PER_DOC_DEFAULT = 50
 
 
 def _parse_float(env_key: str, default: float) -> float:
@@ -69,6 +79,21 @@ def _parse_bool(env_key: str, default: bool) -> bool:
     return default
 
 
+def _parse_int(env_key: str, default: int) -> int:
+    """ENV int parse — 비숫자 시 default fallback. 음수 허용 (S2 D2 page cap 무한 토글).
+
+    S2 D2: `JETRAG_VISION_PAGE_CAP_PER_DOC=0` 또는 음수 → page_cap_per_doc <= 0 →
+    budget_guard.check_doc_page_cap 이 무한 모드 진입 (회복 토글).
+    """
+    raw = os.environ.get(env_key)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 @lru_cache
 def get_settings() -> Settings:
     daily = _parse_float("JETRAG_DAILY_BUDGET_USD", _DAILY_BUDGET_USD_DEFAULT)
@@ -94,5 +119,10 @@ def get_settings() -> Settings:
         # S2 D1 — default true. invalid ENV 는 default 유지 (graceful).
         vision_need_score_enabled=_parse_bool(
             "JETRAG_VISION_NEED_SCORE_ENABLED", True
+        ),
+        # S2 D2 — default 50 (S0 D3 평균 21.5p/doc × 2.3배 안전 margin).
+        # 0 또는 음수 시 budget_guard 가 무한 모드 (회복 토글).
+        vision_page_cap_per_doc=_parse_int(
+            "JETRAG_VISION_PAGE_CAP_PER_DOC", _VISION_PAGE_CAP_PER_DOC_DEFAULT
         ),
     )

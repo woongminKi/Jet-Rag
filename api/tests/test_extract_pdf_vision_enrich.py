@@ -368,6 +368,7 @@ class TestVisionNeedScoreHook(unittest.TestCase):
             doc_budget_usd=0.10, daily_budget_usd=0.50,
             sliding_24h_budget_usd=0.50, budget_krw_per_usd=1380.0,
             vision_need_score_enabled=False,
+            vision_page_cap_per_doc=50,  # S2 D2 — default
         )
         with patch.object(
             ext_mod, "_page_needs_vision", return_value=False,
@@ -404,6 +405,138 @@ class TestVisionNeedScoreHook(unittest.TestCase):
         # 점수 깨져도 vision 호출 흐름 보존 — 두 페이지 모두 호출
         self.assertEqual(parser.parse.call_count, 2)
         self.assertEqual(len(result.sections), 2)
+
+
+def _settings_with_page_cap(page_cap: int, *, need_score: bool = False):
+    """S2 D2 단위 테스트용 Settings 인스턴스. need_score=False 가 default."""
+    from app.config import Settings
+    return Settings(
+        supabase_url="", supabase_key="", supabase_service_role_key="",
+        supabase_storage_bucket="documents", gemini_api_key="", hf_api_token="",
+        default_user_id="00000000-0000-0000-0000-000000000001",
+        doc_budget_usd=0.10, daily_budget_usd=0.50,
+        sliding_24h_budget_usd=0.50, budget_krw_per_usd=1380.0,
+        vision_need_score_enabled=need_score,
+        vision_page_cap_per_doc=page_cap,
+    )
+
+
+class TestVisionPageCapHook(unittest.TestCase):
+    """S2 D2 (2026-05-08) — page cap + cost budget 병행 회귀 보호.
+
+    master plan §6 S2 D2. cost cap (S0 D4) 과 직교 — 둘 중 먼저 닿는 지점 stop.
+    needs_vision skip 페이지는 카운터 증가 X (사용자 가치 페이지만 차감, cap
+    도달 지연 정합). ENV 0 시 S2 D1 동작 100% 보존 (회복 토글).
+    """
+
+    def test_page_cap_break_mid_sweep(self) -> None:
+        """called_count >= cap 시 sweep 즉시 break + warning + flag 마킹 가능 status."""
+        from app.ingest.stages import extract as ext_mod
+
+        data = _make_pdf_bytes(5)
+        base = ExtractionResult(
+            source_type="pdf", sections=[], raw_text="", warnings=[]
+        )
+        # 5 페이지 PDF, page cap=2 — page 1, 2 호출 후 page 3 진입 시 cap 도달 break.
+        per_page = [
+            [ExtractedSection(text=f"vision p.{i + 1}", page=None, section_title=None)]
+            for i in range(5)
+        ]
+        parser = _stub_image_parser(per_page)
+        # need_score 비활성 → 모든 페이지 호출 시도. cap=2 가 작동 검증.
+        mock_settings = _settings_with_page_cap(2, need_score=False)
+        with patch.object(ext_mod, "get_settings", return_value=mock_settings):
+            result = _enrich_pdf_with_vision(
+                data, base_result=base, file_name="test.pdf", image_parser=parser
+            )
+        # cap=2 — page 1, 2 호출 후 page 3 진입 시 break.
+        self.assertEqual(parser.parse.call_count, 2)
+        self.assertEqual(len(result.sections), 2)
+        # warnings 에 page cap 도달 메시지 + skip 안내
+        self.assertTrue(any("page cap 도달" in w for w in result.warnings))
+        self.assertTrue(any("2/2" in w for w in result.warnings))
+
+    def test_page_cap_with_needs_vision_skip_does_not_increment_counter(self) -> None:
+        """needs_vision False 페이지는 called_count 증가 X — cap 도달 지연 정합.
+
+        cap=2 인데 5 페이지 PDF 에서 첫 3 페이지가 needs_vision False (skip) 라면
+        나머지 2 페이지만 호출되고 cap 정확히 도달 (skip 페이지가 cap 차감 X).
+        """
+        from app.ingest.stages import extract as ext_mod
+
+        data = _make_pdf_bytes(5)
+        base = ExtractionResult(
+            source_type="pdf", sections=[], raw_text="", warnings=[]
+        )
+        # page 1,2,3 = needs_vision False (skip), page 4,5 = True (호출)
+        decisions = {1: False, 2: False, 3: False, 4: True, 5: True}
+        per_page = [
+            [ExtractedSection(text=f"p{n}", page=None, section_title=None)]
+            for n in (4, 5)  # 호출되는 page 만 stub
+        ]
+        parser = _stub_image_parser(per_page)
+        mock_settings = _settings_with_page_cap(2, need_score=True)
+        with patch.object(ext_mod, "get_settings", return_value=mock_settings), \
+             patch.object(
+                 ext_mod, "_page_needs_vision",
+                 side_effect=lambda page, *, page_num, file_name: decisions.get(page_num, True),
+             ):
+            result = _enrich_pdf_with_vision(
+                data, base_result=base, file_name="test.pdf", image_parser=parser
+            )
+        # page 4, 5 만 호출 — skip 3 페이지가 cap 차감 X.
+        # cap=2 라 page 4 + 5 호출 후 (called=2) sweep end (page 6 없음).
+        # page cap 도달 warning X (마지막 page 까지 정상 처리).
+        self.assertEqual(parser.parse.call_count, 2)
+        self.assertEqual(len(result.sections), 2)
+        # cap 도달 warning 없어야 함 (정상 종료)
+        self.assertFalse(any("page cap 도달" in w for w in result.warnings))
+
+    def test_page_cap_zero_disables_unlimited(self) -> None:
+        """ENV `JETRAG_VISION_PAGE_CAP_PER_DOC=0` 시 모든 페이지 호출 (회복 토글).
+
+        S2 D1 이전 동작 100% 보존 — page cap hook 자체 영향 0.
+        """
+        from app.ingest.stages import extract as ext_mod
+
+        data = _make_pdf_bytes(5)
+        base = ExtractionResult(
+            source_type="pdf", sections=[], raw_text="", warnings=[]
+        )
+        per_page = [
+            [ExtractedSection(text=f"vision p.{i + 1}", page=None, section_title=None)]
+            for i in range(5)
+        ]
+        parser = _stub_image_parser(per_page)
+        # cap=0 → 무한 모드. need_score 도 비활성 → 모든 페이지 호출 검증.
+        mock_settings = _settings_with_page_cap(0, need_score=False)
+        with patch.object(ext_mod, "get_settings", return_value=mock_settings):
+            result = _enrich_pdf_with_vision(
+                data, base_result=base, file_name="test.pdf", image_parser=parser
+            )
+        # 모든 페이지 호출 — cap 영향 0
+        self.assertEqual(parser.parse.call_count, 5)
+        self.assertEqual(len(result.sections), 5)
+        # cap 도달 warning 없음
+        self.assertFalse(any("page cap 도달" in w for w in result.warnings))
+
+    def test_page_cap_default_is_50(self) -> None:
+        """ENV 미설정 시 default 50 — config 회귀 보호."""
+        import importlib
+        import os as _os
+
+        from app.config import get_settings as get_settings_real
+
+        prev = _os.environ.pop("JETRAG_VISION_PAGE_CAP_PER_DOC", None)
+        try:
+            # lru_cache clear — config 모듈 reload 대신 단일 함수 캐시 클리어.
+            get_settings_real.cache_clear()
+            settings = get_settings_real()
+            self.assertEqual(settings.vision_page_cap_per_doc, 50)
+        finally:
+            if prev is not None:
+                _os.environ["JETRAG_VISION_PAGE_CAP_PER_DOC"] = prev
+            get_settings_real.cache_clear()
 
 
 if __name__ == "__main__":
