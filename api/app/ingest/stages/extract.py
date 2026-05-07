@@ -40,7 +40,7 @@ from app.ingest.jobs import (
     stage,
     update_stage_progress,
 )
-from app.services import vision_cache
+from app.services import budget_guard, vision_cache
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +117,14 @@ _VISION_ENRICH_MAX_PAGES = int(os.environ.get("JETRAG_PDF_VISION_ENRICH_MAX_PAGE
 #   회귀 발생 시 ENV `JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS=3` 으로 즉시 회복.
 _VISION_ENRICH_MAX_SWEEPS = int(os.environ.get("JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS", "2"))
 
+# 2026-05-07 S0 D4 — vision 비용 cap 가드 재검사 간격 (페이지 단위).
+# 사전 1회 + 매 N 페이지마다 재검사로 한 doc 안에서 누적 cap 도달 차단.
+# default 5 — 50p/doc 시 11회 SQL (latency 0.x초). N=1 (페이지마다) 은 50 SQL → SLO 위반 위험.
+# ENV 로 운영자가 조정 가능.
+_BUDGET_RECHECK_EVERY_N_PAGES = int(
+    os.environ.get("JETRAG_BUDGET_RECHECK_EVERY_N_PAGES", "5")
+)
+
 
 def run_extract_stage(job_id: str, doc_id: str) -> ExtractionResult | None:
     """스테이지 실행. 지원 포맷이면 `ExtractionResult`, 그 외는 skip 후 `None`.
@@ -179,19 +187,38 @@ def run_extract_stage(job_id: str, doc_id: str) -> ExtractionResult | None:
             and _PDF_VISION_ENRICH_ENABLED
             and not (doc.get("flags") or {}).get("scan")
         ):
-            logger.info(
-                "PDF vision enrich 활성 — 모든 페이지 vision 호출 후 sections 병합. doc_id=%s",
-                doc_id,
-            )
-            result = _enrich_pdf_with_vision(
-                data,
-                base_result=result,
-                file_name=file_name,
-                image_parser=_get_image_parser(),
-                job_id=job_id,
+            # S0 D4 — vision 호출 진입 직전 cap 사전 검사. 통과 시 enrich, 실패 시 skip + flags.
+            settings = get_settings()
+            pre_status = budget_guard.check_combined(
                 doc_id=doc_id,
-                sha256=doc.get("sha256"),
+                doc_cap_usd=settings.doc_budget_usd,
+                daily_cap_usd=settings.daily_budget_usd,
             )
+            if not pre_status.allowed:
+                logger.warning(
+                    "PDF vision enrich skip — budget cap (scope=%s, used=$%.4f, cap=$%.4f) doc_id=%s",
+                    pre_status.scope, pre_status.used_usd, pre_status.cap_usd, doc_id,
+                )
+                _mark_budget_exceeded_flag(
+                    client,
+                    doc_id,
+                    existing_flags=doc.get("flags") or {},
+                    status=pre_status,
+                )
+            else:
+                logger.info(
+                    "PDF vision enrich 활성 — 모든 페이지 vision 호출 후 sections 병합. doc_id=%s",
+                    doc_id,
+                )
+                result = _enrich_pdf_with_vision(
+                    data,
+                    base_result=result,
+                    file_name=file_name,
+                    image_parser=_get_image_parser(),
+                    job_id=job_id,
+                    doc_id=doc_id,
+                    sha256=doc.get("sha256"),
+                )
 
     return result
 
@@ -233,6 +260,32 @@ def _mark_scan_flag(client: Any, doc_id: str, *, existing_flags: dict) -> None:
     """`flags.scan = true` 마킹. doc_type 은 'pdf' 그대로 (DB CHECK 제약 준수)."""
     updated = dict(existing_flags)
     updated["scan"] = True
+    client.table("documents").update({"flags": updated}).eq("id", doc_id).execute()
+
+
+def _mark_budget_exceeded_flag(
+    client: Any,
+    doc_id: str,
+    *,
+    existing_flags: dict,
+    status: budget_guard.BudgetStatus,
+) -> None:
+    """S0 D4 — vision 비용 cap 도달 시 flags 마킹.
+
+    UI 가 `vision_budget_exceeded=true` 로 카드에 안내 + 재처리 버튼 표시.
+    `vision_budget` 객체에 scope/used/cap 까지 함께 저장 → 사용자가 어느 한도가
+    문제인지 즉시 인지 가능 (master plan §11.5 사용자 통제권 정합).
+
+    기존 flags 보존 (`{**existing, ...}`) — scan/has_pii 등 다른 시그널 유지.
+    """
+    updated = dict(existing_flags)
+    updated["vision_budget_exceeded"] = True
+    updated["vision_budget"] = {
+        "scope": status.scope,
+        "used_usd": round(status.used_usd, 6),
+        "cap_usd": round(status.cap_usd, 6),
+        "reason": status.reason,
+    }
     client.table("documents").update({"flags": updated}).eq("id", doc_id).execute()
 
 
@@ -325,6 +378,7 @@ def _enrich_pdf_with_vision(
     job_id: str | None = None,
     doc_id: str | None = None,
     sha256: str | None = None,
+    client: Any | None = None,
 ) -> ExtractionResult:
     """W25 D14 — 일반 PDF 의 표/그림/다이어그램 정보를 vision 으로 보강.
 
@@ -384,11 +438,18 @@ def _enrich_pdf_with_vision(
                 job_id, current=0, total=process_count, unit="pages",
             )
 
+        # S0 D4 — 페이지 루프 내 cap 재검사 준비. cap 도달 시 즉시 break + flags 마킹.
+        settings = get_settings()
+        budget_pages_since_check = 0
+        budget_exceeded_status: budget_guard.BudgetStatus | None = None
+
         # W25 D14 Sprint 4 — sweep 로직: 503 random 실패 페이지 자동 재시도.
         pending_pages: list[int] = list(range(process_count))
         for sweep_idx in range(1, _VISION_ENRICH_MAX_SWEEPS + 1):
             if not pending_pages:
                 break
+            if budget_exceeded_status is not None:
+                break  # 이전 sweep 에서 cap 도달 — sweep 추가 호출도 차단
             if sweep_idx > 1:
                 logger.info(
                     "vision_enrich sweep %d/%d: 누락 %d 페이지 재시도 %s (file=%s)",
@@ -398,6 +459,28 @@ def _enrich_pdf_with_vision(
                 )
             failed_in_sweep: list[int] = []
             for page_num in pending_pages:
+                # S0 D4 — N 페이지마다 cap 재검사. cap 도달 시 sweep 즉시 break.
+                if (
+                    doc_id
+                    and budget_pages_since_check >= _BUDGET_RECHECK_EVERY_N_PAGES
+                ):
+                    budget_pages_since_check = 0
+                    status = budget_guard.check_combined(
+                        doc_id=doc_id,
+                        doc_cap_usd=settings.doc_budget_usd,
+                        daily_cap_usd=settings.daily_budget_usd,
+                    )
+                    if not status.allowed:
+                        budget_exceeded_status = status
+                        msg = (
+                            f"vision_enrich: budget cap 도달 — "
+                            f"{status.reason} (남은 페이지 {len(pending_pages)} skip)"
+                        )
+                        warnings.append(msg)
+                        logger.warning("%s (file=%s)", msg, file_name)
+                        break
+                budget_pages_since_check += 1
+
                 try:
                     page = doc[page_num]
                     pix = page.get_pixmap(dpi=_SCAN_RENDER_DPI)
@@ -463,6 +546,23 @@ def _enrich_pdf_with_vision(
         doc.close()
         if job_id:
             clear_stage_progress(job_id)
+
+    # S0 D4 — 페이지 루프 중 cap 도달 시 flags 마킹 (graceful: chunks 는 정상 적재).
+    if budget_exceeded_status is not None and doc_id:
+        try:
+            db_client = client or get_supabase_client()
+            existing_flags = _fetch_document(db_client, doc_id).get("flags") or {}
+            _mark_budget_exceeded_flag(
+                db_client,
+                doc_id,
+                existing_flags=existing_flags,
+                status=budget_exceeded_status,
+            )
+        except Exception as exc:  # noqa: BLE001 — flags 마킹 실패해도 인제스트는 graceful 진행
+            logger.warning(
+                "vision_budget_exceeded flags 마킹 실패 (graceful): %s (doc_id=%s)",
+                exc, doc_id,
+            )
 
     return ExtractionResult(
         source_type=base_result.source_type,  # 'pdf' 보존

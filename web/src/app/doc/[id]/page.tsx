@@ -30,6 +30,7 @@ import {
 import {
   ApiError,
   getDocument,
+  reingestMissingVision,
   searchDocuments,
   type DocumentDetailResponse,
   type MatchedChunk,
@@ -524,25 +525,133 @@ function FlagsSection({ doc }: { doc: DocumentDetailResponse }) {
   }
   if (f.third_party === true) items.push({ label: '제3자 대화 감지', tone: 'warn' });
   if (f.scan === true) items.push({ label: '스캔본 (Vision OCR 사용)', tone: 'info' });
-  if (items.length === 0) return null;
+
+  // S0 D4 — vision_budget_exceeded 별도 카드로 분리 (재처리 버튼 포함).
+  const budgetExceeded = f.vision_budget_exceeded === true;
+
+  if (items.length === 0 && !budgetExceeded) return null;
   return (
-    <Card className="p-5">
-      <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
-        <Shield className="h-4 w-4 text-warning" />
-        주의사항
+    <>
+      {items.length > 0 && (
+        <Card className="p-5">
+          <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
+            <Shield className="h-4 w-4 text-warning" />
+            주의사항
+          </div>
+          <ul className="space-y-2">
+            {items.map((it, i) => (
+              <li key={i} className="flex items-start gap-2 text-sm text-foreground/90">
+                <Info
+                  className={`mt-0.5 h-4 w-4 flex-shrink-0 ${
+                    it.tone === 'warn' ? 'text-warning' : 'text-muted-foreground'
+                  }`}
+                />
+                {it.label}
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+      {budgetExceeded && doc.doc_type === 'pdf' && (
+        <VisionBudgetExceededCard doc={doc} />
+      )}
+    </>
+  );
+}
+
+/** S0 D4 — vision 비용 cap 도달 시 안내 + 재처리 버튼.
+ *  master plan §11.5 정합 — "약속 회피 + 사용자 통제권".
+ *  - 사용자에게 어떤 한도(scope) 가 도달했는지 / 얼마나 사용했는지 표시
+ *  - 재처리는 incremental vision reingest (chunks 보존 + 누락 페이지만)
+ *  - 재처리 시점에도 cap 이 풀려있지 않으면 백엔드가 graceful skip (유저 surprise 0)
+ */
+function VisionBudgetExceededCard({ doc }: { doc: DocumentDetailResponse }) {
+  const router = useRouter();
+  const f = doc.flags || {};
+  const budget = (f.vision_budget && typeof f.vision_budget === 'object'
+    ? (f.vision_budget as Record<string, unknown>)
+    : {}) as { scope?: string; used_usd?: number; cap_usd?: number; reason?: string };
+  const scopeLabel =
+    budget.scope === 'daily' ? '일일 한도' : '문서당 한도';
+  const usedStr =
+    typeof budget.used_usd === 'number' ? `$${budget.used_usd.toFixed(4)}` : '-';
+  const capStr =
+    typeof budget.cap_usd === 'number' ? `$${budget.cap_usd.toFixed(4)}` : '-';
+
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
+  const [retryQueued, setRetryQueued] = useState(false);
+
+  const handleRetry = async () => {
+    setRetrying(true);
+    setRetryError(null);
+    try {
+      await reingestMissingVision(doc.id);
+      setRetryQueued(true);
+      // 인제스트 진행 상태 폴링은 기존 useEffect 의 latest_job 폴링이 자동 picks up.
+      // 즉시 새 status 를 가져오도록 router.refresh() — 같은 페이지에서 재폴링 시작.
+      router.refresh();
+    } catch (err) {
+      const msg =
+        err instanceof ApiError ? err.detail : '재처리 요청에 실패했습니다.';
+      setRetryError(msg);
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  return (
+    <Card className="space-y-3 border-warning/40 bg-warning/5 p-5">
+      <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+        <AlertCircle className="h-4 w-4 text-warning" />
+        시각 보강 일부 생략 ({scopeLabel} 도달)
       </div>
-      <ul className="space-y-2">
-        {items.map((it, i) => (
-          <li key={i} className="flex items-start gap-2 text-sm text-foreground/90">
-            <Info
-              className={`mt-0.5 h-4 w-4 flex-shrink-0 ${
-                it.tone === 'warn' ? 'text-warning' : 'text-muted-foreground'
-              }`}
-            />
-            {it.label}
-          </li>
-        ))}
-      </ul>
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        Vision 비용 한도에 도달해 표/그림 보강 일부가 생략되었어요. 검색은 정상
+        동작하지만 다이어그램·이미지 정확도가 낮을 수 있어요. 한도가 풀리면
+        ‘재처리’ 로 누락 페이지만 다시 처리할 수 있어요.
+      </p>
+      <div className="grid grid-cols-2 gap-2 rounded-md border border-warning/30 bg-card p-3 text-xs">
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            누적 사용
+          </div>
+          <div className="mt-0.5 font-mono text-foreground">{usedStr}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            한도
+          </div>
+          <div className="mt-0.5 font-mono text-foreground">{capStr}</div>
+        </div>
+      </div>
+      {retryError && (
+        <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+          {retryError}
+        </p>
+      )}
+      {retryQueued && !retryError && (
+        <p className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-primary">
+          재처리가 시작되었어요. 완료까지 잠시 걸릴 수 있어요.
+        </p>
+      )}
+      <div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={handleRetry}
+          disabled={retrying || retryQueued}
+          className="gap-1"
+        >
+          {retrying ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Sparkles className="h-3 w-3" />
+          )}
+          {retrying ? '재처리 요청 중...' : '재처리'}
+        </Button>
+      </div>
     </Card>
   );
 }

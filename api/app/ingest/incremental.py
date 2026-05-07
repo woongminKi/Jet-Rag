@@ -39,12 +39,17 @@ from app.db import get_supabase_client
 from app.ingest.jobs import fail_job, finish_job, start_job
 from app.ingest.stages.embed import run_embed_stage
 from app.ingest.stages.load import run_load_stage
+from app.services import budget_guard
 
 logger = logging.getLogger(__name__)
 
 _VISION_ENRICH_TITLE_PREFIX = "(vision) p."  # extract.py 의 vision section_title 패턴
 _SCAN_RENDER_DPI = 150
 _MAX_SWEEPS = int(os.environ.get("JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS", "3"))
+# S0 D4 — extract.py 와 동일 정책. ENV 공유.
+_BUDGET_RECHECK_EVERY_N_PAGES = int(
+    os.environ.get("JETRAG_BUDGET_RECHECK_EVERY_N_PAGES", "5")
+)
 
 _image_parser = ImageParser()
 
@@ -107,11 +112,17 @@ def _vision_pages_with_sweep(
         warnings.append(f"incremental_vision: PDF 열기 실패: {exc}")
         return sections, warnings
 
+    settings = get_settings()
+    budget_pages_since_check = 0
+    budget_exceeded_status: budget_guard.BudgetStatus | None = None
+
     try:
         # 1-indexed → 0-indexed for PyMuPDF
         pending = [p - 1 for p in pages if 0 < p <= len(doc)]
         for sweep_idx in range(1, _MAX_SWEEPS + 1):
             if not pending:
+                break
+            if budget_exceeded_status is not None:
                 break
             if sweep_idx > 1:
                 logger.info(
@@ -121,6 +132,28 @@ def _vision_pages_with_sweep(
                 )
             failed: list[int] = []
             for page_idx in pending:
+                # S0 D4 — N 페이지마다 cap 재검사. cap 도달 시 sweep 즉시 break.
+                if (
+                    doc_id
+                    and budget_pages_since_check >= _BUDGET_RECHECK_EVERY_N_PAGES
+                ):
+                    budget_pages_since_check = 0
+                    status = budget_guard.check_combined(
+                        doc_id=doc_id,
+                        doc_cap_usd=settings.doc_budget_usd,
+                        daily_cap_usd=settings.daily_budget_usd,
+                    )
+                    if not status.allowed:
+                        budget_exceeded_status = status
+                        msg = (
+                            f"incremental_vision: budget cap 도달 — "
+                            f"{status.reason} (남은 페이지 {len(pending)} skip)"
+                        )
+                        warnings.append(msg)
+                        logger.warning("%s (file=%s)", msg, file_name)
+                        break
+                budget_pages_since_check += 1
+
                 try:
                     page = doc[page_idx]
                     pix = page.get_pixmap(dpi=_SCAN_RENDER_DPI)
@@ -254,6 +287,47 @@ def run_incremental_vision_pipeline(
                 "warnings": [],
             }
 
+        # S0 D4 — 사전 cap 검사. cap 도달이면 vision 호출 0 + flags 마킹 + early return.
+        settings = get_settings()
+        pre_status = budget_guard.check_combined(
+            doc_id=doc_id,
+            doc_cap_usd=settings.doc_budget_usd,
+            daily_cap_usd=settings.daily_budget_usd,
+        )
+        if not pre_status.allowed:
+            logger.warning(
+                "incremental_vision skip — budget cap (scope=%s, used=$%.4f, cap=$%.4f) doc_id=%s",
+                pre_status.scope, pre_status.used_usd, pre_status.cap_usd, doc_id,
+            )
+            existing_flags = (
+                client.table("documents")
+                .select("flags")
+                .eq("id", doc_id)
+                .limit(1)
+                .execute()
+                .data[0].get("flags") or {}
+            )
+            updated_flags = dict(existing_flags)
+            updated_flags["vision_budget_exceeded"] = True
+            updated_flags["vision_budget"] = {
+                "scope": pre_status.scope,
+                "used_usd": round(pre_status.used_usd, 6),
+                "cap_usd": round(pre_status.cap_usd, 6),
+                "reason": pre_status.reason,
+            }
+            client.table("documents").update({"flags": updated_flags}).eq(
+                "id", doc_id
+            ).execute()
+            finish_job(job_id)
+            return {
+                "processed_pages": sorted(processed),
+                "skipped_pages": missing,
+                "newly_processed_pages": [],
+                "chunks_inserted": 0,
+                "total_pages": total_pages,
+                "warnings": [pre_status.reason],
+            }
+
         # 누락 페이지 vision 호출 (sweep)
         sections, warnings = _vision_pages_with_sweep(
             pdf_data,
@@ -271,6 +345,33 @@ def run_incremental_vision_pipeline(
         )
         loaded = run_load_stage(job_id, chunks=chunks) if chunks else 0
         embedded = run_embed_stage(job_id, doc_id=doc_id) if loaded > 0 else 0
+
+        # S0 D4 — sweep 도중 cap 도달했으면 flags 마킹 (graceful: 이미 처리한 페이지는 보존).
+        post_status = budget_guard.check_combined(
+            doc_id=doc_id,
+            doc_cap_usd=settings.doc_budget_usd,
+            daily_cap_usd=settings.daily_budget_usd,
+        )
+        if not post_status.allowed:
+            existing_flags = (
+                client.table("documents")
+                .select("flags")
+                .eq("id", doc_id)
+                .limit(1)
+                .execute()
+                .data[0].get("flags") or {}
+            )
+            updated_flags = dict(existing_flags)
+            updated_flags["vision_budget_exceeded"] = True
+            updated_flags["vision_budget"] = {
+                "scope": post_status.scope,
+                "used_usd": round(post_status.used_usd, 6),
+                "cap_usd": round(post_status.cap_usd, 6),
+                "reason": post_status.reason,
+            }
+            client.table("documents").update({"flags": updated_flags}).eq(
+                "id", doc_id
+            ).execute()
 
         # 다시 누락 detect (sweep 후 여전히 실패한 페이지)
         new_processed = _vision_processed_pages(client, doc_id)

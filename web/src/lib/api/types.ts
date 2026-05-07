@@ -194,6 +194,15 @@ export interface ReingestResponse {
   chunks_deleted: number;
 }
 
+/** S0 D4 — incremental vision reingest 응답 (POST /documents/{id}/reingest-missing). */
+export interface ReingestMissingResponse {
+  doc_id: string;
+  job_id: string;
+  total_pages: number;
+  missing_pages_before: number[];
+  note: string;
+}
+
 export interface StageProgressDetail {
   current: number;
   total: number;

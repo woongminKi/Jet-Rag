@@ -9,6 +9,7 @@ import type {
   DocumentDetailResponse,
   DocumentListResponse,
   DocumentStatusResponse,
+  ReingestMissingResponse,
   ReingestResponse,
   SearchResponse,
   SourceChannel,
@@ -202,6 +203,12 @@ export const submitSearchPrecision = async (
 
 export const reingestDocument = (docId: string) =>
   apiPost<ReingestResponse>(`/documents/${docId}/reingest`);
+
+/** S0 D4 — incremental vision reingest. 기존 chunks 보존 + 누락 페이지만 vision 재호출.
+ *  - 진입 시점에 cap 이 풀려있어야 의미 (cap 도달 중이면 백엔드가 graceful skip).
+ *  - chunks 전부 삭제하지 않으므로 검색은 항상 정상 동작 유지. */
+export const reingestMissingVision = (docId: string) =>
+  apiPost<ReingestMissingResponse>(`/documents/${docId}/reingest-missing`);
 
 /** S1 D3 — `/admin/queries/stats` 실 query 로그 통계.
  *  - range: '7d' / '14d' / '30d' (default '7d')
