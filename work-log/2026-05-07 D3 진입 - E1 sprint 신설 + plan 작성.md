@@ -54,6 +54,7 @@
 
 | 파일 | 변경 | 의의 |
 |---|---|---|
+| `web/src/components/jet-rag/drop-zone.tsx` (버그 fix) | div `onClick={() => inputRef.current?.click()}` 1줄 제거 | **사용자 보고 fix** — 파일 다이얼로그가 두 번 열리던 버그. div onClick + input absolute inset-0 native click 이중 trigger 였음. input 이 div 영역 전체를 덮으니 native click 만으로 충분 — drag-drop (onDrop) 그대로 보존 |
 | `web/src/components/jet-rag/search-precision-card.tsx` | useEffect 안 자동 POST 제거, 'idle' phase + "측정" 버튼 추가, useMemo / handler 분리 (React 19 lint 정합) | **S0 D4 ship** — 비용 누수 fix (mount 시 LLM judge 자동 호출 0) |
 | `web/src/components/jet-rag/search-precision-card.tsx` (P2 fix) | sr-only span + aria-describedby (Label-in-Name), useRef cancelRef (race guard), shadcn Button + flex-col responsive | **S0 D4 P2 follow-up** — senior-qa 리포트 3건 close |
 | `evals/auto_goldenset.py` (v1 → v2) | 12 컬럼 schema, 9 query_type 룰 분류, must_include/source_hint 추출, 5건 negative 사전 정의, DoD 분포 측정 | **S1 D1 잔여** ship — S1 D2 (자동 100+ 확장) 의 선행 |
