@@ -28,6 +28,11 @@ class Settings:
     # 사용자가 sliding 만 더 보수적으로 잡고 싶을 때 활용.
     sliding_24h_budget_usd: float
     budget_krw_per_usd: float
+    # S2 D1 (2026-05-08) — vision_need_score 운영 hook 토글. master plan §6 S2 D1.
+    # PyMuPDF 분석 → 점수 계산 → OR rule needs_vision False 페이지는 vision 호출 회피.
+    # default true (S1.5 D3 골든셋 recall 5/6 = 83.3% baseline 반영 채택).
+    # false 시 모든 페이지 vision 호출 (S1.5 이전 동작 100% 보존, 회복 토글).
+    vision_need_score_enabled: bool
 
 
 # 잠정값 — 데이터 누적 부족 시 fallback. master plan §7.5 default 채택.
@@ -51,6 +56,19 @@ def _parse_float(env_key: str, default: float) -> float:
     return value
 
 
+def _parse_bool(env_key: str, default: bool) -> bool:
+    """ENV bool parse — "true"/"1"/"yes"/"on" 만 True (대소문자 무관). 그 외 default fallback."""
+    raw = os.environ.get(env_key)
+    if raw is None or raw == "":
+        return default
+    normalized = raw.strip().lower()
+    if normalized in ("true", "1", "yes", "on"):
+        return True
+    if normalized in ("false", "0", "no", "off"):
+        return False
+    return default
+
+
 @lru_cache
 def get_settings() -> Settings:
     daily = _parse_float("JETRAG_DAILY_BUDGET_USD", _DAILY_BUDGET_USD_DEFAULT)
@@ -72,5 +90,9 @@ def get_settings() -> Settings:
         ),
         budget_krw_per_usd=_parse_float(
             "JETRAG_BUDGET_KRW_PER_USD", _BUDGET_KRW_PER_USD_DEFAULT
+        ),
+        # S2 D1 — default true. invalid ENV 는 default 유지 (graceful).
+        vision_need_score_enabled=_parse_bool(
+            "JETRAG_VISION_NEED_SCORE_ENABLED", True
         ),
     )

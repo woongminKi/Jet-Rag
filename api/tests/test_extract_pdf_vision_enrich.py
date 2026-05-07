@@ -269,5 +269,142 @@ class TestVisionEnrichDefaults(unittest.TestCase):
             importlib.reload(ext_mod)
 
 
+class TestVisionNeedScoreHook(unittest.TestCase):
+    """S2 D1 (2026-05-08) — vision_need_score 운영 hook 회귀 보호.
+
+    master plan §6 S2 D1. needs_vision False 페이지는 ImageParser.parse() 호출 0 +
+    sweep retry 대상 X + ENV `JETRAG_VISION_NEED_SCORE_ENABLED=false` 시 S1.5 이전
+    동작 (모든 페이지 호출) 100% 보존.
+    """
+
+    def test_needs_vision_false_skips_image_parser(self) -> None:
+        # _page_needs_vision 을 monkeypatch — page 1 만 False 반환.
+        from app.ingest.stages import extract as ext_mod
+
+        data = _make_pdf_bytes(3)
+        base = ExtractionResult(
+            source_type="pdf", sections=[], raw_text="", warnings=[]
+        )
+        # page 1 = False (skip), page 2,3 = True (호출)
+        decisions = {1: False, 2: True, 3: True}
+        per_page = [
+            [ExtractedSection(text=f"vision p.{i + 1}", page=None, section_title=None)]
+            for i in range(2)  # page 2,3 만 호출되니 stub 2개
+        ]
+        parser = _stub_image_parser(per_page)
+        with patch.object(
+            ext_mod, "_page_needs_vision",
+            side_effect=lambda page, *, page_num, file_name: decisions.get(page_num, True),
+        ):
+            result = _enrich_pdf_with_vision(
+                data, base_result=base, file_name="test.pdf", image_parser=parser
+            )
+        # page 1 skip → ImageParser 2회 호출 (page 2,3)
+        self.assertEqual(parser.parse.call_count, 2)
+        # sections 도 2개 (page 1 의 vision section 없음)
+        self.assertEqual(len(result.sections), 2)
+        pages_seen = {s.page for s in result.sections}
+        self.assertEqual(pages_seen, {2, 3})
+        # warnings 에는 skip 알림 X (정상 동작)
+        self.assertFalse(any("need_score" in w.lower() for w in result.warnings))
+
+    def test_needs_vision_false_not_in_sweep_retry(self) -> None:
+        # page 1 = False (skip) — sweep 2 진입해도 retry 대상 X.
+        # page 2 = True 인데 sweep 1 실패 → sweep 2 성공 (sweep 정상 동작).
+        from app.ingest.stages import extract as ext_mod
+
+        data = _make_pdf_bytes(2)
+        base = ExtractionResult(
+            source_type="pdf", sections=[], raw_text="", warnings=[]
+        )
+        parser = MagicMock()
+        parser.parse.side_effect = [
+            RuntimeError("503 sweep 1 page 2"),  # page 2 sweep 1
+            ExtractionResult(
+                source_type="image",
+                sections=[ExtractedSection(text="p2 ok", page=None, section_title=None)],
+                raw_text="p2 ok", warnings=[],
+            ),  # page 2 sweep 2 회복
+        ]
+        decisions = {1: False, 2: True}
+        with patch.object(
+            ext_mod, "_page_needs_vision",
+            side_effect=lambda page, *, page_num, file_name: decisions.get(page_num, True),
+        ):
+            result = _enrich_pdf_with_vision(
+                data, base_result=base, file_name="test.pdf", image_parser=parser
+            )
+        # parser 호출 = page 2 sweep 1 (실패) + page 2 sweep 2 (성공) = 2회.
+        # page 1 은 sweep 1 에서 skip → sweep 2 retry 대상도 아님.
+        self.assertEqual(parser.parse.call_count, 2)
+        # page 2 만 sections 추가
+        self.assertEqual(len(result.sections), 1)
+        self.assertEqual(result.sections[0].page, 2)
+        self.assertEqual(result.sections[0].text, "p2 ok")
+
+    def test_env_disabled_calls_all_pages(self) -> None:
+        # ENV `JETRAG_VISION_NEED_SCORE_ENABLED=false` 시 모든 페이지 호출.
+        # _page_needs_vision 이 False 반환해도 hook 자체가 비활성 → 호출.
+        from app.ingest.stages import extract as ext_mod
+
+        data = _make_pdf_bytes(3)
+        base = ExtractionResult(
+            source_type="pdf", sections=[], raw_text="", warnings=[]
+        )
+        per_page = [
+            [ExtractedSection(text=f"vision p.{i + 1}", page=None, section_title=None)]
+            for i in range(3)
+        ]
+        parser = _stub_image_parser(per_page)
+
+        # settings.vision_need_score_enabled=False mock
+        from app.config import Settings
+
+        # _page_needs_vision 은 항상 False 반환 (회피 시도) — 그러나 ENV 가 우선
+        mock_settings = Settings(
+            supabase_url="", supabase_key="", supabase_service_role_key="",
+            supabase_storage_bucket="documents", gemini_api_key="", hf_api_token="",
+            default_user_id="00000000-0000-0000-0000-000000000001",
+            doc_budget_usd=0.10, daily_budget_usd=0.50,
+            sliding_24h_budget_usd=0.50, budget_krw_per_usd=1380.0,
+            vision_need_score_enabled=False,
+        )
+        with patch.object(
+            ext_mod, "_page_needs_vision", return_value=False,
+        ), patch.object(ext_mod, "get_settings", return_value=mock_settings):
+            result = _enrich_pdf_with_vision(
+                data, base_result=base, file_name="test.pdf", image_parser=parser
+            )
+        # ENV false → 모든 페이지 호출 (need_score False 영향 0)
+        self.assertEqual(parser.parse.call_count, 3)
+        self.assertEqual(len(result.sections), 3)
+
+    def test_score_compute_failure_falls_back_to_vision_call(self) -> None:
+        # vision_need_score 가 raise → needs_vision=True 보수적 fallback.
+        # _page_needs_vision 이 fitz.Page.get_text() 단계에서 raise 케이스 시뮬레이트.
+        from app.ingest.stages import extract as ext_mod
+
+        data = _make_pdf_bytes(2)
+        base = ExtractionResult(
+            source_type="pdf", sections=[], raw_text="", warnings=[]
+        )
+        per_page = [
+            [ExtractedSection(text=f"vision p.{i + 1}", page=None, section_title=None)]
+            for i in range(2)
+        ]
+        parser = _stub_image_parser(per_page)
+        # 점수 모듈 직접 raise → _page_needs_vision 이 True fallback
+        with patch.object(
+            ext_mod, "_score_page_for_vision",
+            side_effect=RuntimeError("score 계산 실패"),
+        ):
+            result = _enrich_pdf_with_vision(
+                data, base_result=base, file_name="test.pdf", image_parser=parser
+            )
+        # 점수 깨져도 vision 호출 흐름 보존 — 두 페이지 모두 호출
+        self.assertEqual(parser.parse.call_count, 2)
+        self.assertEqual(len(result.sections), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

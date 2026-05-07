@@ -40,6 +40,7 @@ from app.ingest.jobs import fail_job, finish_job, start_job
 from app.ingest.stages.embed import run_embed_stage
 from app.ingest.stages.load import run_load_stage
 from app.services import budget_guard
+from app.services.vision_need_score import score_page as _score_page_for_vision
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,30 @@ _BUDGET_RECHECK_EVERY_N_PAGES = int(
 )
 
 _image_parser = ImageParser()
+
+
+def _page_needs_vision(
+    page: fitz.Page,
+    *,
+    page_num: int,
+    file_name: str,
+) -> bool:
+    """S2 D1 — incremental 흐름의 needs_vision 판정. extract.py 와 동일 정책.
+
+    graceful: 점수 계산 raise 시 needs_vision=True 보수적 fallback (vision 흐름 보존).
+    """
+    try:
+        page_dict = page.get_text("dict")
+        rect = page.rect
+        area = float(rect.width) * float(rect.height)
+        score = _score_page_for_vision(page_dict, page_num=page_num, page_area_pt2=area)
+        return bool(score.needs_vision)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "vision_need_score 계산 실패 (graceful, vision 호출 진행): page=%d file=%s err=%s",
+            page_num, file_name, exc,
+        )
+        return True
 
 
 def _vision_processed_pages(supabase, doc_id: str) -> set[int]:
@@ -116,6 +141,11 @@ def _vision_pages_with_sweep(
     budget_pages_since_check = 0
     budget_exceeded_status: budget_guard.BudgetStatus | None = None
 
+    # S2 D1 — vision_need_score 운영 hook 메트릭 누적 (extract.py 와 동일 정책).
+    need_score_enabled = settings.vision_need_score_enabled
+    skipped_by_need_score: list[int] = []
+    called_count = 0
+
     try:
         # 1-indexed → 0-indexed for PyMuPDF
         pending = [p - 1 for p in pages if 0 < p <= len(doc)]
@@ -158,8 +188,21 @@ def _vision_pages_with_sweep(
 
                 try:
                     page = doc[page_idx]
+
+                    # S2 D1 — needs_vision OR rule 검사. False 면 vision 호출 회피.
+                    # incremental 은 "누락 페이지 보강" 흐름 — needs_vision False 페이지는
+                    # 이미 vision 가치 0 으로 판정된 거니 chunk insert 도 skip (ChunkRecord 0).
+                    if need_score_enabled and not _page_needs_vision(
+                        page, page_num=page_idx + 1, file_name=file_name,
+                    ):
+                        if sweep_idx == 1:
+                            skipped_by_need_score.append(page_idx + 1)
+                        # sweep retry 대상 X (failed 에 안 넣고 continue).
+                        continue
+
                     pix = page.get_pixmap(dpi=_SCAN_RENDER_DPI)
                     png = pix.tobytes("png")
+                    called_count += 1
                     page_result = image_parser.parse(
                         png,
                         file_name=f"{file_name}#page{page_idx + 1}.png",
@@ -204,6 +247,16 @@ def _vision_pages_with_sweep(
             )
     finally:
         doc.close()
+
+    # S2 D1 — vision_need_score 메트릭 1줄 log (운영 진단용).
+    logger.info(
+        "incremental_vision: file=%s called=%d skipped_need_score=%d (pages=%s) need_score_enabled=%s",
+        file_name,
+        called_count,
+        len(skipped_by_need_score),
+        skipped_by_need_score[:20],
+        need_score_enabled,
+    )
 
     return sections, warnings
 

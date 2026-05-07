@@ -41,6 +41,7 @@ from app.ingest.jobs import (
     update_stage_progress,
 )
 from app.services import budget_guard, vision_cache
+from app.services.vision_need_score import score_page as _score_page_for_vision
 
 logger = logging.getLogger(__name__)
 
@@ -371,6 +372,34 @@ def _reroute_pdf_to_image(
     )
 
 
+def _page_needs_vision(
+    page: fitz.Page,
+    *,
+    page_num: int,
+    file_name: str,
+) -> bool:
+    """S2 D1 — fitz.Page → vision_need_score 의 OR rule 평가.
+
+    내부적으로 `page.get_text("dict")` + `page.rect` 로 점수 계산. 점수 시스템이 raise
+    하더라도 needs_vision=True 보수적 fallback 으로 vision 호출 흐름 보존 (회귀 방어).
+
+    page.rect 면적 ≤ 0 (이상치) 시 density 신호 미발화 — vision_need_score 모듈이
+    page_area_pt2 > 0 가드로 처리. 안전하게 OR rule 통과 가능.
+    """
+    try:
+        page_dict = page.get_text("dict")
+        rect = page.rect
+        area = float(rect.width) * float(rect.height)
+        score = _score_page_for_vision(page_dict, page_num=page_num, page_area_pt2=area)
+        return bool(score.needs_vision)
+    except Exception as exc:  # noqa: BLE001 — 점수 깨져도 vision 흐름 보존
+        logger.warning(
+            "vision_need_score 계산 실패 (graceful, vision 호출 진행): page=%d file=%s err=%s",
+            page_num, file_name, exc,
+        )
+        return True
+
+
 def _enrich_pdf_with_vision(
     data: bytes,
     *,
@@ -445,6 +474,13 @@ def _enrich_pdf_with_vision(
         budget_pages_since_check = 0
         budget_exceeded_status: budget_guard.BudgetStatus | None = None
 
+        # S2 D1 (2026-05-08) — vision_need_score 운영 hook 메트릭 누적. master plan §6 S2 D1.
+        # OR rule needs_vision False 페이지는 vision 호출 회피 → 비용·latency 절감.
+        # ENV `JETRAG_VISION_NEED_SCORE_ENABLED=false` 시 모든 페이지 호출 (회복 토글).
+        need_score_enabled = settings.vision_need_score_enabled
+        skipped_by_need_score: list[int] = []
+        called_count = 0
+
         # W25 D14 Sprint 4 — sweep 로직: 503 random 실패 페이지 자동 재시도.
         pending_pages: list[int] = list(range(process_count))
         for sweep_idx in range(1, _VISION_ENRICH_MAX_SWEEPS + 1):
@@ -486,8 +522,30 @@ def _enrich_pdf_with_vision(
 
                 try:
                     page = doc[page_num]
+
+                    # S2 D1 — needs_vision OR rule 검사. False 면 vision 호출 회피.
+                    # sweep idx 무관 항상 평가 (논리 일관 — 첫 sweep skip = 모든 sweep skip).
+                    # graceful: 점수 계산 자체가 raise 하면 needs_vision=True 보수적 fallback.
+                    if need_score_enabled and not _page_needs_vision(
+                        page, page_num=page_num + 1, file_name=file_name,
+                    ):
+                        if sweep_idx == 1:
+                            skipped_by_need_score.append(page_num + 1)
+                        # skip 페이지는 sweep retry 대상 X (failed_in_sweep 에 안 넣음).
+                        # progress 표시는 기존과 동일하게 누적 — 사용자에 "처리 중" 인식 유지.
+                        completed_pages.add(page_num)
+                        if job_id:
+                            update_stage_progress(
+                                job_id,
+                                current=len(completed_pages),
+                                total=process_count,
+                                unit="pages",
+                            )
+                        continue
+
                     pix = page.get_pixmap(dpi=_SCAN_RENDER_DPI)
                     png_bytes = pix.tobytes("png")
+                    called_count += 1
                     page_result = image_parser.parse(
                         png_bytes,
                         file_name=f"{file_name}#page{page_num + 1}.png",
@@ -549,6 +607,18 @@ def _enrich_pdf_with_vision(
         doc.close()
         if job_id:
             clear_stage_progress(job_id)
+
+    # S2 D1 — vision_need_score 메트릭 1줄 log (사용자 노출 X, 운영 진단용).
+    # need_score_enabled=false 시 skipped 0 + called=process_count 로 기록 → 회복 토글 검증.
+    logger.info(
+        "vision_enrich: file=%s processed=%d called=%d skipped_need_score=%d (pages=%s) need_score_enabled=%s",
+        file_name,
+        len(completed_pages),
+        called_count,
+        len(skipped_by_need_score),
+        skipped_by_need_score[:20],
+        need_score_enabled,
+    )
 
     # S0 D4 — 페이지 루프 중 cap 도달 시 flags 마킹 (graceful: chunks 는 정상 적재).
     if budget_exceeded_status is not None and doc_id:
