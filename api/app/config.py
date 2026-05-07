@@ -18,6 +18,33 @@ class Settings:
     gemini_api_key: str
     hf_api_token: str
     default_user_id: str
+    # S0 D3 (2026-05-07) — vision 비용 cap 메커니즘 (D4) 의 의존성.
+    # master plan §6 S0 D3 + §7.5 공식: avg_cost/page × avg_pages/doc × 0.5 × 1.5
+    # 데이터 누적 부족 시 (n<30 row 또는 unique_doc<5) 잠정값 — scripts/compute_budget.py 로 재산정.
+    doc_budget_usd: float
+    daily_budget_usd: float
+    budget_krw_per_usd: float
+
+
+# 잠정값 — 데이터 누적 부족 시 fallback. master plan §7.5 default 채택.
+# avg ~$0.0045/page (S0 D2 시점 실측) × avg 22p/doc × 0.5 × 1.5 ≈ $0.075 → 안전 0.10.
+_DOC_BUDGET_USD_DEFAULT = 0.10
+_DAILY_BUDGET_USD_DEFAULT = 0.50  # 5 docs/일 가정.
+_BUDGET_KRW_PER_USD_DEFAULT = 1380.0
+
+
+def _parse_float(env_key: str, default: float) -> float:
+    """ENV 가 비숫자/음수면 default fallback. 사이드 이펙트: stderr WARN 없이 silent — 운영 graceful."""
+    raw = os.environ.get(env_key)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if value < 0:
+        return default
+    return value
 
 
 @lru_cache
@@ -31,5 +58,12 @@ def get_settings() -> Settings:
         hf_api_token=os.environ.get("HF_API_TOKEN", ""),
         default_user_id=os.environ.get(
             "DEFAULT_USER_ID", "00000000-0000-0000-0000-000000000001"
+        ),
+        doc_budget_usd=_parse_float("JETRAG_DOC_BUDGET_USD", _DOC_BUDGET_USD_DEFAULT),
+        daily_budget_usd=_parse_float(
+            "JETRAG_DAILY_BUDGET_USD", _DAILY_BUDGET_USD_DEFAULT
+        ),
+        budget_krw_per_usd=_parse_float(
+            "JETRAG_BUDGET_KRW_PER_USD", _BUDGET_KRW_PER_USD_DEFAULT
         ),
     )
