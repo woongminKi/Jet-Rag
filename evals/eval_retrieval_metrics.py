@@ -43,21 +43,34 @@ from app.services.retrieval_metrics import (  # noqa: E402
 
 _GOLDEN_CSV_V04 = Path(__file__).parent / "golden_v0.4_sonata.csv"
 _GOLDEN_CSV_V05 = Path(__file__).parent / "golden_v0.5_auto.csv"
+_GOLDEN_CSV_V07 = Path(__file__).parent / "golden_v0.7_auto.csv"
+_GOLDEN_CSV_V1 = Path(__file__).parent / "golden_v1.csv"
 _SONATA_DOC_ID_PREFIX = "3b901245"
+
+# v1·v0.7·v0.5 모두 12·7 컬럼 schema 로 `doc_id` 컬럼 존재 — `_load_golden()` 의
+# v0.5 분기가 자동 cover. v0.4 만 legacy `expected_chunk_idx_hints` 분기.
+_GOLDEN_FALLBACK_CHAIN: tuple[Path, ...] = (
+    _GOLDEN_CSV_V1,
+    _GOLDEN_CSV_V07,
+    _GOLDEN_CSV_V05,
+    _GOLDEN_CSV_V04,
+)
 
 
 def _load_golden(csv_path: Path) -> list[dict]:
-    """golden CSV 로드 — v0.4 (sonata, hints 만) 와 v0.5 (auto, doc_id + acceptable) 모두 지원.
+    """golden CSV 로드 — v0.4 (sonata, hints 만) / v0.5 (auto) / v0.7 / v1 모두 지원.
 
     schema auto-detect:
-    - v0.5: 컬럼 `doc_id` + `relevant_chunks` + `acceptable_chunks` (선택) 존재
+    - v0.5+ / v0.7 / v1: 컬럼 `doc_id` + `relevant_chunks` + `acceptable_chunks` (선택) 존재
     - v0.4: 컬럼 `expected_chunk_idx_hints` 존재 (legacy)
+    - v1 의 user row (G-U-***) 는 doc_id 빈 값 → retrieval 평가 불가, skip.
+      (사용자 query 의 answer 평가는 `run_v06_user_answer.py` 가 별도 담당)
     """
     out: list[dict] = []
-    with csv_path.open(encoding="utf-8") as f:
+    with csv_path.open(encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            # v0.5 schema 우선
+            # v0.5+ schema 우선 (v1 / v0.7 도 동일 — doc_id 컬럼 존재 + 채워짐)
             if "doc_id" in row and row.get("doc_id"):
                 relv_str = (row.get("relevant_chunks") or "").strip()
                 accept_str = (row.get("acceptable_chunks") or "").strip()
@@ -368,17 +381,18 @@ def main() -> int:
     parser.add_argument(
         "--goldenset", type=str,
         default=None,
-        help=f"골든셋 CSV 경로 (default v0.5 auto if exists, else v0.4 sonata)",
+        help="골든셋 CSV 경로 (default fallback chain: v1 → v0.7 → v0.5 → v0.4)",
     )
     args = parser.parse_args()
 
-    # golden CSV 결정 — args > v0.5 auto > v0.4 sonata
+    # golden CSV 결정 — args > v1 > v0.7 > v0.5 > v0.4 (가장 신선한 것 우선)
     if args.goldenset:
         golden_path = Path(args.goldenset)
-    elif _GOLDEN_CSV_V05.exists():
-        golden_path = _GOLDEN_CSV_V05
     else:
-        golden_path = _GOLDEN_CSV_V04
+        golden_path = next(
+            (p for p in _GOLDEN_FALLBACK_CHAIN if p.exists()),
+            _GOLDEN_CSV_V04,
+        )
     if not golden_path.exists():
         print(f"[ERROR] 골든셋 미발견: {golden_path}", file=sys.stderr)
         return 1
@@ -388,11 +402,11 @@ def main() -> int:
         return 1
     print(f"[OK] 골든셋 로드: {golden_path.name} ({len(golden)}건)", file=sys.stderr)
 
-    # doc_id 결정 — v0.5 는 query 마다 다름, v0.4 는 sonata 단일
-    is_v05 = bool(golden[0].get("doc_id"))
-    if is_v05:
+    # doc_id 결정 — v0.5+ / v0.7 / v1 은 query 마다 doc_id 다름, v0.4 는 sonata 단일
+    is_per_query_doc = bool(golden[0].get("doc_id"))
+    if is_per_query_doc:
         doc_id = None  # per-query doc_id 사용
-        print(f"[OK] v0.5 형식 (per-query doc_id)", file=sys.stderr)
+        print(f"[OK] v0.5+ 형식 (per-query doc_id)", file=sys.stderr)
     else:
         doc_id = _resolve_sonata_doc_id()
         if not doc_id:

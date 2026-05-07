@@ -27,6 +27,12 @@ v2 변경 (S1 D1):
 - source_hint: chunks.page → "p.{N}"
 - negative: 사전 정의 5건 (G-N-001 ~ G-N-005)
 - expected_answer_summary: source_chunk_text 첫 60자 룰 요약
+
+v2.1 변경 (S1 D2 — 사용자 자료 노출 방지):
+- `--public-only-source-text` 옵션 (default true) — `assets/public/` 9건 외 doc 의
+  source_chunk_text·expected_answer_summary 를 빈 값으로 비식별화. 정책 (b).
+- `_PUBLIC_DOC_STEMS` set — assets/public/ stem 매칭. doc.title 이 set 에 있으면
+  raw text 보존, 없으면 비식별화. doc_id·query·query_type·relevant_chunks 는 늘 채움.
 """
 
 from __future__ import annotations
@@ -125,6 +131,62 @@ _KOREAN_STOPWORDS: frozenset[str] = frozenset({
     "확인", "운영", "관리", "수행", "진행", "제공", "지원", "준수", "적용",
     "영향", "역할", "구분", "구성", "포함", "제외", "이용", "사용", "활용",
 })
+
+# v2.1 — `assets/public/` 자료 stem set (확장자 X). 인제스트 시 documents.title 이
+# stem 으로 저장된다는 관찰에 따라 매칭. 새 public 자료 추가 시 `assets/public/README.md`
+# 와 함께 본 set 도 갱신해야 한다 (senior-developer 의무).
+_PUBLIC_DOC_STEMS: frozenset[str] = frozenset({
+    "(붙임2) 2025년 데이터센터 산업 활성화 지원 사업 통합_안내서",
+    "보건의료_빅데이터_플랫폼_시범사업_추진계획(안)",
+    "sample-report",
+    "law sample3",
+    "law_sample2",
+    "직제_규정(2024.4.30.개정)",
+    "한마음생활체육관_운영_내규(2024.4.30.개정)",
+    "law_sample1",
+})
+
+
+_TITLE_NORMALIZE_PREFIX_LEN = 25
+
+
+def _normalize_title(title: str) -> str:
+    """title 정규화 — 인제스트 시 공백/밑줄 변환, 60자 truncate, NFC 차이 흡수.
+
+    공백 ↔ 밑줄 통일 (밑줄로) + 한글 NFC + 첫 25자 prefix.
+
+    25자 prefix 인 이유 — `(붙임2) 2025년 데이터센터 산업 활성화 지원 사업 통합_안내서` 같은 긴
+    한국어 제목이 60-byte truncate 시 codepoint 가 일정하지 않게 잘리므로, 두 title 의 공통
+    prefix 만 비교. public set 8건 중 첫 25자 충돌은 없음 (수동 검증).
+    """
+    import unicodedata as _ud
+    norm = _ud.normalize("NFC", title.strip())
+    norm = norm.replace(" ", "_")
+    return norm[:_TITLE_NORMALIZE_PREFIX_LEN]
+
+
+# `_PUBLIC_DOC_STEMS` 의 정규화 캐시 (모듈 로드 시 1회 계산)
+_PUBLIC_DOC_STEMS_NORMALIZED: frozenset[str] = frozenset(
+    _normalize_title(s) for s in _PUBLIC_DOC_STEMS
+)
+
+
+def is_public_doc_title(title: str) -> bool:
+    """doc.title 이 `assets/public/` 8건 중 하나인지 판단.
+
+    인제스트 시 다음 변환이 적용될 수 있어 정규화로 흡수:
+    - 확장자 strip
+    - 공백 ↔ 밑줄 정규화 (예: `law_sample2.pdf` → `law sample2`)
+    - 60자 truncate (예: 긴 한국어 제목)
+    - 한글 NFC
+
+    오탐 회피 — 정규화 후 50자 prefix 일치만 인정. 다른 사용자 자료가 같은 prefix 면
+    같은 fixture 로 간주 (작은 위험 — public set 자체가 8건만이라 prefix 충돌 무시 가능).
+    """
+    if not title:
+        return False
+    return _normalize_title(title) in _PUBLIC_DOC_STEMS_NORMALIZED
+
 
 # v2 — out_of_scope/negative query 사전 정의 (5건)
 _NEGATIVE_QUERIES: tuple[tuple[str, str], ...] = (
@@ -454,6 +516,100 @@ _V07_FIELDNAMES: tuple[str, ...] = (
 )
 
 
+def redact_existing_csv(
+    csv_path: Path, *, allow_private: bool = False
+) -> tuple[int, int, int]:
+    """기존 v0.7 CSV 에 노출 정책 (b) 재적용 — Gemini 재호출 없이 source_chunk_text·
+    expected_answer_summary 만 public/private 분기로 다시 채움.
+
+    `is_public_doc_title` 정규화 강화 후 over-redacted 됐던 row 를 raw 로 복원하거나
+    반대로 raw 였던 private row 를 비식별화하는 idempotent 운영.
+
+    DB 에서 doc_id 별 chunks 를 fetch (chunk_idx 일치) → raw text 복원.
+
+    return: (public_rows, private_rows, restored_rows)
+    """
+    if not csv_path.exists():
+        raise FileNotFoundError(csv_path)
+
+    rows = _load_csv_rows_for_redact(csv_path)
+    client = get_supabase_client()
+
+    public_rows = 0
+    private_rows = 0
+    restored_rows = 0
+
+    # doc_id 별 (chunk_idx, text) 매핑 캐시
+    doc_chunk_cache: dict[str, dict[int, str]] = {}
+
+    for row in rows:
+        doc_id = (row.get("doc_id") or "").strip()
+        title = (row.get("expected_doc_title") or "").strip()
+        # negative row (doc_id 빈 값) 는 skip — 이미 빈 값
+        if not doc_id:
+            continue
+
+        is_public = is_public_doc_title(title)
+        expose = allow_private or is_public
+
+        if is_public:
+            public_rows += 1
+        else:
+            private_rows += 1
+
+        if not expose:
+            # 비식별화 — 빈 값 강제
+            if row.get("source_chunk_text") or row.get("expected_answer_summary"):
+                row["source_chunk_text"] = ""
+                row["expected_answer_summary"] = ""
+                restored_rows += 1
+            continue
+
+        # public — raw 복원. 기존 row 가 비어있으면 DB 조회로 채움.
+        if row.get("source_chunk_text") and row.get("expected_answer_summary"):
+            continue  # 이미 채워짐
+
+        if doc_id not in doc_chunk_cache:
+            chunks = (
+                client.table("chunks")
+                .select("chunk_idx, text")
+                .eq("doc_id", doc_id)
+                .execute()
+                .data
+                or []
+            )
+            doc_chunk_cache[doc_id] = {c["chunk_idx"]: (c.get("text") or "") for c in chunks}
+
+        chunk_idx_str = (row.get("relevant_chunks") or "").split(",")[0].strip()
+        if not chunk_idx_str.isdigit():
+            continue
+        chunk_text = doc_chunk_cache[doc_id].get(int(chunk_idx_str), "")
+        if not chunk_text:
+            continue
+        row["source_chunk_text"] = chunk_text[:200].replace("\n", " ")
+        row["expected_answer_summary"] = summarize_for_expected_answer(chunk_text)
+        restored_rows += 1
+
+    # 다시 쓰기
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(_V07_FIELDNAMES))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return public_rows, private_rows, restored_rows
+
+
+def _load_csv_rows_for_redact(path: Path) -> list[dict]:
+    """utf-8-sig 로드 → list[dict] (12 컬럼 보장)."""
+    out: list[dict] = []
+    with path.open(encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            normalized = {field: (row.get(field, "") or "") for field in _V07_FIELDNAMES}
+            out.append(normalized)
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="self-supervised 골든셋 자동 생성 (v2 — v0.7 통합 schema)")
     parser.add_argument(
@@ -485,7 +641,37 @@ def main() -> int:
         "--skip-negative", action="store_true",
         help="negative/out_of_scope query 5건 append 생략 (default false)"
     )
+    parser.add_argument(
+        "--allow-private-source-text", action="store_true",
+        help=(
+            "비공개 doc 의 source_chunk_text·expected_answer_summary 를 raw 그대로 저장. "
+            "default 는 비식별화 (assets/public/ 8건만 raw, 나머지는 빈 값). "
+            "사용자 PC 에서만 활성화 권장 — git 추적 시 사용자 자료 노출 위험."
+        ),
+    )
+    parser.add_argument(
+        "--redact-existing", action="store_true",
+        help=(
+            "Gemini 재호출 없이 기존 --output CSV 에 비식별화 정책만 재적용. "
+            "is_public_doc_title 정규화 개선 후 over-redacted row 의 raw text 복원에 활용."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.redact_existing:
+        public_n, private_n, restored = redact_existing_csv(
+            Path(args.output),
+            allow_private=args.allow_private_source_text,
+        )
+        print(
+            f"[OK] 후처리 완료: public_rows={public_n} private_rows={private_n} "
+            f"restored/zeroed={restored} → {args.output}",
+            file=sys.stderr,
+        )
+        # 분포 재출력
+        rows_after = _load_csv_rows_for_redact(Path(args.output))
+        print_query_type_distribution(rows_after)
+        return 0
 
     client = get_supabase_client()
     settings = get_settings()
@@ -512,9 +698,20 @@ def main() -> int:
     qid = 0
     random.seed(42)
 
+    public_count = 0
+    private_count = 0
+
     for d in docs:
         doc_id = d["id"]
-        title = d["title"][:60]
+        title_full = d["title"]
+        title = title_full[:60]
+        # v2.1 — public/private 판정. allow_private_source_text 가 True 면 무시.
+        is_public = is_public_doc_title(title_full)
+        expose_raw_text = args.allow_private_source_text or is_public
+        if is_public:
+            public_count += 1
+        else:
+            private_count += 1
         # 각 doc 의 모든 chunks 1회 fetch (acceptable 비교용 + sampling)
         all_chunks = (
             client.table("chunks")
@@ -548,8 +745,9 @@ def main() -> int:
                 chunk, all_chunks, args.acceptable_cosine
             )
 
-            # v2 — 룰 기반 메타 추출
-            source_text_short = chunk["text"][:200].replace("\n", " ")
+            # v2 — 룰 기반 메타 추출. query_type / must_include 는 query 자체에서 도출되거나
+            # source_chunk_text 의 룰 분석 결과라 raw text 노출 위험 낮음 (한정된 키워드).
+            # 반면 source_chunk_text·expected_answer_summary 는 raw 텍스트 그대로 → 비식별화 대상.
             qtype = classify_query_type(
                 query,
                 source_chunk_text=chunk["text"],
@@ -558,7 +756,14 @@ def main() -> int:
             )
             must_include = extract_must_include(chunk["text"])
             source_hint = extract_source_hint(chunk)
-            expected_summary = summarize_for_expected_answer(chunk["text"])
+
+            if expose_raw_text:
+                source_text_short = chunk["text"][:200].replace("\n", " ")
+                expected_summary = summarize_for_expected_answer(chunk["text"])
+            else:
+                # 비식별화 — doc_id + chunk_idx 만 노출. 평가 시 DB 조회로 raw text 복원 가능.
+                source_text_short = ""
+                expected_summary = ""
 
             rows.append(
                 {
@@ -595,6 +800,14 @@ def main() -> int:
         writer.writeheader()
         writer.writerows(rows)
     print(f"\n[OK] {len(rows)} 건 → {output}", file=sys.stderr)
+
+    # v2.1 — 노출 정책 요약
+    expose_mode = "raw (private 포함)" if args.allow_private_source_text else "비식별화 (public 만 raw)"
+    print(
+        f"[OK] source_chunk_text 노출 정책: {expose_mode}  "
+        f"public docs={public_count} / private docs={private_count}",
+        file=sys.stderr,
+    )
 
     # query_type 9 라벨 분포 + DoD 출력
     print_query_type_distribution(rows)
