@@ -9,7 +9,7 @@
 
 ## 0. 한 줄 요약
 
-> **D3 진입 — 8 commit push** (`a5cfc2a`→`f1c87b4`). baseline 회복 + E1 sprint plan 신설 (ETA "3분" vs 실측 6~7분 격상) + S0 D4 자동 POST 제거 (비용 누수 fix) + S0 D4 P2 follow-up 3건 + S1 D1 잔여 (`auto_goldenset.py` v2 + 30 신규 테스트) + **E2 fixture 인프라 1·2·3·4·5차 ship** (`assets/public/` 8건 git 추적 + 5단계 우선순위 5개 형식 (PDF/HWPX/HWP/PPTX/DOCX) 자동 인식 + **negative path 회귀 (D 그룹) + frontend 가독성 보강**) + **E1 1차 ship 일부 즉시 진입** (인제스트 진행 표시 3대 증상 일괄 fix — ETA 정적 / progress bar 1칸 / stage 카운터 1/8 vs 9) + **S1 D2 ship — 자동 골든셋 100+ 확장 + v1 통합 + retrieval fallback chain v1 우선** (`auto_goldenset.py --chunks-per-doc 10` 실 실행 → 128 row, 비식별화 정책 (b) 채택, `build_golden_v1.py` 신규 → 157 row v1, `eval_retrieval_metrics.py` v1 우선 자동 진입). 단위 테스트 460 → **502 통과 / skipped 0 / 회귀 0**. assets/ **14/14 cover** (12건 정상 회귀 + 2건 거부 동작 회귀). E1 진단·완료 ship 은 PDF 보유 다른 컴퓨터에서 진입.
+> **D3 진입 — 8 commit push** (`a5cfc2a`→`f1c87b4`) + **S1 D3 ship 진입** (실 query 로그 시각화 대시보드). baseline 회복 + E1 sprint plan 신설 (ETA "3분" vs 실측 6~7분 격상) + S0 D4 자동 POST 제거 (비용 누수 fix) + S0 D4 P2 follow-up 3건 + S1 D1 잔여 (`auto_goldenset.py` v2 + 30 신규 테스트) + **E2 fixture 인프라 1·2·3·4·5차 ship** (`assets/public/` 8건 git 추적 + 5단계 우선순위 5개 형식 (PDF/HWPX/HWP/PPTX/DOCX) 자동 인식 + **negative path 회귀 (D 그룹) + frontend 가독성 보강**) + **E1 1차 ship 일부 즉시 진입** (인제스트 진행 표시 3대 증상 일괄 fix — ETA 정적 / progress bar 1칸 / stage 카운터 1/8 vs 9) + **S1 D2 ship — 자동 골든셋 100+ 확장 + v1 통합 + retrieval fallback chain v1 우선** (`auto_goldenset.py --chunks-per-doc 10` 실 실행 → 128 row, 비식별화 정책 (b) 채택, `build_golden_v1.py` 신규 → 157 row v1, `eval_retrieval_metrics.py` v1 우선 자동 진입) + **S1 D3 ship — 실 query 로그 시각화 대시보드** (`/admin/queries` 페이지 신규, `GET /admin/queries/stats` endpoint 신규, search_metrics_log 일별 GROUP BY + 9 query_type 분포 + 최근 10건 실패 케이스, SVG sparkline + CSS bar — recharts 의존성 0). 단위 테스트 460 → **510 통과 / skipped 0 / 회귀 0**. assets/ **14/14 cover** (12건 정상 회귀 + 2건 거부 동작 회귀). E1 진단·완료 ship 은 PDF 보유 다른 컴퓨터에서 진입. S1 진척률 35→**50%** (D3 ship 누적).
 
 ---
 
@@ -42,6 +42,7 @@
 | ship | **E2 5차 ship — 마지막 2건 (D 그룹) negative path 회귀 + 사용자 안내 메시지 검증·보강** (senior-developer 구현, 사용자 점검 반영) | (1) `test_hwp_heading.py` 에 `Hwp5ParserRejectNonOle2Test` 신규 — `cosmetic_law_sample.hwp`/`law sample2.hwp` 두 비-OLE2 자료에 대해 `RuntimeError` raise + 안내 메시지 키워드 (`OLE2` 또는 `PDF`+`HWPX`) 검증 (subTest 2건). (2) backend 메시지 그대로 유지 — 이미 한국어 안내 + 변환 옵션 명시 (정보 손실 0). (3) frontend `upload-item.tsx`/`doc/[id]/page.tsx` 의 `error_msg` 카드에 `break-words` 클래스 추가 — 긴 한국어 안내가 카드 영역 밖 튀어나가는 것 방지. **사용자 PC: 496 → 497 통과 / skipped 0 / 회귀 0**. 다른 컴퓨터·CI 시뮬레이션 (negative fixture 가림): `skipped=2 / OK` 자동 회복. assets/ **14/14 cover** 확정 (12건 정상 회귀 + 2건 거부 동작 회귀) |
 | ship | **E1 1차 ship 일부 즉시 진입 — 인제스트 진행 표시 3대 증상 일괄 fix** (Explore root cause + senior-developer 구현, 사용자 명시 "큰 혼란") | 증상 ① ETA 정적 (4분 표시 후 1분 경과해도 4분) — `eta.py:compute_remaining_ms()` 에 `stage_progress={current,total,unit}` 인자 추가 + 현재 stage 의 `(1-ratio)` 분해. 증상 ② progress bar 1칸 (extract 26/29 진척해도 첫 칸만) — `stage-progress.tsx` 칸별 `width:${pct}%` 부분 색칠 (현재 stage 만 stage_progress 비율). 증상 ③ stage 카운터 1/8 vs backend 9 stage — `web/lib/stages.ts` STAGE_ORDER + StageValue 에 `chunk_filter` 추가 (라벨 "청크 필터"). 카운터 표시 "1/9 · 13/29 페이지" 동시 노출. `documents.py` 두 호출처 (944·1027) 도 `stage_progress` 전달. **단위 테스트 497 → 502 통과 / skipped 0 / 회귀 0** (5건 신규: with_stage_progress / progress_full / no_progress / invalid_progress / chunk_filter 정합). web tsc + lint 0 error |
 | ship | **S1 D2 — 자동 골든셋 100+ 확장 + v1 통합 + retrieval fallback chain 갱신** (senior-developer 구현, master plan §6 정합) | (A) `auto_goldenset.py` 실 실행 (`--chunks-per-doc 10`) → 11 docs × ~10 chunks + 5 negative = **128 row** v0.7 auto CSV 생성. Gemini 2.5-flash, 503 retry 6회 (모두 회복), quota 약 ~123 호출 소진. query_type 9 분포: exact_fact 104 / out_of_scope 5 / summary 6 / table_lookup 5 / numeric_lookup 4 / synonym_mismatch 3 / cross_doc 1 / **fuzzy_memory 0 + vision_diagram 0** (DoD 7/9 — query 자연 생성 한계, 후속 sprint 의 prompt 다양화로 보완). (B) **사용자 자료 노출 정책 (b) 비식별화 채택** — `_PUBLIC_DOC_STEMS` set + `is_public_doc_title()` (NFC + 공백/밑줄 정규화 + 25자 prefix 매칭) → public 7건 raw 유지 (70 rows), private 6건 비식별화 (53 rows: source_chunk_text+expected_answer_summary 빈 값). `--allow-private-source-text` ENV opt-in / `--redact-existing` 후처리 (Gemini 재호출 0). (C) **`build_golden_v1.py` 신규** — auto 128 + user 32 → 중복 query 3건 (NFC 정규화 비교, user 우선) → **`golden_v1.csv` 157 row** (12 컬럼). user 7컬럼 → 12컬럼 padding (id `G-U-***`, doc_id 빈, ...). (D) `eval_retrieval_metrics.py` `_GOLDEN_FALLBACK_CHAIN = (v1, v0.7, v0.5, v0.4)` + utf-8-sig CSV 로드 (BOM 호환) — 자동 v1 우선 진입 시 123 retrieval entry 평가 가능 (G-U-*** 32건은 doc_id 빈 값으로 자동 skip, run_v06_user_answer.py 가 별도 담당). **502 통과 / skipped 0 / 회귀 0**. 사이드 이펙트: `run_ragas.py`/`run_phase2_d_diagnosis.py` 는 v0.4 sonata 한정 평가 유지, `run_v06_user_answer.py` 는 v0.6 user 한정 — 모두 변경 영향 0 |
+| ship | **S1 D3 — 실 query 로그 시각화 대시보드** (senior-developer 구현, master plan §6 정합) | (A) **백엔드 신규 endpoint** `GET /admin/queries/stats?range={7d\|14d\|30d}` — `search_metrics_log` (mig 006) 직접 SELECT, KST 일별 GROUP BY (zero-fill), 9 query_type 분포 (`evals/auto_goldenset.classify_query_type` 재사용 — `test_auto_goldenset.py:21` sys.path 보정 패턴), 최근 10건 실패 케이스 분류 (`fallback_reason` 우선 → permanent_4xx/transient_5xx, `fused==0` → no_hits). 마이그 006 미적용 환경 graceful → `error_code='migrations_pending'`, evals 모듈 import 실패 → `error_code='classify_unavailable'`. RPC 신설 X (단순 GROUP BY 만 필요). (B) **프론트엔드 신규 페이지** `/admin/queries` — Server Component 첫 fetch (`getAdminQueriesStats('7d')`) + Client Component (`QueriesDashboard`) range 토글. `useTransition` race 방지 (web/AGENTS.md §3), useEffect 안 동기 setState 0 (§2 lint). 4 섹션: 요약 4 카드 (총 query / 성공률 / 평균 latency / 실패 건수) / 일별 SVG `<polyline>` sparkline (외부 의존성 0, AGENTS §4) / 9 query_type 분포 표 (CSS `width%` bar) / 실패 케이스 리스트 (FailureBadge 색 분기). graceful — migrations_pending / 0 row / classify_unavailable / 백엔드 미기동 4 시나리오 모두 별도 카드. mobile-first responsive (`grid-cols-2 sm:grid-cols-4`). (C) **단위 테스트 8건 신규** — `test_admin_queries.py` (basic 매핑 / 빈 row zero-fill / range=30d / 4 실패 분류 + cap 10 / DB raise graceful). 502→**510 통과 / skipped 0 / 회귀 0**. tsc + lint 0 error. (D) 사이드 이펙트: 다른 admin 페이지 미존재 (단일 페이지). 권한 — single-user MVP 라 인증 없음 (production 진입 시 별도 sprint). **DoD: 1주 누적 후 실 query 분포 확인 → S1 D5 모델 회귀 측정의 사전 자료** |
 
 ### 1.2 변경 파일
 
@@ -90,6 +91,14 @@
 | `evals/golden_v0.7_auto.csv` (**S1 D2 신규**) | 128 row, 12 컬럼, public 7 doc raw / private 6 doc 비식별화, query_type 7/9 분포 (DoD 부분 cover) | retrieval 평가 base |
 | `evals/golden_v1.csv` (**S1 D2 신규**) | 157 row (32 user + 125 auto, 중복 3건 제거), 12 컬럼 통합 schema | eval_retrieval_metrics + run_v06_user_answer 공용 base |
 | `evals/eval_retrieval_metrics.py` (**S1 D2**) | `_GOLDEN_CSV_V1` / `_GOLDEN_CSV_V07` 상수 + `_GOLDEN_FALLBACK_CHAIN` (v1 → v0.7 → v0.5 → v0.4) + `_load_golden()` utf-8-sig 로드 + main() fallback 자동 선택 | retrieval 평가 시 v1 자동 진입 |
+| `api/app/routers/admin.py` (**S1 D3 신규**) | `GET /admin/queries/stats?range={7d\|14d\|30d}` endpoint. `search_metrics_log` 직접 SELECT + KST 일별 zero-fill GROUP BY + 9 query_type 분포 (`auto_goldenset.classify_query_type` lazy import, sys.path 보정) + 최근 10건 실패 분류. graceful — `migrations_pending` / `classify_unavailable` 두 error_code | S1 D3 실 query 로그 대시보드 백엔드 |
+| `api/app/routers/__init__.py` (**S1 D3**) | `admin_router` import + `__all__` 등록 | router 레지스트리 일관성 |
+| `api/app/main.py` (**S1 D3**) | `from app.routers import admin_router` + `app.include_router(admin_router)` | FastAPI app 에 endpoint 마운트 |
+| `api/tests/test_admin_queries.py` (**S1 D3 신규**) | 8 단위 테스트 — basic 매핑 / 빈 row zero-fill / range=30d / 4 실패 분류 (permanent_4xx, transient_5xx, no_hits, cap 10) / DB raise graceful. mock 기반, Supabase env 없이도 실행 | 회귀 보호 — 502→510 통과 |
+| `web/src/lib/api/types.ts` (**S1 D3**) | `AdminRange` / `AdminFailureReason` / `AdminDailyBucket` / `AdminFailedSample` / `AdminQueriesStatsResponse` 타입 신규 | 프론트 fetcher · UI 정합 타입 |
+| `web/src/lib/api/index.ts` (**S1 D3**) | `getAdminQueriesStats(range)` fetcher 신규 (`apiGet` 재사용) | client/server 양측 호출 진입점 |
+| `web/src/app/admin/queries/page.tsx` (**S1 D3 신규**) | Server Component, `getAdminQueriesStats('7d').catch(() => null)` graceful, `<QueriesDashboard initialStats=...>` 렌더. 백엔드 미기동 시 전용 안내 카드 | `/admin/queries` 진입점 |
+| `web/src/components/jet-rag/admin/queries-dashboard.tsx` (**S1 D3 신규**) | Client Component (`'use client'`). range 토글 (`useTransition` race 방지) + initialStats 우선 + fetched fallback. 4 섹션: SummaryCards / DailySparklineCard (SVG polyline) / QueryTypeDistributionCard (CSS bar) / FailedSamplesCard. 4 graceful 분기 (loading / fetchError / migrations_pending / classify_unavailable / 0 row) | 외부 의존성 0 (recharts 미사용, AGENTS §4) |
 
 ---
 
@@ -174,7 +183,7 @@ ORDER BY ordinal_position;
 | D4 | `/search/eval-precision` 자동 POST 제거 | ✅ **2026-05-07 ship** | `search-precision-card.tsx` — mount useEffect 는 GET 만, `handleMeasure` 사용자 클릭 시만 POST. tsc + lint 0 error |
 | D5 | vision 24h cap + Google AI Studio cross-check | ❌ | 1주 누적 데이터 필요 |
 
-### 4.2 S1 — 골든셋 v1 + 실 query 로그 (목표 1주, 약 **35% 진척**)
+### 4.2 S1 — 골든셋 v1 + 실 query 로그 (목표 1주, 약 **50% 진척**)
 
 | Day | 작업 | 상태 | 근거 |
 |---|---|---|---|
@@ -183,7 +192,7 @@ ORDER BY ordinal_position;
 | D2 | 자동 100+ 확장 (`golden_v0.7_auto.csv`) | ✅ **2026-05-07 ship** | 128 row (123 auto + 5 negative). Gemini 2.5-flash, 비식별화 정책 (b) 적용 (public 7 raw / private 6 비식별화). DoD 7/9 query_type cover (fuzzy_memory + vision_diagram 미충족 — query 자연 생성 한계) |
 | D2 | 통합 `golden_v1.csv` | ✅ **2026-05-07 ship** | 157 row (32 user + 125 auto, 중복 3건 user 우선 제거). `build_golden_v1.py` 신규. retrieval 평가 entry 123건 + answer 평가 entry 32건 |
 | D2.5 | `eval_retrieval_metrics.py` fallback chain | ✅ **2026-05-07 ship** | v1 → v0.7 → v0.5 → v0.4 자동 선택, utf-8-sig BOM 호환 |
-| D3 | 실 query 로그 대시보드 | ❌ | `web/src/app/admin/queries/` 미존재 추정 |
+| D3 | 실 query 로그 대시보드 | ✅ **2026-05-07 ship** | `GET /admin/queries/stats` 신규 + `/admin/queries` 페이지 신규. search_metrics_log 일별 GROUP BY + 9 query_type 분포 + 최근 10건 실패 케이스. 8 단위 테스트, tsc + lint 0 error. **DoD: 1주 누적 후 실 query 분포 확인 (S1 D5 사전 자료)** |
 | D4 | answer_feedback 통합 분석 | ❌ | 미진입 |
 | D5 | 골든셋 v1 baseline 정량 측정 | ❌ | 미진입 — v1 진입했으니 다음 sprint 후보 |
 
@@ -221,8 +230,10 @@ ORDER BY ordinal_position;
 | 3-6 | ~~**E1 1차 ship 일부 — 인제스트 진행 표시 3대 증상 일괄 fix**~~ | ✅ **ship** | 사용자 명시 "유저에게 큰 혼란" 격상. ETA stage_progress 분해 + progress bar 부분 색칠 + STAGE_ORDER chunk_filter 추가 / 502 통과 / 회귀 0 |
 | 4 | E2 follow-up — 기관 규정·법률 샘플 라이센스 검토 | 0.5일 | `직제_규정.hwpx`·`한마음생활체육관_운영_내규.hwpx`·`law_sample` 시리즈 출처 / 공개 가능성 사용자 확인 후 추가 이동 |
 | 5 | ~~S1 D2 — 자동 골든셋 100+ 확장 + v1 통합~~ | ✅ **ship** | 2026-05-07 완료 — 128 auto + 32 user → v1 157 row, fallback chain v1 우선, 회귀 0 |
+| 5-2 | ~~S1 D3 — 실 query 로그 시각화 대시보드~~ | ✅ **ship** | 2026-05-07 완료 — `GET /admin/queries/stats` + `/admin/queries` page (Server+Client RSC), 8 단위 테스트, 510 통과 회귀 0, tsc/lint 0 error. **1주 누적 (≥2026-05-14) 후 실 query 분포 확인 가능** |
 | 6 | S1 D5 — 골든셋 v1 baseline 정량 측정 (R@10·MRR·nDCG@10 + answer 정확도) | 1일 | v1 진입 완료, 다음 후보 — `eval_retrieval_metrics.py` + `run_v06_user_answer.py` 동시 실행 |
-| 7 | E1 1차 ship 잔여 (E1-A1 vision 페이지 sub-ETA 정밀화 + E1-A4 TTL 단축 + E1-A5 fallback 정정·sample<3 미노출) | 1일 | 다른 컴퓨터 진단 후 진입 권고 |
+| 7 | S1 D4 — answer_feedback 통합 분석 (👍/👎 분포 vs query_type / vs 실패 reason) | 0.5일 | S1 D3 가 query_type 분류 인프라 진입 → answer_feedback 도 같은 라벨로 회귀 분석 가능 |
+| 8 | E1 1차 ship 잔여 (E1-A1 vision 페이지 sub-ETA 정밀화 + E1-A4 TTL 단축 + E1-A5 fallback 정정·sample<3 미노출) | 1일 | 다른 컴퓨터 진단 후 진입 권고 |
 
 **B. 다른 컴퓨터 (PDF 보유)**
 
@@ -304,7 +315,7 @@ E1 진입 중에도 병렬 가능한 작업:
 
 ## 9. 한 문장 요약
 
-> 2026-05-07 D3 진입 — 8 commit push (`a5cfc2a`→`f1c87b4`). baseline 회복 + E1 sprint plan 본문 ship + S0 D4 자동 POST 제거 (+ P2 follow-up 3건) + S1 D1 잔여 (`auto_goldenset.py` v2 + 30 테스트) + **E2 1·2·3·4·5차 ship** (`assets/public/` 8건 git 추적, 5단계 우선순위 5개 형식 자동 인식, `test_hwp_heading.py`/실 fixture 테스트 클래스 신규, **negative path 회귀 + frontend `break-words` 가독성 보강**) + **E1 1차 ship 일부 즉시 진입 — 인제스트 진행 표시 3대 증상 일괄 fix** (ETA stage_progress 분해 + progress bar 부분 색칠 + STAGE_ORDER `chunk_filter` 추가) + **S1 D2 ship — 자동 골든셋 100+ 확장 + v1 통합 + retrieval fallback chain v1 우선** (auto 128 + user 32 → v1 157 row, 비식별화 정책 (b), `build_golden_v1.py` 신규). 단위 테스트 460→**502** / skipped 0 / 회귀 0. **assets/ 14/14 cover** (12 정상 + 2 거부 동작 회귀). S1 진척률 15→**35%**. E1 잔여 진단·구현은 PDF 보유 다른 컴퓨터에서 진입.
+> 2026-05-07 D3 진입 — 8 commit push (`a5cfc2a`→`f1c87b4`) + **S1 D3 ship 추가**. baseline 회복 + E1 sprint plan 본문 ship + S0 D4 자동 POST 제거 (+ P2 follow-up 3건) + S1 D1 잔여 (`auto_goldenset.py` v2 + 30 테스트) + **E2 1·2·3·4·5차 ship** (`assets/public/` 8건 git 추적, 5단계 우선순위 5개 형식 자동 인식, `test_hwp_heading.py`/실 fixture 테스트 클래스 신규, **negative path 회귀 + frontend `break-words` 가독성 보강**) + **E1 1차 ship 일부 즉시 진입 — 인제스트 진행 표시 3대 증상 일괄 fix** (ETA stage_progress 분해 + progress bar 부분 색칠 + STAGE_ORDER `chunk_filter` 추가) + **S1 D2 ship — 자동 골든셋 100+ 확장 + v1 통합 + retrieval fallback chain v1 우선** (auto 128 + user 32 → v1 157 row, 비식별화 정책 (b), `build_golden_v1.py` 신규) + **S1 D3 ship — 실 query 로그 시각화 대시보드** (`/admin/queries` 페이지 + `GET /admin/queries/stats` endpoint 신규, search_metrics_log 일별 GROUP BY + 9 query_type 분포 + 최근 10건 실패 케이스, SVG sparkline + CSS bar — recharts 의존성 0, 8 단위 테스트). 단위 테스트 460→**510** / skipped 0 / 회귀 0. **assets/ 14/14 cover** (12 정상 + 2 거부 동작 회귀). S1 진척률 15→**50%**. E1 잔여 진단·구현은 PDF 보유 다른 컴퓨터에서 진입.
 
 ---
 

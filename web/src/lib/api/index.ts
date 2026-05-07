@@ -1,6 +1,8 @@
 import { ApiError, apiGet, apiPost, apiPostFormData } from './client';
 import type {
   ActiveDocsResponse,
+  AdminQueriesStatsResponse,
+  AdminRange,
   AnswerResponse,
   BatchStatusResponse,
   DocumentDetailResponse,
@@ -199,6 +201,17 @@ export const submitSearchPrecision = async (
 
 export const reingestDocument = (docId: string) =>
   apiPost<ReingestResponse>(`/documents/${docId}/reingest`);
+
+/** S1 D3 — `/admin/queries/stats` 실 query 로그 통계.
+ *  - range: '7d' / '14d' / '30d' (default '7d')
+ *  - 마이그 006 미적용 시 graceful — error_code='migrations_pending', daily/distribution 빈 값.
+ *  - single-user MVP: 별도 인증 없음 (production 진입 시 별도 sprint). */
+export const getAdminQueriesStats = (range: AdminRange = '7d') => {
+  const qs = new URLSearchParams({ range });
+  return apiGet<AdminQueriesStatsResponse>(
+    `/admin/queries/stats?${qs.toString()}`,
+  );
+};
 
 /** W25 D12 — `/answer` LLM RAG PoC.
  *  검색 → top_k chunks → Gemini 2.5 Flash 답변 + 출처 인용.

@@ -293,6 +293,40 @@ export interface TrendResponse {
   generated_at: string;
 }
 
+/** S1 D3 — `/admin/queries/stats` 응답 (실 query 로그 시각화).
+ *  - error_code='migrations_pending': 마이그 006 미적용 graceful (모든 집계 빈 값).
+ *  - error_code='classify_unavailable': evals 모듈 import 실패 (distribution 빈 dict).
+ *  - daily: range 일수 만큼 row, KST 자정 기준 zero-fill (오래된→최신 순).
+ *  - query_type_distribution: 9 라벨 모두 노출 (sample 0건이라도). 단 error_code !== null 시 빈 dict 가능.
+ *  - failed_samples: 최근 10건. reason ∈ {permanent_4xx, transient_5xx, no_hits}. */
+export type AdminRange = '7d' | '14d' | '30d';
+export type AdminFailureReason = 'permanent_4xx' | 'transient_5xx' | 'no_hits';
+
+export interface AdminDailyBucket {
+  date: string; // YYYY-MM-DD (KST)
+  count: number;
+  success_count: number;
+  fail_count: number;
+}
+
+export interface AdminFailedSample {
+  query: string;
+  ts: string;
+  reason: AdminFailureReason;
+}
+
+export interface AdminQueriesStatsResponse {
+  range: AdminRange;
+  daily: AdminDailyBucket[];
+  query_type_distribution: Record<string, number>;
+  failed_samples: AdminFailedSample[];
+  total_queries: number;
+  success_rate: number | null;
+  avg_latency_ms: number | null;
+  error_code: 'migrations_pending' | 'classify_unavailable' | null;
+  generated_at: string;
+}
+
 /** W25 D12 — `/answer` 라우터 응답 (LLM RAG PoC).
  *  faithfulness: 답변에 인라인 [N] 으로 sources[] 인용 명시. */
 export interface AnswerSource {

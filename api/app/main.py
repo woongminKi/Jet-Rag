@@ -2,7 +2,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
-from app.routers import answer_router, documents_router, search_router, stats_router
+from app.routers import (
+    admin_router,
+    answer_router,
+    documents_router,
+    search_router,
+    stats_router,
+)
 
 app = FastAPI(
     title="Jet-Rag API",
@@ -23,6 +29,7 @@ app.include_router(documents_router)
 app.include_router(search_router)
 app.include_router(stats_router)
 app.include_router(answer_router)
+app.include_router(admin_router)
 
 
 @app.get("/", include_in_schema=False)
