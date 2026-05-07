@@ -27,6 +27,10 @@
 | Explore | ETA + 인제스트 timing 코드 정독 | 백엔드 `eta.py:133`, 9단계 직렬, vision 페이지 순차 — 부정확 3대 가설 + latency 가설 + 측정 SQL 초안 5건 |
 | senior-planner | E1 plan 작성 | 목표/DoD, 진단 SQL 5건, 개선 후보 7개 (E1-A1~A7), 1차/2차/3차 ship, 회귀·정합성, 사용자 결정 5건 |
 | ship | `work-log/2026-05-07 E1 인제스트 ETA latency sprint plan.md` 신규 | 다른 컴퓨터 1장 진입용 — §10 진단 결과 칸은 reingest 후 채움 |
+| ship | `work-log/2026-05-07 D3 진입.md` 신규 (본 문서) | 오늘 종합 마스터 (계속 업데이트) |
+| commit/push | `a5cfc2a` (origin/main) | 두 work-log 파일 push 완료 |
+| ship | 본 문서 §4 신규 (Master plan §6 sprint 진행 현황 비교) | E1 외 전체 진척률 한눈에 — S0 ~40%, S1 ~15%, S1.5/S2/S3/S4/S5 0% |
+| ship | **S0 D4 — `/search/eval-precision` 자동 POST 제거** (senior-developer 구현, trust-but-verify 통과) | `web/src/components/jet-rag/search-precision-card.tsx` — mount 시 GET 캐시 조회만 → 캐시 미스 시 'idle' phase + "측정" 버튼 (사용자 클릭 시만 LLM judge POST). `tsc --noEmit` + `pnpm lint` 0 error. props 시그니처 무변경 → 사용처 영향 0 |
 
 ### 1.2 변경 파일
 
@@ -39,7 +43,9 @@
 
 ### 1.3 코드 변경
 
-없음 — plan 단계, 구현 미진입.
+| 파일 | 변경 | 의의 |
+|---|---|---|
+| `web/src/components/jet-rag/search-precision-card.tsx` | useEffect 안 자동 POST 제거, 'idle' phase + "측정" 버튼 추가, useMemo / handler 분리 (React 19 lint 정합) | **S0 D4 ship** — 비용 누수 fix (mount 시 LLM judge 자동 호출 0) |
 
 ---
 
@@ -106,7 +112,78 @@ ORDER BY ordinal_position;
 
 ---
 
-## 4. 남은 이슈 (다른 컴퓨터에서 수행)
+## 4. Master plan §6 sprint 진행 현황 (E1 외 전체)
+
+본 절은 [`2026-05-06 무료유료 모델 전략 통합 plan + 다른 컴퓨터 핸드오프.md`](./2026-05-06%20%EB%AC%B4%EB%A3%8C%EC%9C%A0%EB%A3%8C%20%EB%AA%A8%EB%8D%B8%20%EC%A0%84%EB%9E%B5%20%ED%86%B5%ED%95%A9%20plan%20+%20%EB%8B%A4%EB%A5%B8%20%EC%BB%B4%ED%93%A8%ED%84%B0%20%ED%95%B8%EB%93%9C%EC%98%A4%ED%94%84.md) §6 의 6 sprint plan 과 실제 ship 결과를 대조한 표. 2026-05-07 시점 스냅샷.
+
+### 4.1 S0 — 비용 계측 / 캐시 / cap (목표 1주, 약 **40% 진척**)
+
+| Day | 작업 | 상태 | 근거 |
+|---|---|---|---|
+| D1 | 마이그 014 (vision_usage_log 9컬럼) + record_call usage | ✅ | commit `bd17fb4` + P2 follow-up `c717ea8` |
+| D2 | 마이그 015 (vision_page_cache 신규) | ✅ | commit `9501b32` |
+| D2 | `_enrich_pdf_with_vision` lookup→miss→upsert 통합 | 🟡 부분 | 마이그만 적용, 코드 미통합 = D2-B 잔여 (E1-A3 와 동일 작업) |
+| D3 | sweep 3→2 + retry 3→1 곱셈 제거 | ✅ | commit `2fa8c3c`, `92c6132`, `1373a3a` (D2-C) |
+| D3 | 데이터 기반 budget 초기값 | ❌ | 1주 누적 데이터 필요 |
+| D4 | doc/일별 cost cap (`budget_guard.py`) | ❌ | `api/app/services/` 에 파일 없음 |
+| D4 | `/search/eval-precision` 자동 POST 제거 | ✅ **2026-05-07 ship** | `search-precision-card.tsx` — mount useEffect 는 GET 만, `handleMeasure` 사용자 클릭 시만 POST. tsc + lint 0 error |
+| D5 | vision 24h cap + Google AI Studio cross-check | ❌ | 1주 누적 데이터 필요 |
+
+### 4.2 S1 — 골든셋 v1 + 실 query 로그 (목표 1주, 약 **15% 진척**)
+
+| Day | 작업 | 상태 | 근거 |
+|---|---|---|---|
+| D1 | 사용자 draft 골든셋 33 entry | ✅ | commit `0cdcea4` — `evals/golden_v0.6_user.csv` |
+| D1 | `auto_goldenset.py` v2 갱신 | ❓ 미확인 | 파일 존재하나 v2 갱신 여부 불명 |
+| D2 | 자동 100+ 확장 (`golden_v0.7_auto.csv`) | ❌ | 파일 없음 |
+| D2 | 통합 `golden_v1.csv` | ❌ | 파일 없음 |
+| D3 | 실 query 로그 대시보드 | ❌ | `web/src/app/admin/queries/` 미존재 추정 |
+| D4 | answer_feedback 통합 분석 | ❌ | 미진입 |
+| D5 | 골든셋 v1 baseline 정량 측정 | ❌ | 미진입 |
+
+### 4.3 S1.5 / S2 / S3 / S4 / S5 — **0% 미진입**
+
+`api/app/services/` 에 `budget_guard.py`, `intent_router.py`, `meta_filter.py`, `decomposition.py`, `reranker.py` 모두 없음. 본격 진입 신호 없음.
+
+### 4.4 Master plan 외 추가 ship (보강)
+
+| 작업 | 효과 | 의의 |
+|---|---|---|
+| `factory.py` (LLMAdapter 추상화) | `JETRAG_LLM_PROVIDER` 1줄 ENV 전환 | Codex 권고 + senior-planner — paid LLM 채택 안전 인프라 |
+| 모델 정정 (2.0 deprecated → 2.5-flash + 2.5-flash-lite) | master plan §4.1 정합 회복 | D2-D 정정 |
+| P2 `retry_attempt` 컬럼 활성화 | 503 회복 시점 추적 | S0 D1 follow-up |
+| **E1 sprint plan** (오늘) | 사용자 ETA 보고 격상 | master plan §6 외 신규 라인, S2 직교, D2-B 흡수 |
+
+### 4.5 다음 작업 우선순위 (오늘 결정 + 향후)
+
+**A. 즉시 가능 (현재 컴퓨터, PDF 불필요)**
+
+| 순위 | 작업 | 작업량 | 비고 |
+|---|---|---|---|
+| 1 | ~~S0 D4 — `/search/eval-precision` 자동 POST 제거~~ | ✅ **ship** | 2026-05-07 완료 (commit 미진입 — 사용자 명시 요청 대기) |
+| 2 | S1 D1 잔여 — `auto_goldenset.py` v2 갱신 | 반일 | S1 D2 의 선행 |
+| 3 | S1 D2 — 자동 골든셋 100+ 확장 + v1 통합 | 1일 | Gemini quota 의존 |
+| 4 | E1 1차 ship 일부 (E1-A1 + E1-A5) | 1일 | 진단 없이도 진입 가능 (덜 정확) |
+
+**B. 다른 컴퓨터 (PDF 보유)**
+
+1. E1 진단 (오늘 plan §3 SQL S1~S5, 30분)
+2. E1 1차 ship — E1-A1+A4+A5 (정확도 핵심, 1.5~2일)
+3. E1 2차 ship = S0 D2 잔여 + 페이지 동시 호출 — D2-B 흡수 (2~3일)
+
+**C. 1주 데이터 누적 후 (S0 마무리)**
+
+1. S0 D3 — budget 초기값 데이터 기반 설정
+2. S0 D4 — `budget_guard.py` cost cap 메커니즘
+3. S0 D5 — vision 24h cap + 대시보드
+
+**D. S0 마감 후**
+
+S1 D3~D5 → S1.5 (옵션) → S2 → S3 → S4 → S5 master plan 순차 진입.
+
+---
+
+## 5. 남은 이슈 (다른 컴퓨터에서 수행)
 
 ### 4.1 즉시 (E1 진단)
 
@@ -135,7 +212,7 @@ E1 1차 ship 후 권고 순서:
 
 ---
 
-## 5. 다음 스코프 (E1 외)
+## 6. 다음 스코프 (E1 외)
 
 E1 진입 중에도 병렬 가능한 작업:
 - master plan §6 의 S1 D2 (자동 골든셋 100+ 확장) — Gemini quota 의존, E1-A2 의 concurrency 검증과 quota 충돌 가능 → **E1 1차 ship 후 진입 권고**
@@ -143,7 +220,7 @@ E1 진입 중에도 병렬 가능한 작업:
 
 ---
 
-## 6. 활성 한계 (sprint 진입 전 점검)
+## 7. 활성 한계 (sprint 진입 전 점검)
 
 | # | 한계 | 영향 | 회복 절차 |
 |---|---|---|---|
@@ -154,7 +231,7 @@ E1 진입 중에도 병렬 가능한 작업:
 
 ---
 
-## 7. 참고 문서 우선순위
+## 8. 참고 문서 우선순위
 
 | # | 문서 | 목적 |
 |---|---|---|
@@ -166,6 +243,6 @@ E1 진입 중에도 병렬 가능한 작업:
 
 ---
 
-## 8. 한 문장 요약
+## 9. 한 문장 요약
 
 > 2026-05-07 D3 진입 — baseline 회복 + ETA 보고를 E1 sprint 로 격상해 plan 본문 ship. 진단·구현은 PDF 보유 다른 컴퓨터에서 진입, 본 컴퓨터에선 plan + 측정 SQL 준비까지.
