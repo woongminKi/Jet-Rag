@@ -31,6 +31,10 @@
 | commit/push | `a5cfc2a` (origin/main) | 두 work-log 파일 push 완료 |
 | ship | 본 문서 §4 신규 (Master plan §6 sprint 진행 현황 비교) | E1 외 전체 진척률 한눈에 — S0 ~40%, S1 ~15%, S1.5/S2/S3/S4/S5 0% |
 | ship | **S0 D4 — `/search/eval-precision` 자동 POST 제거** (senior-developer 구현, trust-but-verify 통과) | `web/src/components/jet-rag/search-precision-card.tsx` — mount 시 GET 캐시 조회만 → 캐시 미스 시 'idle' phase + "측정" 버튼 (사용자 클릭 시만 LLM judge POST). `tsc --noEmit` + `pnpm lint` 0 error. props 시그니처 무변경 → 사용처 영향 0 |
+| commit/push | `dc3be36` (origin/main) | S0 D4 본 ship |
+| ship | **S0 D4 P2 follow-up 3건 일괄 fix** (senior-qa 리포트 → senior-developer 구현) | aria-label Label-in-Name + KRW 표기, handleMeasure race guard (useRef cancelRef), mobile responsive (flex-col sm:flex-row + shadcn Button) |
+| commit/push | `79aa455` (origin/main) | P2 follow-up |
+| ship | **S1 D1 잔여 — `auto_goldenset.py` v2 갱신** (senior-developer 구현) | 12 컬럼 통합 schema (v0.5+v0.6) + 9 query_type 룰 분류 + must_include/source_hint/expected_answer_summary 추출 + 5건 negative query 사전 정의 + DoD 분포 측정 + 단위 테스트 30건 신규. 460 → **490 통과 회귀 0**. v0.5 보존 (옵션 A) |
 
 ### 1.2 변경 파일
 
@@ -46,6 +50,9 @@
 | 파일 | 변경 | 의의 |
 |---|---|---|
 | `web/src/components/jet-rag/search-precision-card.tsx` | useEffect 안 자동 POST 제거, 'idle' phase + "측정" 버튼 추가, useMemo / handler 분리 (React 19 lint 정합) | **S0 D4 ship** — 비용 누수 fix (mount 시 LLM judge 자동 호출 0) |
+| `web/src/components/jet-rag/search-precision-card.tsx` (P2 fix) | sr-only span + aria-describedby (Label-in-Name), useRef cancelRef (race guard), shadcn Button + flex-col responsive | **S0 D4 P2 follow-up** — senior-qa 리포트 3건 close |
+| `evals/auto_goldenset.py` (v1 → v2) | 12 컬럼 schema, 9 query_type 룰 분류, must_include/source_hint 추출, 5건 negative 사전 정의, DoD 분포 측정 | **S1 D1 잔여** ship — S1 D2 (자동 100+ 확장) 의 선행 |
+| `api/tests/test_auto_goldenset.py` (신규) | 30 테스트 (분류 10 / 추출 8 / negative 5 / schema 4 등) | 회귀 보호 |
 
 ---
 
@@ -134,7 +141,7 @@ ORDER BY ordinal_position;
 | Day | 작업 | 상태 | 근거 |
 |---|---|---|---|
 | D1 | 사용자 draft 골든셋 33 entry | ✅ | commit `0cdcea4` — `evals/golden_v0.6_user.csv` |
-| D1 | `auto_goldenset.py` v2 갱신 | ❓ 미확인 | 파일 존재하나 v2 갱신 여부 불명 |
+| D1 | `auto_goldenset.py` v2 갱신 | ✅ **2026-05-07 ship** | 12 컬럼 schema + 9 query_type + must_include/source_hint + negative 5건 + 30 단위 테스트 |
 | D2 | 자동 100+ 확장 (`golden_v0.7_auto.csv`) | ❌ | 파일 없음 |
 | D2 | 통합 `golden_v1.csv` | ❌ | 파일 없음 |
 | D3 | 실 query 로그 대시보드 | ❌ | `web/src/app/admin/queries/` 미존재 추정 |
@@ -161,7 +168,7 @@ ORDER BY ordinal_position;
 | 순위 | 작업 | 작업량 | 비고 |
 |---|---|---|---|
 | 1 | ~~S0 D4 — `/search/eval-precision` 자동 POST 제거~~ | ✅ **ship** | 2026-05-07 완료 (commit 미진입 — 사용자 명시 요청 대기) |
-| 2 | S1 D1 잔여 — `auto_goldenset.py` v2 갱신 | 반일 | S1 D2 의 선행 |
+| 2 | ~~S1 D1 잔여 — `auto_goldenset.py` v2 갱신~~ | ✅ **ship** | 2026-05-07 완료 — S1 D2 진입 가능 |
 | 3 | S1 D2 — 자동 골든셋 100+ 확장 + v1 통합 | 1일 | Gemini quota 의존 |
 | 4 | E1 1차 ship 일부 (E1-A1 + E1-A5) | 1일 | 진단 없이도 진입 가능 (덜 정확) |
 
