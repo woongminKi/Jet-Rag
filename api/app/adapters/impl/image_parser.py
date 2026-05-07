@@ -27,8 +27,8 @@ from PIL import Image, ImageOps
 
 from app.adapters.impl.gemini_vision import GeminiVisionCaptioner
 from app.adapters.parser import ExtractedSection, ExtractionResult
-from app.adapters.vision import VisionCaptioner
-from app.services import vision_metrics
+from app.adapters.vision import VisionCaption, VisionCaptioner
+from app.services import vision_cache, vision_metrics
 from app.services.quota import is_quota_exhausted
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,7 @@ class ImageParser:
         source_type: str | None = None,
         doc_id: str | None = None,
         page: int | None = None,
+        sha256: str | None = None,
     ) -> ExtractionResult:
         """이미지 → ExtractionResult.
 
@@ -77,11 +78,25 @@ class ImageParser:
         `doc_id` / `page` (Phase 1 S0 D1 — 마이그 014):
             pdf_vision_enrich 같은 페이지 단위 호출처가 명시 — vision_usage_log 의
             doc_id/page 컬럼에 기록. 모두 default None → 단독 이미지 호출 영향 0.
+
+        `sha256` (Phase 1 S0 D2 — 마이그 015 vision_page_cache):
+            PDF page-level 호출 (pdf_vision_enrich / incremental_vision) 만 전달 →
+            (sha256, page, prompt_version) 키로 cache lookup → hit 시 Vision API 호출 0.
+            None 이거나 page None 이면 cache skip → 단독 이미지 호출 영향 0.
         """
         ext = PurePosixPath(file_name).suffix.lower()
         guessed_mime = _EXT_TO_MIME.get(ext, "image/jpeg")
         warnings: list[str] = []
         effective_source_type = source_type or self.source_type
+
+        # Phase 1 S0 D2 — vision_page_cache hit 시 fast path: Vision API 호출 0,
+        # vision_metrics 도 skip (자연 절감 측정).
+        cached_caption: VisionCaption | None = None
+        if sha256 and page is not None:
+            cached_caption = vision_cache.lookup(sha256, page)
+
+        if cached_caption is not None:
+            return self._compose_result(cached_caption, warnings=warnings)
 
         # HEIC/HEIF → Gemini 직접 전달 (Pillow 디코드 회피)
         if ext in (".heic", ".heif"):
@@ -122,6 +137,30 @@ class ImageParser:
             page=page,
             retry_attempt=retry_attempt,
         )
+
+        # Phase 1 S0 D2 — 성공한 호출은 vision_page_cache 에 upsert.
+        # ON CONFLICT DO NOTHING 으로 race 안전 (동시 호출 시 먼저 저장된 row 우선).
+        if sha256 and page is not None:
+            estimated_cost = (caption.usage or {}).get("estimated_cost")
+            vision_cache.upsert(
+                sha256,
+                page,
+                caption=caption,
+                estimated_cost=estimated_cost if isinstance(estimated_cost, (int, float)) else None,
+            )
+
+        return self._compose_result(caption, warnings=warnings)
+
+    def _compose_result(
+        self,
+        caption: VisionCaption,
+        *,
+        warnings: list[str],
+    ) -> ExtractionResult:
+        """`VisionCaption` → ExtractionResult 합성.
+
+        cache hit / miss 모두 동일 sections 구조 보장. 분기 0 = 검색 결과 동등성.
+        """
 
         sections: list[ExtractedSection] = []
         # caption section — 분류 + 한국어 한 줄 요약

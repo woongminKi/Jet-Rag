@@ -86,10 +86,15 @@ def _vision_pages_with_sweep(
     file_name: str,
     image_parser: ImageParser,
     doc_id: str | None = None,
+    sha256: str | None = None,
 ) -> tuple[list[ExtractedSection], list[str]]:
     """누락 페이지 list 만 vision 호출 + sweep. 성공한 페이지의 sections 반환.
 
     extract.py 의 `_enrich_pdf_with_vision()` 의 sweep 패턴 재사용.
+
+    Phase 1 S0 D2 — sha256 전달 시 ImageParser 가 vision_page_cache lookup → hit 시
+    호출 0. incremental 이 누락 페이지만 처리하므로 보통 cache miss 가 default 지만,
+    중복 reingest / 동시성 race 시 hit 가능.
     """
     sections: list[ExtractedSection] = []
     warnings: list[str] = []
@@ -126,6 +131,7 @@ def _vision_pages_with_sweep(
                         source_type="pdf_vision_enrich",
                         doc_id=doc_id,
                         page=page_idx + 1,
+                        sha256=sha256,
                     )
                     for sec in page_result.sections:
                         base_title = (sec.section_title or "").strip()
@@ -205,7 +211,7 @@ def run_incremental_vision_pipeline(
         client = get_supabase_client()
         doc = (
             client.table("documents")
-            .select("doc_type,storage_path")
+            .select("doc_type,storage_path,sha256")
             .eq("id", doc_id)
             .limit(1)
             .execute()
@@ -219,6 +225,8 @@ def run_incremental_vision_pipeline(
             )
 
         file_name = os.path.basename(doc_row["storage_path"])
+        # Phase 1 S0 D2 — vision_page_cache lookup 키.
+        doc_sha256 = doc_row.get("sha256")
         storage = SupabaseBlobStorage(bucket=get_settings().supabase_storage_bucket)
         pdf_data = storage.get(doc_row["storage_path"])
 
@@ -253,6 +261,7 @@ def run_incremental_vision_pipeline(
             file_name=file_name,
             image_parser=_image_parser,
             doc_id=doc_id,
+            sha256=doc_sha256,
         )
 
         # ChunkRecord 변환

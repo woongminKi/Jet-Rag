@@ -40,6 +40,7 @@ from app.ingest.jobs import (
     stage,
     update_stage_progress,
 )
+from app.services import vision_cache
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +190,7 @@ def run_extract_stage(job_id: str, doc_id: str) -> ExtractionResult | None:
                 image_parser=_get_image_parser(),
                 job_id=job_id,
                 doc_id=doc_id,
+                sha256=doc.get("sha256"),
             )
 
     return result
@@ -198,9 +200,10 @@ def run_extract_stage(job_id: str, doc_id: str) -> ExtractionResult | None:
 
 
 def _fetch_document(client: Any, doc_id: str) -> dict:
+    # Phase 1 S0 D2 — vision_page_cache lookup 키로 sha256 사용 → SELECT 에 포함.
     resp = (
         client.table("documents")
-        .select("doc_type, storage_path, flags")
+        .select("doc_type, storage_path, flags, sha256")
         .eq("id", doc_id)
         .limit(1)
         .execute()
@@ -321,6 +324,7 @@ def _enrich_pdf_with_vision(
     image_parser: ImageParser,
     job_id: str | None = None,
     doc_id: str | None = None,
+    sha256: str | None = None,
 ) -> ExtractionResult:
     """W25 D14 — 일반 PDF 의 표/그림/다이어그램 정보를 vision 으로 보강.
 
@@ -335,6 +339,12 @@ def _enrich_pdf_with_vision(
         - 각 페이지의 vision 결과를 **추가 sections** 로 append (PyMuPDF section 과 병합 X)
         - section_title 에 "(vision) p.N" 명시 — 검색 결과 출처 식별 가능
         - cap _VISION_ENRICH_MAX_PAGES (default 50) — 대형 PDF 안전장치
+
+    Phase 1 S0 D2 — `vision_page_cache` lookup:
+        - 호출 직전 (sha256, page, prompt_version) 키로 캐시 조회
+        - hit → ImageParser.parse() 호출 0, 캐시된 VisionCaption 으로 sections 합성
+        - miss → 기존 vision API 호출 + caption.usage.estimated_cost 와 함께 cache upsert
+        - sha256 None (legacy / 단위 테스트) 시 캐시 skip → 기존 동작 100% 보존
 
     한계 (W25 D14 권고 단계 인정):
         - vision 호출 = paid tier quota 사용 (~$0.00075/페이지)
@@ -398,6 +408,7 @@ def _enrich_pdf_with_vision(
                         source_type="pdf_vision_enrich",
                         doc_id=doc_id,
                         page=page_num + 1,
+                        sha256=sha256,
                     )
                     # vision 결과의 sections 를 page 메타 보강해 추가
                     for sec in page_result.sections:
