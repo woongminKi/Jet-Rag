@@ -105,6 +105,87 @@ class IngestEtaTest(unittest.TestCase):
         expected = sum(_FALLBACK_STAGE_MS[s] for s in STAGE_ORDER)
         self.assertEqual(result, expected)
 
+    # ============================================================
+    # E1 1차 ship (2026-05-07) — stage_progress 분해 회귀
+    # ============================================================
+    def test_compute_remaining_ms_with_stage_progress(self) -> None:
+        """stage_progress=13/29 → current stage 의 (1-13/29) + 이후 stages 합."""
+        from app.ingest.eta import _FALLBACK_STAGE_MS, STAGE_ORDER, compute_remaining_ms
+
+        client = _mock_supabase_with_logs([])
+        result = compute_remaining_ms(
+            client,
+            job_status="running",
+            current_stage="extract",
+            stage_progress={"current": 13, "total": 29, "unit": "pages"},
+        )
+        extract_remaining = int(_FALLBACK_STAGE_MS["extract"] * (1.0 - 13.0 / 29.0))
+        later_sum = sum(_FALLBACK_STAGE_MS[s] for s in STAGE_ORDER[1:])
+        self.assertEqual(result, extract_remaining + later_sum)
+
+    def test_compute_remaining_ms_progress_full(self) -> None:
+        """stage_progress current==total → current stage 0 ms + 이후 stages 합."""
+        from app.ingest.eta import _FALLBACK_STAGE_MS, STAGE_ORDER, compute_remaining_ms
+
+        client = _mock_supabase_with_logs([])
+        result = compute_remaining_ms(
+            client,
+            job_status="running",
+            current_stage="extract",
+            stage_progress={"current": 29, "total": 29, "unit": "pages"},
+        )
+        # extract 는 0 ms, 이후 stages 만 합산
+        expected = sum(_FALLBACK_STAGE_MS[s] for s in STAGE_ORDER[1:])
+        self.assertEqual(result, expected)
+
+    def test_compute_remaining_ms_no_progress(self) -> None:
+        """stage_progress=None → current 전체 + 이후 stages 합 (기존 동작 호환)."""
+        from app.ingest.eta import _FALLBACK_STAGE_MS, STAGE_ORDER, compute_remaining_ms
+
+        client = _mock_supabase_with_logs([])
+        result = compute_remaining_ms(
+            client,
+            job_status="running",
+            current_stage="extract",
+            stage_progress=None,
+        )
+        expected = sum(_FALLBACK_STAGE_MS[s] for s in STAGE_ORDER)
+        self.assertEqual(result, expected)
+
+    def test_compute_remaining_ms_invalid_progress(self) -> None:
+        """total<=0 또는 dict 타입 불일치 → fallback (current 전체 사용)."""
+        from app.ingest.eta import _FALLBACK_STAGE_MS, STAGE_ORDER, compute_remaining_ms
+
+        client = _mock_supabase_with_logs([])
+        full_expected = sum(_FALLBACK_STAGE_MS[s] for s in STAGE_ORDER)
+
+        for invalid in (
+            {"current": 5, "total": 0, "unit": "pages"},
+            {"current": 5, "total": -1, "unit": "pages"},
+            {"current": "x", "total": 10, "unit": "pages"},
+            {},
+        ):
+            with self.subTest(progress=invalid):
+                result = compute_remaining_ms(
+                    client,
+                    job_status="running",
+                    current_stage="extract",
+                    stage_progress=invalid,
+                )
+                self.assertEqual(result, full_expected)
+
+    def test_chunk_filter_in_stage_order(self) -> None:
+        """STAGE_ORDER 에 chunk_filter 가 포함되어야 함 (web 측 정합 + ETA 합산)."""
+        from app.ingest.eta import _FALLBACK_STAGE_MS, STAGE_ORDER
+
+        self.assertIn("chunk_filter", STAGE_ORDER)
+        self.assertIn("chunk_filter", _FALLBACK_STAGE_MS)
+        # chunk 다음, content_gate 이전 위치
+        self.assertEqual(STAGE_ORDER.index("chunk_filter"), STAGE_ORDER.index("chunk") + 1)
+        self.assertEqual(
+            STAGE_ORDER.index("content_gate"), STAGE_ORDER.index("chunk_filter") + 1
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

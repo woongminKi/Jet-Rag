@@ -27,6 +27,7 @@ export type JobStatusValue =
 export type StageValue =
   | 'extract'
   | 'chunk'
+  | 'chunk_filter'
   | 'content_gate'
   | 'tag_summarize'
   | 'load'

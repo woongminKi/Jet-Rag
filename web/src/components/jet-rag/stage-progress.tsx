@@ -14,6 +14,22 @@ interface StageProgressProps {
   stageProgress?: StageProgressDetail | null;
 }
 
+// E1 1차 ship (2026-05-07) — current stage 의 progress bar 칸에 표시할 비율(%).
+// stage_progress 가 유효하면 current/total *100, 아니면 indeterminate 시각화용 기본값.
+function computeCurrentBarPct(stageProgress: StageProgressDetail | null | undefined): number {
+  if (
+    stageProgress &&
+    Number.isFinite(stageProgress.current) &&
+    Number.isFinite(stageProgress.total) &&
+    stageProgress.total > 0
+  ) {
+    const pct = (stageProgress.current / stageProgress.total) * 100;
+    return Math.max(0, Math.min(100, pct));
+  }
+  // stage_progress 없는 stage (chunk/load/embed 등) 는 50% — 단순 indeterminate.
+  return 50;
+}
+
 export function StageProgress({
   currentStage,
   status,
@@ -32,29 +48,42 @@ export function StageProgress({
   // W25 D14 — stage 내 sub-step (예: "12/41 페이지").
   const subProgressLabel =
     !isDone && !isFailed ? formatStageProgress(stageProgress) : null;
+  // E1 1차 ship — 현재 stage 칸 부분 색칠 비율 (0~100).
+  const currentBarPct = computeCurrentBarPct(stageProgress);
 
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-1.5">
         {STAGE_ORDER.map((stage, idx) => {
-          const reached = isDone || idx <= currentIdx;
           const failedHere = isFailed && idx === currentIdx;
+          // 칸 별 색칠 비율: 완료 100, 진행 중은 stage_progress 비율, 미도달 0.
+          // failed 인 stage 도 100% 채우되 색만 destructive 로.
+          const fillPct = isDone
+            ? 100
+            : failedHere
+              ? 100
+              : idx < currentIdx
+                ? 100
+                : idx === currentIdx
+                  ? currentBarPct
+                  : 0;
+          const fillColor = failedHere
+            ? 'bg-destructive'
+            : isDone
+              ? 'bg-success'
+              : 'bg-primary';
           return (
             <div
               key={stage}
-              className={cn(
-                'h-1.5 flex-1 rounded-full transition-colors',
-                failedHere
-                  ? 'bg-destructive'
-                  : reached
-                    ? isDone
-                      ? 'bg-success'
-                      : 'bg-primary'
-                    : 'bg-muted',
-              )}
+              className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-muted"
               aria-label={STAGE_LABELS[stage]}
               title={STAGE_LABELS[stage]}
-            />
+            >
+              <div
+                className={cn('h-full rounded-full transition-[width]', fillColor)}
+                style={{ width: `${fillPct}%` }}
+              />
+            </div>
           );
         })}
       </div>
@@ -84,7 +113,9 @@ export function StageProgress({
               ? `${STAGE_ORDER.length}/${STAGE_ORDER.length}`
               : isFailed
                 ? '실패'
-                : `${Math.max(0, currentIdx + 1)}/${STAGE_ORDER.length}`}
+                : subProgressLabel
+                  ? `${Math.max(0, currentIdx + 1)}/${STAGE_ORDER.length} · ${subProgressLabel}`
+                  : `${Math.max(0, currentIdx + 1)}/${STAGE_ORDER.length}`}
           </span>
         </span>
       </div>

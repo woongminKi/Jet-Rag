@@ -9,7 +9,7 @@
 
 ## 0. 한 줄 요약
 
-> **D3 진입 — 8 commit push** (`a5cfc2a`→`f1c87b4`). baseline 회복 + E1 sprint plan 신설 (ETA "3분" vs 실측 6~7분 격상) + S0 D4 자동 POST 제거 (비용 누수 fix) + S0 D4 P2 follow-up 3건 + S1 D1 잔여 (`auto_goldenset.py` v2 + 30 신규 테스트) + **E2 fixture 인프라 1·2·3·4·5차 ship** (`assets/public/` 8건 git 추적 + 5단계 우선순위 5개 형식 (PDF/HWPX/HWP/PPTX/DOCX) 자동 인식 + **negative path 회귀 (D 그룹) + frontend 가독성 보강**). 단위 테스트 460 → **497 통과 / skipped 0 / 회귀 0**. assets/ **14/14 cover** (12건 정상 회귀 + 2건 거부 동작 회귀). E1 진단·구현은 PDF 보유 다른 컴퓨터에서 진입.
+> **D3 진입 — 8 commit push** (`a5cfc2a`→`f1c87b4`). baseline 회복 + E1 sprint plan 신설 (ETA "3분" vs 실측 6~7분 격상) + S0 D4 자동 POST 제거 (비용 누수 fix) + S0 D4 P2 follow-up 3건 + S1 D1 잔여 (`auto_goldenset.py` v2 + 30 신규 테스트) + **E2 fixture 인프라 1·2·3·4·5차 ship** (`assets/public/` 8건 git 추적 + 5단계 우선순위 5개 형식 (PDF/HWPX/HWP/PPTX/DOCX) 자동 인식 + **negative path 회귀 (D 그룹) + frontend 가독성 보강**) + **E1 1차 ship 일부 즉시 진입** (인제스트 진행 표시 3대 증상 일괄 fix — ETA 정적 / progress bar 1칸 / stage 카운터 1/8 vs 9). 단위 테스트 460 → **502 통과 / skipped 0 / 회귀 0**. assets/ **14/14 cover** (12건 정상 회귀 + 2건 거부 동작 회귀). E1 진단·완료 ship 은 PDF 보유 다른 컴퓨터에서 진입.
 
 ---
 
@@ -40,6 +40,7 @@
 | ship | **E2 3차 ship — 라이센스 5건 마이그 + repo 루트 직속 자동 인식 + HWP 테스트 신규** (senior-developer 구현) | (1) `assets/` 직속 5건 (`law sample3.pdf`·`law_sample2.pdf`·`직제_규정.hwpx`·`한마음생활체육관_운영_내규.hwpx`·`law_sample1.hwp`) → `assets/public/` 이동 (저작권법 §7 + KOGL 1유형). (2) `_pdf_path()`·`_hwpx_path()` 5단계 우선순위 — `<repo>/<name>` 루트 직속 단계 신설 (다른 컴퓨터 자동 인식). (3) `test_hwp_heading.py` 신규 작성 (Hwp5Parser 회귀, 4 테스트). (4) `assets/public/README.md` 8건 표 + 5단계 우선순위 + 다른 컴퓨터 4 시나리오. **사용자 PC: 490 → 494 통과 / skipped 0 / 회귀 0**. 다른 컴퓨터·CI 자동 회귀 진입 자료 8건 (PDF 4 + HWPX 2 + HWP 1 + 사용자 명시 sample-report 1) |
 | ship | **E2 4차 ship — 미진입 자료 5건 (A·B·C) 회귀 진입** (senior-developer 구현, 사용자 점검 반영) | 사용자 점검 — assets/ 14건 중 7건 미진입 발견. (A) `sample-report.pdf` 가 `assets/public/` 에 git 추적되지만 `_PUBLIC_PDF_FILES` 미등록 → 1줄 추가 (KPI 평균 4건→5건 자동 합산). (B) `test_pptx_parser.py` 에 `PptxParserRealAssetTest` 신규 + 5단계 우선순위 (`JETRAG_TEST_PPTX_DIR` ENV) — 메모리 합성 binary 한계 회복. (C) `test_docx_parser.py` 에 `DocxParserRealAssetTest` 신규 + 5단계 우선순위 (`JETRAG_TEST_DOCX_DIR` ENV) — `승인글 템플릿1·3.docx` 회귀 진입. **사용자 PC: 494 → 496 통과 / skipped 0 / 회귀 0** (PPTX 1 + DOCX 1 신규, sample-report 는 KPI 평균에 자동 합산). 다른 컴퓨터·CI: 부재 시 자동 skip, 회귀 차단 0. assets/ 14건 중 12건 자동 회귀 진입 (남은 2건은 D — HWP OLE2 아님, 처리 불가) |
 | ship | **E2 5차 ship — 마지막 2건 (D 그룹) negative path 회귀 + 사용자 안내 메시지 검증·보강** (senior-developer 구현, 사용자 점검 반영) | (1) `test_hwp_heading.py` 에 `Hwp5ParserRejectNonOle2Test` 신규 — `cosmetic_law_sample.hwp`/`law sample2.hwp` 두 비-OLE2 자료에 대해 `RuntimeError` raise + 안내 메시지 키워드 (`OLE2` 또는 `PDF`+`HWPX`) 검증 (subTest 2건). (2) backend 메시지 그대로 유지 — 이미 한국어 안내 + 변환 옵션 명시 (정보 손실 0). (3) frontend `upload-item.tsx`/`doc/[id]/page.tsx` 의 `error_msg` 카드에 `break-words` 클래스 추가 — 긴 한국어 안내가 카드 영역 밖 튀어나가는 것 방지. **사용자 PC: 496 → 497 통과 / skipped 0 / 회귀 0**. 다른 컴퓨터·CI 시뮬레이션 (negative fixture 가림): `skipped=2 / OK` 자동 회복. assets/ **14/14 cover** 확정 (12건 정상 회귀 + 2건 거부 동작 회귀) |
+| ship | **E1 1차 ship 일부 즉시 진입 — 인제스트 진행 표시 3대 증상 일괄 fix** (Explore root cause + senior-developer 구현, 사용자 명시 "큰 혼란") | 증상 ① ETA 정적 (4분 표시 후 1분 경과해도 4분) — `eta.py:compute_remaining_ms()` 에 `stage_progress={current,total,unit}` 인자 추가 + 현재 stage 의 `(1-ratio)` 분해. 증상 ② progress bar 1칸 (extract 26/29 진척해도 첫 칸만) — `stage-progress.tsx` 칸별 `width:${pct}%` 부분 색칠 (현재 stage 만 stage_progress 비율). 증상 ③ stage 카운터 1/8 vs backend 9 stage — `web/lib/stages.ts` STAGE_ORDER + StageValue 에 `chunk_filter` 추가 (라벨 "청크 필터"). 카운터 표시 "1/9 · 13/29 페이지" 동시 노출. `documents.py` 두 호출처 (944·1027) 도 `stage_progress` 전달. **단위 테스트 497 → 502 통과 / skipped 0 / 회귀 0** (5건 신규: with_stage_progress / progress_full / no_progress / invalid_progress / chunk_filter 정합). web tsc + lint 0 error |
 
 ### 1.2 변경 파일
 
@@ -76,6 +77,12 @@
 | `api/tests/test_hwp_heading.py` (E2 5차) | `Hwp5ParserRejectNonOle2Test` 신규 + `_NEGATIVE_HWP_FILES` 상수 + `_PRIVATE_HWP_FILES` 주석 보강 (negative path 별도 처리 명시) | D 그룹 close — 비-OLE2 HWP 2건 (`cosmetic_law_sample.hwp`·`law sample2.hwp`) 거부 동작 + 한국어 안내 메시지 회귀 보호 (subTest 2건). 자료 부재 시 자동 skipTest (CI 호환) |
 | `web/src/components/jet-rag/upload-item.tsx` (E2 5차) | `error_msg` 카드 `<p>` 에 `break-words` 1단어 추가 | 긴 한국어 안내 ("이 파일을 PDF 또는 HWPX 로 변환 후 다시 업로드해 주세요" 등) 가 카드 영역 밖으로 튀지 않도록 가독성 보강 |
 | `web/src/app/doc/[id]/page.tsx` (E2 5차) | `error_msg` 카드 `<p>` 에 `break-words` 1단어 추가 | 문서 상세 페이지에서도 동일 가독성 보강 (upload-item.tsx 와 일관) |
+| `api/app/ingest/eta.py` (**E1 1차 ship 일부**) | `compute_remaining_ms()` 시그니처에 `stage_progress: dict \| None = None` 추가 + `_current_stage_remaining_ms()` 신규 (current/total ratio 분해, total<=0 / 타입 불일치 시 fallback) + 모듈 docstring "E1 1차 ship" 절 추가 | **증상 ① fix** — ETA 정적 해소. cache 는 medians 만 (5분 TTL 그대로), `stage_progress` 는 매 호출 신선 반영. 호환성: `stage_progress=None` 시 기존 동작 유지 |
+| `api/app/routers/documents.py` (**E1 1차 ship 일부**) | `compute_remaining_ms()` 호출 2곳 (944 active-docs / 1027 batch-status) 에 `stage_progress=row.get("stage_progress")` 전달 | ETA 가 매 polling 마다 stage_progress 반영. select 쿼리는 이미 `stage_progress` 컬럼 포함 (마이그 010, `_INGEST_JOBS_BASE_COLUMNS` + 컬럼 미존재 시 graceful skip 로직) |
+| `api/tests/test_ingest_eta.py` (**E1 1차 ship 일부**) | 5건 신규: `test_compute_remaining_ms_with_stage_progress` (13/29 정확 ratio 검증) / `test_compute_remaining_ms_progress_full` (current==total 시 0+이후) / `test_compute_remaining_ms_no_progress` (None 호환) / `test_compute_remaining_ms_invalid_progress` (4 invalid case subTest) / `test_chunk_filter_in_stage_order` (web 정합) | 회귀 보호 — 502 통과, 회귀 0 |
+| `web/src/lib/api/types.ts` (**E1 1차 ship 일부**) | `StageValue` union 에 `'chunk_filter'` 추가 | 증상 ③ fix — backend 9 stage 와 타입 정합 회복 |
+| `web/src/lib/stages.ts` (**E1 1차 ship 일부**) | `STAGE_ORDER` 에 `'chunk_filter'` 추가 (8→9), `STAGE_LABELS.chunk_filter = '청크 필터'` 신규, 정합 코멘트 추가 | **증상 ③ fix** — stage 카운터 1/9 정합. 라벨 "청크 필터" (노이즈 청크 제거의 짧은 한국어) |
+| `web/src/components/jet-rag/stage-progress.tsx` (**E1 1차 ship 일부**) | progress bar 칸별 `width:${pct}%` 부분 색칠 (외곽 `bg-muted` overflow-hidden + 내부 `bg-primary` width%), `computeCurrentBarPct()` 신규 helper, 카운터 "1/9 · 13/29 페이지" 동시 표시 | **증상 ② fix** — 현재 stage 칸이 stage_progress 비율로 부분 색칠. stage_progress 없는 stage 는 50% indeterminate. 완료 100% / 미도달 0% / failed 100%+destructive 색 |
 
 ---
 
@@ -133,6 +140,7 @@ ORDER BY ordinal_position;
 - **latency 가설**: vision 페이지 순차 (concurrency=0), 503 retry 백오프 누적, vision_page_cache lookup 미통합
 - **개선 후보 7개**: E1-A1 (ETA 공식 분해, 1순위) / E1-A2 (페이지 동시 호출, 2순위) / E1-A3 (vision_page_cache lookup = D2-B 흡수, 3순위) / E1-A4 (TTL 단축, 5순위) / E1-A5 (fallback 정정 + sample<3 ETA 미노출, 4순위) / E1-A6 (백오프 cap, 6순위) / E1-A7 (SSE, deferred)
 - **권고 ship 순서**: 1차 = 진단 + E1-A1+A4+A5 (정확도 핵심, 1.5~2일) → 2차 = E1-A3+A2 (latency, D2-B 흡수, 2~3일) → 3차 = 옵션·deferred
+- **2026-05-07 즉시 진입 — E1-A1 일부 ship** (사용자 명시 "큰 혼란"): 인제스트 진행 표시 3대 증상 일괄 fix. ① ETA 정적 (4분 표시 후 1분 경과해도 4분) → `compute_remaining_ms` 에 `stage_progress` 인자 + 분해. ② progress bar 1칸 → 칸별 `width%` 부분 색칠. ③ 카운터 1/8 vs 9 stage → web `STAGE_ORDER` 에 `chunk_filter` 추가. 단위 테스트 502 통과 / 회귀 0. **나머지 E1-A1 (vision 페이지 동시성 분리·sample<3 미노출 등) + A4 + A5 는 다른 컴퓨터 진단 후 진입**
 
 ### 3.3 별도 plan 파일
 
@@ -202,9 +210,10 @@ ORDER BY ordinal_position;
 | 3-3 | ~~E2 3차 ship — 라이센스 5건 + 루트 직속 자동 인식 + HWP 테스트~~ | ✅ **ship** | public 8건 / 5단계 우선순위 / 494 통과 |
 | 3-4 | ~~E2 4차 ship — 미진입 자료 5건 (A·B·C) 회귀 진입~~ | ✅ **ship** | sample-report `_PUBLIC_PDF_FILES` 등록 + PPTX/DOCX 5단계 우선순위 + 실 fixture 테스트 클래스 / 496 통과 / assets/ 14건 중 12건 자동 회귀 |
 | 3-5 | ~~E2 5차 ship — 마지막 2건 (D 그룹) negative path 회귀 + 사용자 안내 메시지 검증·보강~~ | ✅ **ship** | `Hwp5ParserRejectNonOle2Test` 신규 + frontend `break-words` / 497 통과 / **assets/ 14/14 cover** 확정 |
+| 3-6 | ~~**E1 1차 ship 일부 — 인제스트 진행 표시 3대 증상 일괄 fix**~~ | ✅ **ship** | 사용자 명시 "유저에게 큰 혼란" 격상. ETA stage_progress 분해 + progress bar 부분 색칠 + STAGE_ORDER chunk_filter 추가 / 502 통과 / 회귀 0 |
 | 4 | E2 follow-up — 기관 규정·법률 샘플 라이센스 검토 | 0.5일 | `직제_규정.hwpx`·`한마음생활체육관_운영_내규.hwpx`·`law_sample` 시리즈 출처 / 공개 가능성 사용자 확인 후 추가 이동 |
 | 5 | S1 D2 — 자동 골든셋 100+ 확장 + v1 통합 | 1일 | Gemini quota 의존 |
-| 6 | E1 1차 ship 일부 (E1-A1 + E1-A5) | 1일 | 진단 없이도 진입 가능 (덜 정확) |
+| 6 | E1 1차 ship 잔여 (E1-A1 vision 페이지 sub-ETA 정밀화 + E1-A4 TTL 단축 + E1-A5 fallback 정정·sample<3 미노출) | 1일 | 다른 컴퓨터 진단 후 진입 권고 |
 
 **B. 다른 컴퓨터 (PDF 보유)**
 
@@ -286,7 +295,7 @@ E1 진입 중에도 병렬 가능한 작업:
 
 ## 9. 한 문장 요약
 
-> 2026-05-07 D3 진입 — 8 commit push (`a5cfc2a`→`f1c87b4`). baseline 회복 + E1 sprint plan 본문 ship + S0 D4 자동 POST 제거 (+ P2 follow-up 3건) + S1 D1 잔여 (`auto_goldenset.py` v2 + 30 테스트) + **E2 1·2·3·4·5차 ship** (`assets/public/` 8건 git 추적, 5단계 우선순위 5개 형식 자동 인식, `test_hwp_heading.py`/실 fixture 테스트 클래스 신규, **negative path 회귀 + frontend `break-words` 가독성 보강**). 단위 테스트 460→**497** / skipped 0 / 회귀 0. **assets/ 14/14 cover** (12 정상 + 2 거부 동작 회귀). E1 진단·구현은 PDF 보유 다른 컴퓨터에서 진입.
+> 2026-05-07 D3 진입 — 8 commit push (`a5cfc2a`→`f1c87b4`). baseline 회복 + E1 sprint plan 본문 ship + S0 D4 자동 POST 제거 (+ P2 follow-up 3건) + S1 D1 잔여 (`auto_goldenset.py` v2 + 30 테스트) + **E2 1·2·3·4·5차 ship** (`assets/public/` 8건 git 추적, 5단계 우선순위 5개 형식 자동 인식, `test_hwp_heading.py`/실 fixture 테스트 클래스 신규, **negative path 회귀 + frontend `break-words` 가독성 보강**) + **E1 1차 ship 일부 즉시 진입 — 인제스트 진행 표시 3대 증상 일괄 fix** (ETA stage_progress 분해 + progress bar 부분 색칠 + STAGE_ORDER `chunk_filter` 추가). 단위 테스트 460→**502** / skipped 0 / 회귀 0. **assets/ 14/14 cover** (12 정상 + 2 거부 동작 회귀). E1 잔여 진단·구현은 PDF 보유 다른 컴퓨터에서 진입.
 
 ---
 

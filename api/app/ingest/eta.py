@@ -5,7 +5,15 @@
 - 임베딩 본 파이프라인 무영향 (read-only, batch-status/active 응답 시점 호출)
 - N+1 회피: 1쿼리로 최근 N건 ingest_logs 가져와 Python 측에서 stage별 median 집계
 - in-memory cache 5분 TTL — median 은 자주 안 바뀌므로 cache hit 시 DB hit 0
+  (E1 1차 ship: cache 는 medians 만 — `stage_progress` 는 매 호출 신선 반영)
 - cold start fallback (ingest_logs 0건) 시 hardcoded 추정값 사용
+
+E1 1차 ship (2026-05-07) — `stage_progress` 분해 도입
+- 사용자 보고: 4분 표시 후 1분 경과해도 4분 → "정적 ETA". 원인은 현재 stage 안의
+  진척 (예: extract 13/29) 을 무시하고 stage 전체 시간을 그대로 더하던 데 있음.
+- 해결: `compute_remaining_ms` 에 `stage_progress={current,total,unit}` 인자 추가.
+  현재 stage 의 남은 비율만 합산 (current/total 0~1 사이).
+- 호환: `stage_progress=None` 시 기존 동작 (전체 stage 합산) 유지.
 
 한계
 - 첫 ingest 시 정확도 낮음 (fallback 기반)
@@ -130,17 +138,45 @@ def _stage_ms(stage_name: str, medians: dict[str, float]) -> int:
     return _FALLBACK_STAGE_MS.get(stage_name, 1000)
 
 
+def _current_stage_remaining_ms(
+    stage_name: str,
+    medians: dict[str, float],
+    stage_progress: dict | None,
+) -> int:
+    """현재 stage 의 남은 시간 (ms).
+
+    `stage_progress={current,total,unit}` 가 유효 (`total>0`) 하면 비율 분해:
+        ratio = clamp(current/total, 0..1)
+        remaining = stage_ms * (1 - ratio)
+    그렇지 않으면 stage 전체 ms 반환 (기존 동작 호환).
+    """
+    full_ms = _stage_ms(stage_name, medians)
+    if not stage_progress:
+        return full_ms
+    current = stage_progress.get("current")
+    total = stage_progress.get("total")
+    if not isinstance(current, (int, float)) or not isinstance(total, (int, float)):
+        return full_ms
+    if total <= 0:
+        return full_ms
+    ratio = max(0.0, min(1.0, float(current) / float(total)))
+    return int(full_ms * (1.0 - ratio))
+
+
 def compute_remaining_ms(
     supabase,
     *,
     job_status: str,
     current_stage: str | None,
+    stage_progress: dict | None = None,
 ) -> int | None:
     """Job 의 남은 시간 추정 (ms).
 
     - completed/failed/cancelled → None (ETA 의미 없음)
-    - queued → 전체 stages 합산
-    - running + current_stage 알면 → current 부터 마지막까지 합산 (current 포함, 보수적)
+    - queued → 전체 stages 합산 (`stage_progress` 무시)
+    - running + current_stage 알면 → current 의 남은 비율 + 이후 stages 합산
+      · `stage_progress={current,total,unit}` 가 유효하면 current 의 (1-ratio) 사용
+      · 없거나 total<=0 이면 current 전체 사용 (기존 보수적 동작)
     - running + current_stage 없으면 → 전체 합산
     """
     if job_status not in _ACTIVE_JOB_STATUSES:
@@ -157,5 +193,8 @@ def compute_remaining_ms(
         # 알 수 없는 stage — 전체 합산 fallback
         return sum(_stage_ms(s, medians) for s in STAGE_ORDER)
 
-    remaining_stages = STAGE_ORDER[current_idx:]
-    return sum(_stage_ms(s, medians) for s in remaining_stages)
+    current_remaining = _current_stage_remaining_ms(
+        current_stage, medians, stage_progress
+    )
+    later_stages = STAGE_ORDER[current_idx + 1 :]
+    return current_remaining + sum(_stage_ms(s, medians) for s in later_stages)
