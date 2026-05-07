@@ -264,11 +264,65 @@ E1 진입 중에도 병렬 가능한 작업:
 
 ---
 
-## 10. 다른 컴퓨터 진입 안내
+## 10. 다른 컴퓨터 진입 안내 — 자동 동작 절차
 
-`git pull` 만으로 본 컴퓨터의 누적 ship 이 모두 동기화된다.
+### 10.1 기본 동기화 (`git pull` 만으로 즉시 동작)
 
-- **work-log + plan**: 본 문서, E1 plan, S0 D4 / S1 D1 / **E2 1차 ship** 코드 변경 동시 반영
-- **`assets/public/` 의 공개 PDF 3건**: `git pull` 시 자동 동기화 → 별도 scp / cloud 동기화 불필요. 단위 테스트 (`cd api && uv run python -m unittest discover tests`) 가 자동 발견 → CI 회귀 자동 보호
-- **`assets/` 직속 비공개 자료** (예: `sonata-the-edge_catalog.pdf`, `law sample3.pdf`, `직제_규정.hwpx`): 컴퓨터별로 따로 보유. 사용자 PC 정밀 회귀는 `JETRAG_TEST_PDF_DIR` / `JETRAG_TEST_HWPX_DIR` ENV 로 base 지정
-- **다음 진입 절차**: §5.1 (E1 진단) 단계 그대로. PDF 보유 다른 컴퓨터에서 어제 6~7분 PDF 1건 reingest → plan 파일 §10 paste
+```bash
+# 1) 코드 + fixture + 문서 동기화 (assets/public/ PDF 3건 10.6 MB 포함)
+git pull origin main
+
+# 2) 의존성 동기화
+cd api && uv sync
+cd ../web && pnpm install
+
+# 3) 단위 테스트 — public fixture 자동 회귀
+cd ../api && uv run python -m unittest discover tests
+# 기대: Ran 490 tests in ~14s, OK (skipped=5)
+```
+
+`git pull` 한 시점에 본 컴퓨터의 모든 ship 이 동시에 들어옴:
+
+| 항목 | 자동 동기화 | 비고 |
+|---|---|---|
+| work-log / plan / 종합 마스터 | ✅ | 본 문서, E1 plan, master plan 등 |
+| 코드 변경 | ✅ | `search-precision-card.tsx`, `auto_goldenset.py`, `test_pymupdf_heading.py`, `.gitignore` 등 |
+| **`assets/public/` 공개 PDF 3건 (10.6 MB)** | ✅ **별도 scp/cloud 불필요** | KOGL 1유형 2건 + 사용자 명시 공공데이터 1건 |
+| 단위 테스트 회귀 | ✅ 자동 | public 2건 (`(붙임2) 데이터센터 안내서`, `보건의료 추진계획`) 가 `_pdf_path()` 의 공개 fixture 우선 조회로 자동 진입 |
+
+### 10.2 ENV 설정 (선택, 비공개 자료 정밀 회귀)
+
+`assets/` 직속 비공개 자료 (`sonata-the-edge_catalog.pdf`, `law sample3.pdf` 등) 가 그 컴퓨터에 보유돼 있을 때만:
+
+```bash
+# api/.env 또는 ~/.zshrc 에 추가
+export JETRAG_TEST_PDF_DIR=/Users/<...>/Jet-Rag/assets
+```
+
+설정 후 `uv run python -m unittest discover tests` 다시 → `_PRIVATE_PDF_FILES` 2건 추가 진입 → **skipped 5 → 3**.
+
+> 현재 사용자 PC 도 이 ENV 미설정 상태 (확인됨). 설정하면 본 컴퓨터에서도 회귀 자동 +2건. master plan §10.2 의 `JETRAG_PDF_VISION_ENRICH=true`, `JETRAG_GEMINI_RETRY=3` 와 별개 변수.
+
+### 10.3 비공개 자료 다른 컴퓨터로 옮길 때
+
+git 추적 X 정책 (`.gitignore` 의 `/assets/*`) → 다음 중 하나로 동기화:
+
+1. **USB / 외장 디스크** — 가장 단순, 라이센스 위험 0
+2. **iCloud / 사용자 클라우드** (라이센스 안전 디렉토리) — 자동 동기화 가능
+3. **인제스트 후 폐기** — Supabase 에 chunks 만 남기고 raw PDF 폐기 (다음 컴퓨터에서 reingest 불필요)
+
+옮긴 후 같은 디렉토리 구조 (`<repo>/assets/<file>.pdf`) 로 두면 `JETRAG_TEST_PDF_DIR=<repo>/assets` 한 줄로 회귀 자동.
+
+### 10.4 새 자료 추가 정책
+
+| 자료 종류 | 어디에 둘까 | git 추적 |
+|---|---|---|
+| 공개 라이센스 (KOGL / CC / 퍼블릭 도메인) | `assets/public/` | ✅ |
+| 사용자 raw 자료 (개인정보 포함) | `assets/` 직속 | ❌ ignore 유지 |
+| 새 공개 자료 추가 시 | `assets/public/README.md` 의 자료 표 갱신 + 출처·라이센스 명시 의무 | 본문에 절차 1줄 |
+
+### 10.5 다음 진입 절차
+
+- **E1 진단** (다른 컴퓨터, PDF 보유 시) — §5.1 절차 그대로. PDF 1건 reingest → E1 plan 파일 §10 paste
+- **E2 follow-up** — 기관 규정 2건 / 법률 샘플 5건 라이센스 검토 후 `assets/public/` 추가 + `test_hwpx_heading.py` 의 하드코딩 경로도 같은 패턴으로 마이그
+- **S1 D2** (자동 골든셋 100+ 확장) — Gemini quota 1회 (~$0.05) 소진. `auto_goldenset.py` v2 로 `--chunks-per-doc 10` 실행
