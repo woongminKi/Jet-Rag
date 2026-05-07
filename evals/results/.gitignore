@@ -1,0 +1,8 @@
+# S1 D5 baseline 측정 결과 — git 추적 X.
+# 재현성은 `evals/run_s1_d5_baseline.py --seed 42` 의 결정성 sampling 으로 확보.
+# 결과물 (markdown / JSON) 은 시점별로 갱신되므로 git diff 노이즈 회피.
+#
+# 본 디렉토리 안의 모든 파일을 ignore 하되, 본 .gitignore 자체는 추적해
+# 다른 컴퓨터에도 정책이 동기화되도록 한다 (negative pattern).
+*
+!.gitignore
