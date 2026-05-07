@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { BarChart3, Loader2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
   ApiError,
@@ -47,6 +48,12 @@ export function SearchPrecisionCard({ query, docId, hits }: SearchPrecisionCardP
   const [phase, setPhase] = useState<Phase>('cache');
   const [error, setError] = useState<string | null>(null);
 
+  // P2 Issue #2 — handleMeasure race guard.
+  // useEffect 의 cancelled 변수는 effect scope 안에만 있어 handler promise chain 과 공유 불가.
+  // query 변경 시 effect 가 re-run 되며 cleanup 이 ref 를 true 로 → 측정 중이던 promise 도 stale 판정.
+  // 새 effect 본문 첫 줄에서 false 로 reset 하여 다음 측정이 정상 진행되도록 한다.
+  const cancelRef = useRef(false);
+
   // contexts 는 GET 결과와 무관하게 hits 로부터 계산. 클릭 시 POST 페이로드.
   const contexts = useMemo(
     () =>
@@ -60,6 +67,7 @@ export function SearchPrecisionCard({ query, docId, hits }: SearchPrecisionCardP
 
   // mount / query·docId 변경 시 캐시만 조회. 자동 POST 없음 (S0 D4 비용 누수 fix).
   useEffect(() => {
+    cancelRef.current = false;
     let cancelled = false;
 
     getSearchPrecision(query, docId)
@@ -82,6 +90,7 @@ export function SearchPrecisionCard({ query, docId, hits }: SearchPrecisionCardP
 
     return () => {
       cancelled = true;
+      cancelRef.current = true;
     };
   }, [query, docId]);
 
@@ -92,10 +101,12 @@ export function SearchPrecisionCard({ query, docId, hits }: SearchPrecisionCardP
     setPhase('measuring');
     submitSearchPrecision({ query, doc_id: docId, contexts })
       .then((measured) => {
+        if (cancelRef.current) return;
         setData(measured);
         setPhase('done');
       })
       .catch((err) => {
+        if (cancelRef.current) return;
         setError(err instanceof ApiError ? err.detail : '측정 실패');
         setPhase('error');
       });
@@ -122,30 +133,32 @@ export function SearchPrecisionCard({ query, docId, hits }: SearchPrecisionCardP
     const noContexts = contexts.length === 0;
     return (
       <div className="mb-4 rounded-lg border border-border bg-card px-4 py-3">
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <h3 className="flex items-center gap-2 text-sm font-medium text-foreground">
             <BarChart3 className="h-4 w-4 text-primary" />
             검색 적합도 (RAGAS Context Precision)
           </h3>
-          <button
+          {/* P2 Issue #1 — Label-in-Name: aria-label 은 가시 텍스트 "측정" 만 사용.
+              비용·시간 보조 정보는 sr-only span 으로 aria-describedby 연결 (KRW 표기). */}
+          <span id="measure-cost-hint" className="sr-only">
+            약 5초, 약 4원 (Gemini judge 1회)
+          </span>
+          <Button
             type="button"
+            size="sm"
+            variant="outline"
             onClick={handleMeasure}
             disabled={noContexts}
-            aria-label="검색 적합도 측정 — LLM judge 호출 (~5초, 약 $0.003)"
-            className={cn(
-              'rounded border px-2 py-1 text-[11px] font-medium transition-colors',
-              noContexts
-                ? 'cursor-not-allowed border-border bg-muted text-muted-foreground'
-                : 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/20',
-            )}
+            aria-describedby="measure-cost-hint"
+            className="h-7 gap-1 px-2 text-xs"
           >
             측정
-          </button>
+          </Button>
         </div>
         <p className="mt-1 text-[11px] text-muted-foreground">
           {noContexts
             ? '측정할 검색 결과 텍스트가 없어요.'
-            : '아직 측정 전 — 클릭 시 LLM judge 1회 호출 (~5초, 약 $0.003).'}
+            : '아직 측정 전 — 클릭 시 LLM judge 1회 호출 (~5초, 약 4원).'}
         </p>
       </div>
     );
