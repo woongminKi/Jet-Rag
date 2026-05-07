@@ -23,6 +23,10 @@ class Settings:
     # 데이터 누적 부족 시 (n<30 row 또는 unique_doc<5) 잠정값 — scripts/compute_budget.py 로 재산정.
     doc_budget_usd: float
     daily_budget_usd: float
+    # S0 D5 (2026-05-07) — 24h sliding window cap. master plan §6 S0 D5 + §7.4.
+    # default = daily_budget_usd 와 동일 (자정 직전/직후 폭주 방어). 별도 ENV 분리는
+    # 사용자가 sliding 만 더 보수적으로 잡고 싶을 때 활용.
+    sliding_24h_budget_usd: float
     budget_krw_per_usd: float
 
 
@@ -49,6 +53,7 @@ def _parse_float(env_key: str, default: float) -> float:
 
 @lru_cache
 def get_settings() -> Settings:
+    daily = _parse_float("JETRAG_DAILY_BUDGET_USD", _DAILY_BUDGET_USD_DEFAULT)
     return Settings(
         supabase_url=os.environ.get("SUPABASE_URL", ""),
         supabase_key=os.environ.get("SUPABASE_KEY", ""),
@@ -60,8 +65,10 @@ def get_settings() -> Settings:
             "DEFAULT_USER_ID", "00000000-0000-0000-0000-000000000001"
         ),
         doc_budget_usd=_parse_float("JETRAG_DOC_BUDGET_USD", _DOC_BUDGET_USD_DEFAULT),
-        daily_budget_usd=_parse_float(
-            "JETRAG_DAILY_BUDGET_USD", _DAILY_BUDGET_USD_DEFAULT
+        daily_budget_usd=daily,
+        # D5 — 별도 ENV 미지정 시 daily 와 동일 값. 운영자가 보수적 cap 분리 가능.
+        sliding_24h_budget_usd=_parse_float(
+            "JETRAG_24H_BUDGET_USD", daily
         ),
         budget_krw_per_usd=_parse_float(
             "JETRAG_BUDGET_KRW_PER_USD", _BUDGET_KRW_PER_USD_DEFAULT

@@ -1,10 +1,11 @@
-"""S0 D4 (2026-05-07) — vision 비용 cap 가드.
+"""S0 D4~D5 (2026-05-07) — vision 비용 cap 가드.
 
-master plan §6 S0 D4 + §7.4 정합:
+master plan §6 S0 D4 + D5 + §7.4 정합:
 
-    if doc_cost  > doc_budget_usd  → BudgetStatus(allowed=False, scope='doc')
-    if daily_cost > daily_budget_usd → BudgetStatus(allowed=False, scope='daily')
-    else                              → BudgetStatus(allowed=True)
+    if doc_cost      > doc_budget_usd      → BudgetStatus(allowed=False, scope='doc')
+    if daily_cost    > daily_budget_usd    → BudgetStatus(allowed=False, scope='daily')
+    if sliding_24h   > 24h_budget_usd      → BudgetStatus(allowed=False, scope='24h_sliding')
+    else                                    → BudgetStatus(allowed=True)
 
 호출 시점
     인제스트의 vision API 호출 직전 (페이지 단위). cap 도달 시 vision 호출
@@ -20,11 +21,18 @@ master plan §6 S0 D4 + §7.4 정합:
     - SUM 결과 캐싱 X — 비용 0.x 초 vs DB 누적량 정확성 트레이드오프 → 정확성 우선.
       무료 페르소나 A 1일 5 doc 가정 시 SUM 부하는 무시 가능.
 
-스코프 정의 (D4 ship)
+스코프 정의
     - doc: 단일 doc 의 vision_usage_log 누적 (success=true 만).
     - daily: 오늘 (UTC midnight ~ now) 의 vision_usage_log 누적 (success=true 만).
-      D5 에서 24h sliding window 추가 예정 (master plan §6 S0 D5 — vision 24h
-      누적 cap 자가 차단). 본 D4 의 daily 는 calendar day (UTC midnight 리셋).
+      calendar day 리셋 — 사용자에게 "오늘/내일" 직관적.
+    - 24h_sliding (D5): now() - 24h ~ now() 의 누적. calendar day 리셋과
+      독립적으로 24시간 rolling window 강제 — 자정 직전 폭주 후 자정 직후
+      재폭주 가능한 calendar-day 한계 보완.
+
+24h sliding 의 의미 (D5)
+    daily 가 calendar 기준이면 23:59 에 daily cap 도달했어도 00:00 에 reset.
+    sliding 은 "최근 24시간" 단위라 폭주 직후에는 다음 폭주를 24시간 차단.
+    두 가드가 동시 적용되어도 어느 한쪽만 fail 해도 차단되므로 보수적 안전망.
 
 반환값 일관성
     - allowed=True : 인제스트는 vision 호출 진행
@@ -37,7 +45,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Literal
 
 logger = logging.getLogger(__name__)
@@ -50,7 +58,10 @@ _DISABLE_ENV_KEY = "JETRAG_BUDGET_GUARD_DISABLE"
 _first_warn_logged: bool = False
 
 # scope literal — JSON flags 에 그대로 저장됨.
-BudgetScope = Literal["doc", "daily"]
+BudgetScope = Literal["doc", "daily", "24h_sliding"]
+
+# D5 — 24h sliding window 길이. 외부 ENV 로 변경 X (의미가 24시간으로 고정).
+_SLIDING_WINDOW_HOURS = 24
 
 
 @dataclass(frozen=True)
@@ -167,16 +178,74 @@ def check_daily_budget(*, cap_usd: float) -> BudgetStatus:
     )
 
 
+def check_24h_sliding_budget(
+    *,
+    cap_usd: float,
+    now: datetime | None = None,
+) -> BudgetStatus:
+    """현재 시각 기준 -24h 누적 vision 비용 검사 (D5 sliding window).
+
+    daily (calendar-day) 와 보완 관계:
+        - daily : 오늘 자정~now 누적. 자정에 reset.
+        - sliding: now-24h~now 누적. 자정 무관 rolling.
+
+    DB 부재 / 마이그 014 미적용 / SUM 실패 시 graceful — allowed=True.
+
+    인자 `now` 는 단위 테스트 결정성을 위한 주입점. None 이면 datetime.now(UTC).
+    """
+    if is_disabled():
+        return BudgetStatus(
+            allowed=True,
+            used_usd=0.0,
+            cap_usd=cap_usd,
+            scope="24h_sliding",
+            reason="가드 비활성 (ENV)",
+        )
+
+    used = _sum_24h_sliding_cost(now=now)
+    if used is None:
+        return BudgetStatus(
+            allowed=True,
+            used_usd=0.0,
+            cap_usd=cap_usd,
+            scope="24h_sliding",
+            reason="DB 조회 실패 — 가드 graceful (allowed)",
+        )
+    if used > cap_usd:
+        return BudgetStatus(
+            allowed=False,
+            used_usd=used,
+            cap_usd=cap_usd,
+            scope="24h_sliding",
+            reason=(
+                f"최근 24시간 비용 한도 초과 "
+                f"(${used:.4f} > ${cap_usd:.4f}) — vision 보강 일부 생략"
+            ),
+        )
+    return BudgetStatus(
+        allowed=True,
+        used_usd=used,
+        cap_usd=cap_usd,
+        scope="24h_sliding",
+        reason="24시간 한도 내",
+    )
+
+
 def check_combined(
     *,
     doc_id: str,
     doc_cap_usd: float,
     daily_cap_usd: float,
+    sliding_24h_cap_usd: float | None = None,
 ) -> BudgetStatus:
-    """doc + daily 동시 검사 — 어느 한 쪽이라도 초과하면 allowed=False.
+    """doc + daily + 24h sliding 동시 검사 — 어느 한 쪽이라도 초과하면 allowed=False.
 
-    우선순위: doc 검사 먼저 (doc_id 가 있을 때만). 둘 다 통과해야 allowed=True.
-    호출자는 단 1회 호출로 인제스트 분기 가능.
+    우선순위 (가장 좁은 범위 → 넓은 범위): doc → daily → 24h_sliding.
+    셋 다 통과해야 allowed=True. 호출자는 단 1회 호출로 인제스트 분기 가능.
+
+    `sliding_24h_cap_usd` 는 D5 신규 옵션. None 이면 sliding 검사 skip
+    (하위 호환 — D4 ship 시 호출자는 daily 만 알았음). 호출자는 settings 에서
+    값을 읽어 함께 전달 권고.
     """
     if is_disabled():
         return BudgetStatus(
@@ -196,7 +265,14 @@ def check_combined(
     if not daily_status.allowed:
         return daily_status
 
-    # 둘 다 통과 — 가장 정보량 많은 쪽 (daily) 반환.
+    if sliding_24h_cap_usd is not None:
+        sliding_status = check_24h_sliding_budget(cap_usd=sliding_24h_cap_usd)
+        if not sliding_status.allowed:
+            return sliding_status
+        # 가장 최근 검사 결과 (sliding) 가 정보량 최대 — 반환.
+        return sliding_status
+
+    # sliding 인자 없으면 daily 반환 (D4 호환).
     return daily_status
 
 
@@ -246,6 +322,30 @@ def _sum_daily_cost() -> float | None:
     return _sum_cost_rows(resp.data or [])
 
 
+def _sum_24h_sliding_cost(now: datetime | None = None) -> float | None:
+    """now - 24h ~ now 의 vision_usage_log SUM(estimated_cost). 실패 시 None.
+
+    인덱스: 014 마이그의 `idx_vision_usage_created (called_at)` 활용.
+    """
+    try:
+        from app.db import get_supabase_client
+
+        client = get_supabase_client()
+        cutoff = _sliding_cutoff_iso(now=now)
+        resp = (
+            client.table("vision_usage_log")
+            .select("estimated_cost,success")
+            .gte("called_at", cutoff)
+            .eq("success", True)
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001 — DB 부재 graceful
+        _warn_first(f"budget_guard 24h_sliding SUM 실패 (graceful): {exc}")
+        return None
+
+    return _sum_cost_rows(resp.data or [])
+
+
 def _sum_cost_rows(rows: list[dict]) -> float:
     """row 리스트 → estimated_cost 합 (None / 잘못된 값은 무시)."""
     total = 0.0
@@ -265,6 +365,13 @@ def _utc_midnight_iso() -> str:
     now = datetime.now(timezone.utc)
     midnight = datetime.combine(now.date(), time.min, tzinfo=timezone.utc)
     return midnight.isoformat()
+
+
+def _sliding_cutoff_iso(now: datetime | None = None) -> str:
+    """now - 24h (ISO8601). gte 필터에 사용. now=None 이면 datetime.now(UTC)."""
+    base = now if now is not None else datetime.now(timezone.utc)
+    cutoff = base - timedelta(hours=_SLIDING_WINDOW_HOURS)
+    return cutoff.isoformat()
 
 
 def _warn_first(msg: str) -> None:

@@ -138,10 +138,12 @@ def _vision_pages_with_sweep(
                     and budget_pages_since_check >= _BUDGET_RECHECK_EVERY_N_PAGES
                 ):
                     budget_pages_since_check = 0
+                    # S0 D5 — sliding 24h 추가.
                     status = budget_guard.check_combined(
                         doc_id=doc_id,
                         doc_cap_usd=settings.doc_budget_usd,
                         daily_cap_usd=settings.daily_budget_usd,
+                        sliding_24h_cap_usd=settings.sliding_24h_budget_usd,
                     )
                     if not status.allowed:
                         budget_exceeded_status = status
@@ -287,12 +289,13 @@ def run_incremental_vision_pipeline(
                 "warnings": [],
             }
 
-        # S0 D4 — 사전 cap 검사. cap 도달이면 vision 호출 0 + flags 마킹 + early return.
+        # S0 D4/D5 — 사전 cap 검사 (doc + daily + 24h sliding).
         settings = get_settings()
         pre_status = budget_guard.check_combined(
             doc_id=doc_id,
             doc_cap_usd=settings.doc_budget_usd,
             daily_cap_usd=settings.daily_budget_usd,
+            sliding_24h_cap_usd=settings.sliding_24h_budget_usd,
         )
         if not pre_status.allowed:
             logger.warning(
@@ -346,11 +349,12 @@ def run_incremental_vision_pipeline(
         loaded = run_load_stage(job_id, chunks=chunks) if chunks else 0
         embedded = run_embed_stage(job_id, doc_id=doc_id) if loaded > 0 else 0
 
-        # S0 D4 — sweep 도중 cap 도달했으면 flags 마킹 (graceful: 이미 처리한 페이지는 보존).
+        # S0 D4/D5 — sweep 도중 cap 도달했으면 flags 마킹 (graceful: 이미 처리한 페이지는 보존).
         post_status = budget_guard.check_combined(
             doc_id=doc_id,
             doc_cap_usd=settings.doc_budget_usd,
             daily_cap_usd=settings.daily_budget_usd,
+            sliding_24h_cap_usd=settings.sliding_24h_budget_usd,
         )
         if not post_status.allowed:
             existing_flags = (

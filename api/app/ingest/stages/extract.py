@@ -188,11 +188,13 @@ def run_extract_stage(job_id: str, doc_id: str) -> ExtractionResult | None:
             and not (doc.get("flags") or {}).get("scan")
         ):
             # S0 D4 — vision 호출 진입 직전 cap 사전 검사. 통과 시 enrich, 실패 시 skip + flags.
+            # S0 D5 — 24h sliding window 추가 (calendar-day daily 자정 우회 방어).
             settings = get_settings()
             pre_status = budget_guard.check_combined(
                 doc_id=doc_id,
                 doc_cap_usd=settings.doc_budget_usd,
                 daily_cap_usd=settings.daily_budget_usd,
+                sliding_24h_cap_usd=settings.sliding_24h_budget_usd,
             )
             if not pre_status.allowed:
                 logger.warning(
@@ -459,7 +461,7 @@ def _enrich_pdf_with_vision(
                 )
             failed_in_sweep: list[int] = []
             for page_num in pending_pages:
-                # S0 D4 — N 페이지마다 cap 재검사. cap 도달 시 sweep 즉시 break.
+                # S0 D4/D5 — N 페이지마다 cap 재검사. cap 도달 시 sweep 즉시 break.
                 if (
                     doc_id
                     and budget_pages_since_check >= _BUDGET_RECHECK_EVERY_N_PAGES
@@ -469,6 +471,7 @@ def _enrich_pdf_with_vision(
                         doc_id=doc_id,
                         doc_cap_usd=settings.doc_budget_usd,
                         daily_cap_usd=settings.daily_budget_usd,
+                        sliding_24h_cap_usd=settings.sliding_24h_budget_usd,
                     )
                     if not status.allowed:
                         budget_exceeded_status = status
