@@ -256,5 +256,140 @@ class TestIncrementalMaxSweepsDefault(unittest.TestCase):
             )
 
 
+class TestIncrementalReingestSafetyForS2D5(unittest.TestCase):
+    """S2 D5 phase 1 명세 §8.1 B — 데이터센터 PDF reingest 안전성 회귀 보호.
+
+    신규 3 케이스:
+    1. 기존 (vision) p.N section 인 page 는 missing 추정에서 제외 (중복 호출 방지)
+    2. 신규 chunks 의 metadata.vision_incremental == True (UI/디버깅용 플래그)
+    3. 다른 doc_id 의 chunks 는 sweep 영향 0 (cross-doc 격리)
+
+    DB 의존성 0 — 모든 supabase 호출 mock.
+    """
+
+    def test_reingest_skips_pages_with_existing_vision_section(self) -> None:
+        """`_vision_processed_pages` — section_title startswith `(vision) p.` 인 row 만 set 진입.
+
+        같은 doc_id 의 chunks 중:
+        - section_title="(vision) p.3 표" → page 3 processed
+        - section_title="(vision) p.5"   → page 5 processed
+        - section_title="본문"            → 제외 (text 청크는 missing 판정 영향 0)
+        - section_title=None              → 제외
+        """
+        from app.ingest import incremental as inc_mod
+
+        client = MagicMock()
+        client.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
+            {"page": 3, "section_title": "(vision) p.3 표"},
+            {"page": 5, "section_title": "(vision) p.5"},
+            {"page": 1, "section_title": "본문"},  # 제외
+            {"page": 2, "section_title": None},  # 제외
+            {"page": 4, "section_title": "(vision) p.4 그래프"},
+        ]
+
+        processed = inc_mod._vision_processed_pages(client, doc_id="doc-x")
+
+        # vision section 인 page (3, 4, 5) 만 processed.
+        self.assertEqual(processed, {3, 4, 5})
+
+        # 누락 페이지 추정 — 가령 total_pages=6 이면 missing = {1,2,6}.
+        all_pages = set(range(1, 7))
+        missing = sorted(all_pages - processed)
+        self.assertEqual(missing, [1, 2, 6])
+
+        # supabase.table 호출 인자 검증 — chunks 테이블, doc_id 필터.
+        client.table.assert_called_with("chunks")
+        client.table.return_value.select.return_value.eq.assert_called_with(
+            "doc_id", "doc-x",
+        )
+
+    def test_reingest_inserts_chunks_with_metadata_flag(self) -> None:
+        """`_sections_to_chunks` — 신규 ChunkRecord 의 metadata.vision_incremental == True.
+
+        S2 D5 phase 1 의 디버깅·UI 용 플래그 — 다음 측정 SQL 에서
+        `metadata->>'vision_incremental' = 'true'` 로 신규 청크만 카운트 가능.
+        """
+        from app.ingest import incremental as inc_mod
+
+        sections = [
+            ExtractedSection(
+                text="신규 vision 텍스트 1",
+                page=6,
+                section_title="(vision) p.6",
+                bbox=None,
+            ),
+            ExtractedSection(
+                text="신규 vision 텍스트 2",
+                page=7,
+                section_title="(vision) p.7 표",
+                bbox=None,
+            ),
+        ]
+
+        chunks = inc_mod._sections_to_chunks(
+            sections, doc_id="doc-x", start_chunk_idx=42,
+        )
+
+        self.assertEqual(len(chunks), 2)
+        for chunk in chunks:
+            self.assertEqual(chunk.doc_id, "doc-x")
+            # metadata.vision_incremental 플래그 — 측정·롤백 분리 키.
+            self.assertEqual(chunk.metadata, {"vision_incremental": True})
+
+        # chunk_idx 순차 증가 — start_chunk_idx 부터.
+        self.assertEqual(chunks[0].chunk_idx, 42)
+        self.assertEqual(chunks[1].chunk_idx, 43)
+
+        # page / section_title 보존.
+        self.assertEqual(chunks[0].page, 6)
+        self.assertEqual(chunks[1].page, 7)
+        self.assertEqual(chunks[0].section_title, "(vision) p.6")
+        self.assertEqual(chunks[1].section_title, "(vision) p.7 표")
+
+    def test_reingest_preserves_other_doc_chunks(self) -> None:
+        """`_vision_processed_pages` 가 doc_id 필터 정확 — cross-doc 청크 무영향.
+
+        sweep 흐름 자체는 새 chunks insert 만 함 (기존 chunks DELETE X).
+        그래도 `_vision_processed_pages` 의 eq("doc_id", target_doc) 가 정확해야
+        다른 doc_id 의 chunks 가 missing page 판정에 잘못 들어가지 않음.
+        """
+        from app.ingest import incremental as inc_mod
+
+        # supabase mock — eq("doc_id", X) 호출 인자에 따라 다른 결과 반환.
+        client = MagicMock()
+        responses_by_doc = {
+            "doc-target": [
+                {"page": 2, "section_title": "(vision) p.2"},
+                {"page": 4, "section_title": "(vision) p.4"},
+            ],
+            "doc-other": [
+                {"page": 1, "section_title": "(vision) p.1"},
+                {"page": 9, "section_title": "(vision) p.9"},
+            ],
+        }
+
+        def eq_side_effect(col, val):
+            chain = MagicMock()
+            chain.execute.return_value.data = responses_by_doc.get(val, [])
+            return chain
+
+        client.table.return_value.select.return_value.eq.side_effect = eq_side_effect
+
+        # 1) target doc — 본인 vision page 만 추출.
+        processed_target = inc_mod._vision_processed_pages(client, doc_id="doc-target")
+        self.assertEqual(processed_target, {2, 4})
+
+        # 2) other doc — 본인 page 만. cross-talk 없음.
+        processed_other = inc_mod._vision_processed_pages(client, doc_id="doc-other")
+        self.assertEqual(processed_other, {1, 9})
+
+        # 두 doc 모두 같은 chunks 테이블에서 select — eq 필터로만 격리.
+        # supabase-py eq 호출 = 2회 (각 doc 마다 1회), 각각 다른 doc_id 인자.
+        eq_calls = client.table.return_value.select.return_value.eq.call_args_list
+        self.assertEqual(len(eq_calls), 2)
+        passed_doc_ids = sorted(call.args[1] for call in eq_calls)
+        self.assertEqual(passed_doc_ids, ["doc-other", "doc-target"])
+
+
 if __name__ == "__main__":
     unittest.main()
