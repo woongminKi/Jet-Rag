@@ -31,7 +31,7 @@ import time
 import unicodedata
 from functools import lru_cache
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from pydantic import BaseModel
 
 from app.adapters.factory import get_llm_provider
@@ -438,6 +438,7 @@ def answer(
     q: str = Query(..., min_length=1, max_length=_MAX_QUERY_LEN, description="질문 (한국어)"),
     top_k: int = Query(_DEFAULT_TOP_K, ge=1, le=_MAX_TOP_K, description="LLM 에 전달할 검색 결과 chunks 수"),
     doc_id: str | None = Query(default=None, description="단일 문서 스코프 (W11 doc_id 필터)"),
+    response: Response = None,  # type: ignore[assignment]
 ) -> AnswerResponse:
     start_t = time.monotonic()
     settings = get_settings()
@@ -449,6 +450,12 @@ def answer(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="질문이 비어있습니다.",
         )
+
+    # S3 D4 — X-Reranker-Path 헤더 노출 (planner v0.1 §E).
+    # /answer 는 _gather_chunks 의 RPC 만 사용 — reranker 자체 미진입 → 항상 disabled.
+    # 향후 /answer 도 reranker 통합 시 본 위치에서 path 동적 set 으로 확장.
+    if response is not None:
+        response.headers["X-Reranker-Path"] = "disabled"
 
     # S3 D2 — intent_router 룰 호출 (외부 API 0). low_confidence 마킹 + signals 노출.
     router_decision = intent_router.route(clean_q)

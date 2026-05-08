@@ -221,11 +221,18 @@ class SearchRerankerIntegrationTest(unittest.TestCase):
         os.environ.pop("JETRAG_RERANKER_ENABLED", None)
         from app.adapters.impl.bge_reranker_hf import get_reranker_provider
         from app.adapters.impl.bgem3_hf_embedding import get_bgem3_provider
+        from app.services import reranker_cache
         get_reranker_provider.cache_clear()
         get_bgem3_provider.cache_clear()
+        # S3 D4 — 테스트 간 cache 잔존 방지. enabled_reorders 테스트가
+        # store 한 (query="테스트", chunks=[c1,c2]) entry 가 다음 테스트에서
+        # hit → HF mock 호출 0 으로 fallback 분기를 못 타는 회귀 차단.
+        reranker_cache._reset_for_test()
 
     def tearDown(self) -> None:
         os.environ.pop("JETRAG_RERANKER_ENABLED", None)
+        from app.services import reranker_cache
+        reranker_cache._reset_for_test()
 
     def _call_search(self, search_fn, q: str = "테스트"):
         return search_fn(

@@ -37,7 +37,13 @@ from app.adapters.impl.bgem3_hf_embedding import (
 )
 from app.config import get_settings
 from app.db import get_supabase_client
-from app.services import meta_filter_fast_path, search_metrics
+from app.services import (
+    intent_router,
+    meta_filter_fast_path,
+    mmr,
+    reranker_cache,
+    search_metrics,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["search"])
@@ -77,12 +83,40 @@ _COVER_GUARD_TEXT_LEN = 30
 _COVER_GUARD_PENALTY = 0.3
 
 # W25 D14+1 (S2) — BGE-reranker-v2-m3 cross-encoder rerank.
-# RRF top-K (50) → reranker score → 재정렬. opt-in ENV (default off).
+# RRF top-K (~50) → reranker score → 재정렬. opt-in ENV (default off).
 # 활성 시 cover guard 곱셈 skip — cross-encoder 가 짧은 표지 청크 의미 매칭 약함을 직접 인식.
 _RERANKER_ENABLED_DEFAULT = "false"
-# rerank 후보 cap — top 50 ≈ HF API 1회 호출 latency ~300~500ms.
-# 너무 키우면 latency 증가, 너무 작으면 RRF top-K 가 cap 보다 작을 때 노이즈.
-_RERANKER_TOP_K = 50
+# S3 D4 — rerank 후보 cap (planner v0.1 §A). 50 → 20 축소.
+# HF API pair latency 가 후보 수에 선형 — 20 cap 시 1회 호출 ~300ms 안정화.
+# RRF top-K 가 cap 보다 클 때만 잘림 — 작을 때는 후보 그대로 사용.
+# ENV `JETRAG_RERANKER_CANDIDATE_CAP` (default 20, 5~50 권장) 으로 운영 조정 가능.
+_RERANKER_CANDIDATE_CAP = 20
+_ENV_RERANKER_CAP = "JETRAG_RERANKER_CANDIDATE_CAP"
+_RERANKER_CAP_MIN = 5
+_RERANKER_CAP_MAX = 50
+
+# S3 D4 — Free-tier degrade (planner v0.1 §C). vision_usage_log 재사용
+# (`source_type='reranker_invoke'`, count rows). 월간 호출 횟수 ≥ 임계 시 reranker
+# skip → RRF score 만으로 정렬 → path="degraded" 마킹. HF 자체 헤더는 비공식·불안정
+# (사용자 결정 Q-S3-D4-1) 이라 자체 카운터 채택.
+_ENV_RERANKER_MONTHLY_CAP = "JETRAG_RERANKER_MONTHLY_CAP_CALLS"
+_ENV_RERANKER_DEGRADE_THRESHOLD = "JETRAG_RERANKER_DEGRADE_THRESHOLD"
+_RERANKER_MONTHLY_CAP_DEFAULT = 1000
+_RERANKER_DEGRADE_THRESHOLD_DEFAULT = 0.8
+
+# vision_usage_log.source_type 식별자 — D3 'query_decomposition' 과 동일 패턴.
+# budget_guard 가 source_type 으로 분리 SUM (vision 호출과 분리).
+_USAGE_LOG_RERANKER_SOURCE_TYPE = "reranker_invoke"
+
+# X-Reranker-Path 헤더 + meta 노출 라벨 (planner v0.1 §E).
+# - cached   : reranker_cache hit → HF 호출 0
+# - invoked  : 정상 HF 호출 → cache store
+# - degraded : 월간 cap 초과 → HF skip + RRF 정렬
+# - disabled : ENV off / candidates < 2 등 reranker 자체 미진입
+_RERANKER_PATH_CACHED = "cached"
+_RERANKER_PATH_INVOKED = "invoked"
+_RERANKER_PATH_DEGRADED = "degraded"
+_RERANKER_PATH_DISABLED = "disabled"
 
 # W25 D14+1 (G) — doc-level embedding RRF 가산 (S4).
 # documents.doc_embedding (1024 dim, summary+implications 또는 raw_text[:3000] 임베딩)
@@ -215,6 +249,10 @@ class QueryParsedInfo(BaseModel):
     # default False (backward compatible — opt-in ENV off 또는 reranker 실패 시 RRF fallback).
     reranker_used: bool = False
     reranker_fallback_reason: str | None = None  # transient / permanent / None
+    # S3 D4 — reranker path 라벨 (planner v0.1 §E).
+    # cached / invoked / degraded / disabled — `X-Reranker-Path` 헤더와 동일.
+    # 프론트가 stream 없이도 path 식별 가능 (X-Search-Path 와 동일 패턴).
+    reranker_path: str = _RERANKER_PATH_DISABLED
     # W25 D14+1 (G/S4) — doc-level embedding RRF 가산 사용 여부.
     # 가산이 적용된 doc 수 (doc_embedding NULL 인 doc 제외).
     doc_embedding_rrf_used: bool = False
@@ -539,11 +577,16 @@ def search(
         return meta["chunk_idx"] == 0 or meta["page"] == 1
 
     # ------------------------------------------------------------------
-    # 2-c) W25 D14+1 (S2) — BGE-reranker cross-encoder 재정렬 (opt-in).
-    #     활성 + candidates 2건 이상 시: top-K 본문을 HF API 로 1회 호출 →
-    #     cross-encoder score 반환 → rpc_rows 의 rrf_score 를 reranker score 로 in-place 대체.
-    #     실패 시 RRF score 그대로 사용 (검색 자체는 차단 X — silent degradation 회피).
-    #     query_parsed.reranker_used / reranker_fallback_reason 로 진단 노출.
+    # 2-c) W25 D14+1 (S2) + S3 D4 — BGE-reranker cross-encoder 재정렬 (opt-in).
+    #     활성 + candidates 2건 이상 시 다음 분기를 거친다 (planner v0.1 §F):
+    #       1) reranker_cache hit → HF 호출 0, path=cached, RRF score 대체.
+    #       2) free-tier degrade — 월간 호출 횟수 ≥ 임계 (default 80%) 시
+    #          path=degraded, RRF score 그대로 정렬.
+    #       3) cap 적용 — candidates[:_RERANKER_CANDIDATE_CAP] (default 20).
+    #       4) HF 호출 → 성공 시 path=invoked, cache store + usage_log 기록.
+    #       5) 실패 → RRF score 그대로 사용 (검색 자체 차단 X).
+    #     query_parsed.reranker_used / reranker_fallback_reason / reranker_path
+    #     + Response.headers["X-Reranker-Path"] 로 진단 노출.
     # ------------------------------------------------------------------
     reranker_enabled = (
         os.environ.get("JETRAG_RERANKER_ENABLED", _RERANKER_ENABLED_DEFAULT).lower()
@@ -551,33 +594,63 @@ def search(
     )
     reranker_used = False
     reranker_fallback_reason: str | None = None
+    reranker_path = _RERANKER_PATH_DISABLED
+    # cache hit / invoked 시 채워짐 — cover guard 가드 / MMR 후처리 진입 조건에 사용.
+    reranker_score_by_id: dict[str, float] | None = None
 
     if reranker_enabled and len(rpc_rows) > 1 and candidate_chunk_ids:
-        rerank_pairs: list[tuple[str, str]] = []
-        for cid in candidate_chunk_ids[:_RERANKER_TOP_K]:
-            text = (chunks_by_id.get(cid) or {}).get("text") or ""
-            rerank_pairs.append((cid, text))
-        try:
-            provider = get_reranker_provider()
-            scores = provider.rerank(clean_q, rerank_pairs)
-            score_by_id = {
-                cid: s for (cid, _), s in zip(rerank_pairs, scores)
-            }
+        # 1) cache lookup — hit 시 HF 호출 skip + path=cached.
+        cache_candidate_ids = candidate_chunk_ids[:_resolve_reranker_cap()]
+        cached_scores = reranker_cache.lookup(clean_q, cache_candidate_ids)
+        if cached_scores is not None:
+            reranker_score_by_id = cached_scores
             for r in rpc_rows:
                 cid = r["chunk_id"]
-                if cid in score_by_id:
-                    r["rrf_score"] = score_by_id[cid]
-            reranker_used = True
-        except Exception as exc:  # noqa: BLE001
-            if is_transient_reranker_error(exc):
-                reranker_fallback_reason = "transient"
-            else:
-                reranker_fallback_reason = "permanent"
-            logger.warning(
-                "reranker 호출 실패 → RRF fallback (reason=%s): %s",
-                reranker_fallback_reason,
-                exc,
-            )
+                if cid in cached_scores:
+                    r["rrf_score"] = cached_scores[cid]
+            reranker_path = _RERANKER_PATH_CACHED
+        elif _is_reranker_degraded():
+            # 2) free-tier degrade — HF 호출 skip, RRF score 유지.
+            reranker_path = _RERANKER_PATH_DEGRADED
+            logger.info("reranker 월간 호출 한도 임박 — degraded path 진입")
+        else:
+            # 3) cap 적용 + 4) HF 호출.
+            rerank_pairs: list[tuple[str, str]] = []
+            for cid in cache_candidate_ids:
+                text = (chunks_by_id.get(cid) or {}).get("text") or ""
+                rerank_pairs.append((cid, text))
+            try:
+                provider = get_reranker_provider()
+                scores = provider.rerank(clean_q, rerank_pairs)
+                score_by_id = {
+                    cid: float(s) for (cid, _), s in zip(rerank_pairs, scores)
+                }
+                for r in rpc_rows:
+                    cid = r["chunk_id"]
+                    if cid in score_by_id:
+                        r["rrf_score"] = score_by_id[cid]
+                reranker_used = True
+                reranker_path = _RERANKER_PATH_INVOKED
+                reranker_score_by_id = score_by_id
+                # cache store — 다음 동일 (query, chunks) 호출 시 HF skip.
+                reranker_cache.store(clean_q, cache_candidate_ids, score_by_id)
+                # vision_usage_log 에 invoke 1건 기록 — degrade 카운터의 SUM 기반.
+                _record_reranker_invoke()
+            except Exception as exc:  # noqa: BLE001
+                if is_transient_reranker_error(exc):
+                    reranker_fallback_reason = "transient"
+                else:
+                    reranker_fallback_reason = "permanent"
+                logger.warning(
+                    "reranker 호출 실패 → RRF fallback (reason=%s): %s",
+                    reranker_fallback_reason,
+                    exc,
+                )
+
+    # X-Reranker-Path 헤더 노출 (planner v0.1 §E). meta_fast / 0건 응답 분기 모두
+    # 본 시점 이후로 통과하므로 본 위치에서 1회 set 면 충분.
+    if response is not None:
+        response.headers["X-Reranker-Path"] = reranker_path
 
     dense_hits = sum(1 for r in rpc_rows if r.get("dense_rank") is not None)
     sparse_hits = sum(1 for r in rpc_rows if r.get("sparse_rank") is not None)
@@ -590,6 +663,7 @@ def search(
         fallback_reason=fallback_reason,
         reranker_used=reranker_used,
         reranker_fallback_reason=reranker_fallback_reason,
+        reranker_path=reranker_path,
         hyde_used=hyde_used,
         hyde_fallback_reason=hyde_fallback_reason,
     )
@@ -630,9 +704,11 @@ def search(
         chunk_id = r["chunk_id"]
         score = float(r["rrf_score"])
         # W25 D4 Phase 2 — 표지 청크 가드: 짧은 chunk_idx=0 또는 page=1 청크 score 패널티.
-        # W25 D14+1 (S2) — reranker 활성 시 cross-encoder 가 본질 처리 → 곱셈 skip
-        # (음수 logit 에 곱셈 시 부호 뒤집힘 회피 + 표지 청크 의미 매칭 약함을 reranker 가 직접 인식).
-        if not reranker_used and _is_cover_chunk(chunk_id):
+        # W25 D14+1 (S2) — reranker 활성 시 cross-encoder 가 본질 처리 → 곱셈 skip.
+        # S3 D4 — cache hit (path=cached) 도 cross-encoder score 가 그대로 들어와
+        # 같은 이유로 곱셈 skip. degraded / disabled / RRF fallback 시에는 여전히 적용.
+        cover_guard_skip = reranker_used or reranker_path == _RERANKER_PATH_CACHED
+        if not cover_guard_skip and _is_cover_chunk(chunk_id):
             score *= _COVER_GUARD_PENALTY
         doc_score[doc_id] = max(doc_score.get(doc_id, 0.0), score)
         existing = doc_chunk_scores[doc_id].get(chunk_id)
@@ -726,6 +802,7 @@ def search(
         fallback_reason=query_parsed.fallback_reason,
         reranker_used=query_parsed.reranker_used,
         reranker_fallback_reason=query_parsed.reranker_fallback_reason,
+        reranker_path=query_parsed.reranker_path,
         doc_embedding_rrf_used=doc_embedding_rrf_used,
         doc_embedding_hits=doc_embedding_hits,
         hyde_used=query_parsed.hyde_used,
@@ -738,6 +815,33 @@ def search(
     sorted_doc_ids = sorted(
         docs_meta.keys(), key=lambda did: doc_score[did], reverse=True
     )
+
+    # ------------------------------------------------------------------
+    # 5-b) S3 D4 — MMR 다양성 후처리 (cross_doc only, planner v0.1 §D).
+    #     intent_router 가 T1_cross_doc 발화 시에만 적용 — 단일 doc query 는
+    #     다양성보다 relevance 우선이라 skip. doc_embedding (1024d) 이 docs_meta
+    #     에 있으면 cosine sim 기반 다양성 항 활성, 없으면 sim=0 → relevance 정렬
+    #     보존 (회귀 0).
+    # ------------------------------------------------------------------
+    if (
+        not mmr.is_disabled()
+        and len(sorted_doc_ids) > 1
+        and doc_id is None
+        and _is_cross_doc_query(clean_q)
+    ):
+        doc_embeddings_by_id: dict[str, list[float]] = {}
+        for did in sorted_doc_ids:
+            emb_raw = (docs_meta.get(did) or {}).get("doc_embedding")
+            emb_vec = _coerce_embedding(emb_raw)
+            if emb_vec is not None:
+                doc_embeddings_by_id[did] = emb_vec
+        sorted_doc_ids = mmr.rerank(
+            sorted_doc_ids,
+            relevance=doc_score,
+            embeddings_by_id=doc_embeddings_by_id,
+            top_k=len(sorted_doc_ids),  # 전체 재정렬 → 페이지네이션은 그대로.
+        )
+
     total_docs = len(sorted_doc_ids)
     page_doc_ids = sorted_doc_ids[offset : offset + limit]
 
@@ -947,6 +1051,149 @@ def _run_meta_fast_path(
             ),
         },
     )
+
+
+def _resolve_reranker_cap() -> int:
+    """S3 D4 — `JETRAG_RERANKER_CANDIDATE_CAP` 해석. invalid 시 default 20.
+
+    range [_RERANKER_CAP_MIN, _RERANKER_CAP_MAX] 밖이면 default — planner v0.1
+    "5~50 권장" 가드. 음수 / 비숫자도 default 로 회복.
+    """
+    raw = os.environ.get(_ENV_RERANKER_CAP)
+    if raw is None or raw == "":
+        return _RERANKER_CANDIDATE_CAP
+    try:
+        value = int(raw)
+    except ValueError:
+        return _RERANKER_CANDIDATE_CAP
+    if value < _RERANKER_CAP_MIN or value > _RERANKER_CAP_MAX:
+        return _RERANKER_CANDIDATE_CAP
+    return value
+
+
+def _is_reranker_degraded() -> bool:
+    """S3 D4 — 월간 reranker 호출 횟수가 임계 (default 80%) 도달 여부.
+
+    `vision_usage_log` 의 `source_type='reranker_invoke'` row 가 최근 30일
+    이내 ``JETRAG_RERANKER_MONTHLY_CAP_CALLS * JETRAG_RERANKER_DEGRADE_THRESHOLD``
+    이상이면 degrade. DB 부재 / 마이그 014 미적용 시 graceful False (가드 비활성).
+    """
+    cap = _env_int(_ENV_RERANKER_MONTHLY_CAP, _RERANKER_MONTHLY_CAP_DEFAULT)
+    threshold = _env_float(
+        _ENV_RERANKER_DEGRADE_THRESHOLD, _RERANKER_DEGRADE_THRESHOLD_DEFAULT
+    )
+    if cap <= 0 or threshold <= 0.0:
+        return False
+    used = _count_reranker_invokes_last_30d()
+    if used is None:
+        return False
+    return used >= cap * threshold
+
+
+def _record_reranker_invoke() -> None:
+    """`vision_usage_log` 에 reranker invoke 1건 기록 — degrade 카운터 SUM 기반.
+
+    D3 `query_decomposer._record_usage` 와 동일 패턴. DB 부재 시 graceful skip.
+    estimated_cost 는 NULL — reranker 는 무료 티어 호출 수만 카운트.
+    """
+    try:
+        client = get_supabase_client()
+        client.table("vision_usage_log").insert(
+            {
+                "success": True,
+                "quota_exhausted": False,
+                "source_type": _USAGE_LOG_RERANKER_SOURCE_TYPE,
+            }
+        ).execute()
+    except Exception as exc:  # noqa: BLE001 — DB 부재 graceful
+        logger.debug("reranker invoke 기록 실패 (graceful): %s", exc)
+
+
+def _count_reranker_invokes_last_30d() -> int | None:
+    """최근 30일 내 `source_type='reranker_invoke'` row 수. 실패 시 None.
+
+    SUM 이 아닌 COUNT — 자체 호출 횟수 카운터 (사용자 결정 Q-S3-D4-1).
+    `success=true` 만 집계 (실패 호출은 quota 차감 없음).
+    """
+    try:
+        from datetime import timedelta
+
+        client = get_supabase_client()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        resp = (
+            client.table("vision_usage_log")
+            .select("call_id", count="exact")
+            .eq("source_type", _USAGE_LOG_RERANKER_SOURCE_TYPE)
+            .eq("success", True)
+            .gte("called_at", cutoff)
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001 — DB 부재 graceful
+        logger.debug("reranker invoke COUNT 실패 (graceful): %s", exc)
+        return None
+    # supabase-py count="exact" → resp.count 노출. 호환 위해 fallback 도 유지.
+    count = getattr(resp, "count", None)
+    if count is not None:
+        return int(count)
+    return len(resp.data or [])
+
+
+def _is_cross_doc_query(query: str) -> bool:
+    """S3 D4 — intent_router T1_cross_doc 트리거 여부.
+
+    MMR 적용 범위 한정 (사용자 결정 Q-S3-D4-2). intent_router 는 외부 API 0
+    이라 latency 영향 무시 가능. 빈 query 등 ValueError graceful False.
+    """
+    try:
+        decision = intent_router.route(query)
+    except ValueError:
+        return False
+    return "T1_cross_doc" in decision.triggered_signals
+
+
+def _coerce_embedding(raw) -> list[float] | None:
+    """pgvector 응답 (str "[1.0,2.0,...]" 또는 list) → list[float]. 실패 시 None.
+
+    `doc_embedding_rrf_used` 분기와 동일 패턴 — 1024 dim 검증.
+    """
+    if not raw:
+        return None
+    if isinstance(raw, str):
+        try:
+            return [float(x) for x in raw.strip("[]").split(",")]
+        except ValueError:
+            return None
+    if isinstance(raw, list) and len(raw) == 1024:
+        return [float(x) for x in raw]
+    return None
+
+
+def _env_int(key: str, default: int) -> int:
+    """ENV → int. invalid / 음수 시 default."""
+    raw = os.environ.get(key)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    if value < 0:
+        return default
+    return value
+
+
+def _env_float(key: str, default: float) -> float:
+    """ENV → float. invalid / 음수 시 default."""
+    raw = os.environ.get(key)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if value < 0.0:
+        return default
+    return value
 
 
 def _cosine(a: list[float], b: list[float]) -> float | None:
