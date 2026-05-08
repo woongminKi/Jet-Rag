@@ -71,7 +71,15 @@ _first_warn_logged: bool = False
 
 # scope literal — JSON flags 에 그대로 저장됨.
 # S2 D2 — `page_cap` 추가 (in-memory 카운터, cost cap 과 직교).
-BudgetScope = Literal["doc", "daily", "24h_sliding", "page_cap"]
+# S3 D3 — `query_decomposition` 추가 (vision_usage_log 의 source_type 분리 SUM,
+#         월간 cap. cost cap 과 직교, vision 호출과 분리 집계).
+BudgetScope = Literal[
+    "doc",
+    "daily",
+    "24h_sliding",
+    "page_cap",
+    "query_decomposition",
+]
 
 # D5 — 24h sliding window 길이. 외부 ENV 로 변경 X (의미가 24시간으로 고정).
 _SLIDING_WINDOW_HOURS = 24

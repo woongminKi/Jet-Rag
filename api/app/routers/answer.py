@@ -43,7 +43,7 @@ from app.adapters.llm import ChatMessage, LLMProvider
 from app.config import get_settings
 from app.db import get_supabase_client
 from app.routers.search import _build_pgroonga_query
-from app.services import intent_router
+from app.services import intent_router, query_decomposer
 from app.services.quota import is_quota_exhausted
 
 # S3 D2 — confidence 안전망 임계 (planner v0.1 §A).
@@ -59,6 +59,10 @@ _DEFAULT_TOP_K = 5
 _MAX_TOP_K = 10
 _RRF_K = 60
 _RPC_TOP_K = 50
+# S3 D3 — 분해 활성 시 원본 query / sub-query 별 풀 사이즈 (planner v0.1 §G + 사용자 결정 Q-S3-D3-2).
+# 원본 query 가 더 큰 풀을 가져 (subqueries 가 노이즈 일 때 fallback 역할).
+_DECOMP_TOP_K_ORIGINAL = 20
+_DECOMP_TOP_K_PER_SUB = 10
 # D2-D — 응답 schema `model` 필드는 LLM 인스턴스 `model` property 동적 표시.
 # 검색 결과 0 (LLM 호출 회피) 시 호출 회피로 인스턴스를 만들지 않으므로 fallback 필요.
 _LLM_MODEL_FALLBACK = "gemini-2.5-flash"
@@ -214,6 +218,190 @@ def _gather_chunks(
     return enriched, query_parsed
 
 
+def _gather_chunks_with_decomposition(
+    *,
+    query: str,
+    subqueries: tuple[str, ...],
+    doc_id: str | None,
+    top_k: int,
+    user_id: str,
+) -> tuple[list[dict], dict]:
+    """S3 D3 — 원본 query + sub-query 별 검색 → RRF merge → top_k chunks.
+
+    호출 흐름 (planner v0.1 §G + 사용자 결정 Q-S3-D3-2):
+    1. 원본 query 로 `_DECOMP_TOP_K_ORIGINAL=20` 풀 수집 (fallback 역할 우선).
+    2. 각 sub-query 로 `_DECOMP_TOP_K_PER_SUB=10` 풀 수집.
+    3. 모든 풀을 chunk_id 단위 RRF (Reciprocal Rank Fusion, k=60) 합산.
+    4. 상위 `top_k` 만 enrich (chunks 본문 + documents 제목 1회 조회).
+
+    `subqueries` 가 빈 tuple 이면 본 함수는 호출되지 않음 — 호출자가
+    기존 `_gather_chunks` 분기 (회귀 0).
+
+    `query_parsed` 는 원본 query 의 풀 기준만 노출 — 기존 schema 호환.
+    sub-query merge 결과량은 `meta.decomposed_subqueries` 길이로 추정 가능.
+    """
+    client = get_supabase_client()
+
+    # 1) 원본 query — 기존 _gather_chunks 동일 로직, top_k 만 _DECOMP_TOP_K_ORIGINAL.
+    original_rows, query_parsed = _fetch_query_pool(
+        client=client,
+        query=query,
+        doc_id=doc_id,
+        pool_size=_DECOMP_TOP_K_ORIGINAL,
+        user_id=user_id,
+    )
+
+    # 2) sub-query 별 풀 — dense embed 1회 / RPC 1회 / doc_id 필터 동일.
+    pools: list[list[dict]] = [original_rows]
+    for sq in subqueries:
+        sub_rows, _ = _fetch_query_pool(
+            client=client,
+            query=sq,
+            doc_id=doc_id,
+            pool_size=_DECOMP_TOP_K_PER_SUB,
+            user_id=user_id,
+        )
+        pools.append(sub_rows)
+
+    # 3) RRF merge — chunk_id 단위 1/(k+rank) 합산. 동일 chunk 가 여러 풀에 등장할수록 가중.
+    fused_rows = _rrf_merge_pools(pools, k=_RRF_K)
+    fused_rows = fused_rows[:top_k]
+    if not fused_rows:
+        return [], query_parsed
+
+    # 4) chunks + documents enrich — 기존 _gather_chunks 와 동일 패턴.
+    enriched = _enrich_rows(client, fused_rows)
+    return enriched, query_parsed
+
+
+def _fetch_query_pool(
+    *,
+    client,
+    query: str,
+    doc_id: str | None,
+    pool_size: int,
+    user_id: str,
+) -> tuple[list[dict], dict]:
+    """단일 query → top-pool RPC 호출 + doc_id 필터. (`_gather_chunks` 의 풀 단계만 분리)
+
+    enrich (chunks/documents 조회) 는 호출자가 RRF merge 후 1회만 수행 — 본 함수는 RPC row 만 반환.
+    """
+    pg_q = _build_pgroonga_query(query)
+
+    dense_vec: list[float] | None = None
+    try:
+        dense_vec = get_bgem3_provider().embed_query(query)
+    except Exception as exc:  # noqa: BLE001
+        if is_transient_hf_error(exc):
+            logger.warning("answer: HF transient → sparse-only fallback: %s", exc)
+        else:
+            logger.exception("answer: HF 영구 실패 — 503")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="검색 일시 오류 — 임베딩 서비스에 연결할 수 없습니다.",
+                headers={"Retry-After": "60"},
+            ) from exc
+
+    if dense_vec is not None:
+        rpc = client.rpc(
+            "search_hybrid_rrf",
+            {
+                "query_text": pg_q,
+                "query_dense": dense_vec,
+                "k_rrf": _RRF_K,
+                "top_k": _RPC_TOP_K,
+                "user_id_arg": user_id,
+            },
+        ).execute()
+    else:
+        rpc = client.rpc(
+            "search_sparse_only_pgroonga",
+            {"query_text": pg_q, "user_id_arg": user_id, "top_k": _RPC_TOP_K},
+        ).execute()
+    rows = rpc.data or []
+
+    if doc_id:
+        rows = [r for r in rows if r.get("doc_id") == doc_id]
+
+    dense_hits = sum(1 for r in rows if r.get("dense_rank") is not None)
+    sparse_hits = sum(1 for r in rows if r.get("sparse_rank") is not None)
+    query_parsed = {
+        "has_dense": dense_vec is not None,
+        "has_sparse": sparse_hits > 0,
+        "dense_hits": dense_hits,
+        "sparse_hits": sparse_hits,
+        "fused": len(rows),
+    }
+
+    return rows[:pool_size], query_parsed
+
+
+def _rrf_merge_pools(pools: list[list[dict]], *, k: int) -> list[dict]:
+    """RRF (Reciprocal Rank Fusion) — 여러 풀을 chunk_id 단위 ``1/(k+rank)`` 합산.
+
+    각 풀 내 rank 는 0-based (rrf_score 순으로 이미 정렬되어 있다고 가정).
+    동일 chunk_id 가 여러 풀에 등장하면 점수 합산 → 다중 sub-query hit 가
+    원본 query 단독 hit 보다 우선. 첫 등장 row 의 메타 (doc_id 등) 보존.
+    """
+    scores: dict[str, float] = {}
+    base_row: dict[str, dict] = {}
+    for pool in pools:
+        for rank, row in enumerate(pool):
+            chunk_id = row.get("chunk_id")
+            if not chunk_id:
+                continue
+            scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (k + rank + 1)
+            base_row.setdefault(chunk_id, row)
+
+    # rrf_score 갱신 (UI / sources.score 와 일관성 유지) + 점수 내림차순 정렬.
+    fused: list[dict] = []
+    for chunk_id, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
+        merged = dict(base_row[chunk_id])
+        merged["rrf_score"] = score
+        fused.append(merged)
+    return fused
+
+
+def _enrich_rows(client, rows: list[dict]) -> list[dict]:
+    """RPC row 리스트 → chunks 본문 + documents 제목 enrich. 기존 `_gather_chunks` 와 동일 schema."""
+    chunk_ids = [r["chunk_id"] for r in rows]
+    chunks_resp = (
+        client.table("chunks")
+        .select("id,doc_id,chunk_idx,text,page,section_title")
+        .in_("id", chunk_ids)
+        .execute()
+    )
+    chunks_by_id = {c["id"]: c for c in (chunks_resp.data or [])}
+    doc_ids = list({r["doc_id"] for r in rows})
+    docs_resp = (
+        client.table("documents")
+        .select("id,title")
+        .in_("id", doc_ids)
+        .execute()
+    )
+    docs_by_id = {d["id"]: d for d in (docs_resp.data or [])}
+
+    enriched: list[dict] = []
+    for r in rows:
+        c = chunks_by_id.get(r["chunk_id"])
+        if not c:
+            continue
+        d = docs_by_id.get(r["doc_id"])
+        enriched.append(
+            {
+                "chunk_id": r["chunk_id"],
+                "doc_id": r["doc_id"],
+                "doc_title": (d or {}).get("title"),
+                "chunk_idx": c["chunk_idx"],
+                "text": c["text"],
+                "page": c.get("page"),
+                "section_title": c.get("section_title"),
+                "score": float(r.get("rrf_score") or 0.0),
+            }
+        )
+    return enriched
+
+
 def _build_messages(query: str, chunks: list[dict]) -> list[ChatMessage]:
     """LLM prompt 구성 — 한국어 + faithfulness 보장.
 
@@ -263,7 +451,6 @@ def answer(
         )
 
     # S3 D2 — intent_router 룰 호출 (외부 API 0). low_confidence 마킹 + signals 노출.
-    # TODO(S3-D3): if low_confidence and "T1_cross_doc" in signals: call decomposer
     router_decision = intent_router.route(clean_q)
     answer_meta: dict = {
         "low_confidence": router_decision.confidence_score < _LOW_CONFIDENCE_THRESHOLD,
@@ -271,9 +458,31 @@ def answer(
         "router_confidence": router_decision.confidence_score,
     }
 
-    chunks, query_parsed = _gather_chunks(
-        query=clean_q, doc_id=doc_id, top_k=top_k, user_id=user_id
+    # S3 D3 — gated paid query decomposition (planner v0.1 §F).
+    # ENV `JETRAG_PAID_DECOMPOSITION_ENABLED=false` 시 LLM 호출 0 / subqueries=()
+    # → 기존 _gather_chunks 분기 (회귀 0). ENV ON + needs_decomposition=True 시
+    # subqueries 산출 후 _gather_chunks_with_decomposition 분기 (RRF merge).
+    decomp = query_decomposer.decompose(clean_q, router_decision)
+    answer_meta.update(
+        {
+            "decomposed_subqueries": list(decomp.subqueries),
+            "decomposition_cost_usd": decomp.cost_usd,
+            "decomposition_cached": decomp.cached,
+        }
     )
+
+    if decomp.subqueries:
+        chunks, query_parsed = _gather_chunks_with_decomposition(
+            query=clean_q,
+            subqueries=decomp.subqueries,
+            doc_id=doc_id,
+            top_k=top_k,
+            user_id=user_id,
+        )
+    else:
+        chunks, query_parsed = _gather_chunks(
+            query=clean_q, doc_id=doc_id, top_k=top_k, user_id=user_id
+        )
 
     if not chunks:
         # 검색 결과 0 → LLM 호출 회피 (quota 보호 + 명확한 답변 형식)
