@@ -30,6 +30,11 @@ class VisionCaption:
     # 키: prompt_tokens / image_tokens / output_tokens / thinking_tokens /
     #     estimated_cost / model_used. 미지원 SDK / 응답 누락 시 None.
     usage: dict | None = None
+    # S4-A D1 — 표/그림 검색 보강용 한국어 제목 (≤ 60자, 없으면 None).
+    # 기존 `caption` (이미지 전체 요약) 과 병행 — 동시 비-None 가능. D1 은 dataclass
+    # 까지만 wire, chunks.metadata 전파는 D2 후속 (vision_cache 에는 v2 row 로 저장).
+    table_caption: str | None = None
+    figure_caption: str | None = None
 
 
 class VisionCaptioner(Protocol):

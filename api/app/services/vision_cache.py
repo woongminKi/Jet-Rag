@@ -33,8 +33,10 @@ from app.adapters.vision import VisionCaption
 logger = logging.getLogger(__name__)
 
 # ENV override 가능 — 운영자가 실험적으로 prompt 변경 + 새 캐시 키로 강제 invalidate 시.
-# 기본값 'v1' = 마이그 015 적용 시점 (2026-05-06) 의 Gemini Vision prompt 버전.
-_VISION_PROMPT_VERSION = os.environ.get("JETRAG_VISION_PROMPT_VERSION", "v1").strip() or "v1"
+# 기본값 'v2' = S4-A D1 (2026-05-09) — table_caption / figure_caption 2필드 추가 시점.
+# v1 row 는 감사 목적으로 DB 에 보존 (DELETE X). v2 lookup 은 v1 row 와 매칭 안 됨 →
+# cold-start reingest 시 일시적 비용 spike 발생 (운영 메모: work-log 참고).
+_VISION_PROMPT_VERSION = os.environ.get("JETRAG_VISION_PROMPT_VERSION", "v2").strip() or "v2"
 
 # 캐시 lookup / upsert 활성 여부 — 기본 활성. 단위 테스트나 cold start 회복 시 "0" 으로 disable.
 _CACHE_ENV_KEY = "JETRAG_VISION_CACHE_ENABLED"
@@ -133,17 +135,29 @@ def upsert(
 
 
 def _serialize(caption: VisionCaption) -> dict:
-    """VisionCaption → JSONB row. 4필드 보존, usage 는 별도 컬럼 영역이라 미저장."""
+    """VisionCaption → JSONB row. usage 는 별도 컬럼 영역이라 미저장.
+
+    S4-A D1 — table_caption / figure_caption 추가 (None 도 그대로 직렬화 →
+    JSONB 의 null 보존). v2 prompt_version 과 함께 새 row 로 적재.
+    """
     return {
         "type": caption.type,
         "ocr_text": caption.ocr_text,
         "caption": caption.caption,
         "structured": caption.structured,
+        "table_caption": caption.table_caption,
+        "figure_caption": caption.figure_caption,
     }
 
 
 def _deserialize(raw: object) -> VisionCaption | None:
-    """JSONB → VisionCaption. 잘못된 row 는 graceful None (강제 schema migration X)."""
+    """JSONB → VisionCaption. 잘못된 row 는 graceful None (강제 schema migration X).
+
+    S4-A D1 — v1 row (table_caption/figure_caption 키 부재) 도 graceful 복원
+    가능하지만, 실제로는 v2 lookup 이 v1 row 와 prompt_version 에서 미스매치 →
+    여기까지 도달하지 않음. 그래도 외부에서 직접 _deserialize 호출 시 안전을 위해
+    str/None 안전 캐스팅 유지.
+    """
     if not isinstance(raw, dict):
         return None
     cap_type = raw.get("type")
@@ -152,6 +166,15 @@ def _deserialize(raw: object) -> VisionCaption | None:
     structured = raw.get("structured")
     if not isinstance(cap_type, str):
         return None
+
+    # S4-A D1 — table_caption / figure_caption 안전 캐스팅 (str/None).
+    table_caption = raw.get("table_caption")
+    if not isinstance(table_caption, str) or not table_caption.strip():
+        table_caption = None
+    figure_caption = raw.get("figure_caption")
+    if not isinstance(figure_caption, str) or not figure_caption.strip():
+        figure_caption = None
+
     # VisionCategory Literal 검증은 호출자 (image_parser) 가 type 을 그대로 사용 → 느슨하게 통과.
     return VisionCaption(
         type=cap_type,  # type: ignore[arg-type]
@@ -159,6 +182,8 @@ def _deserialize(raw: object) -> VisionCaption | None:
         caption=caption_text,
         structured=structured if isinstance(structured, dict) else None,
         usage=None,  # cache hit 은 새 호출이 없으므로 usage 없음.
+        table_caption=table_caption,
+        figure_caption=figure_caption,
     )
 
 
