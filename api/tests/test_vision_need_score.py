@@ -52,6 +52,31 @@ def _make_page_dict(
     return {"blocks": blocks}
 
 
+def _make_page_with_blocks(blocks_spec: list[list[tuple[str, float]]]) -> dict:
+    """v3 — block 단위 테스트용 mock. 각 block 은 (text, first_x) line 의 list.
+
+    PyMuPDF dict schema 의 span.bbox = [x0, y0, x1, y1] 형식. v3 block align 판정은
+    첫 span 의 bbox[0] (= first_x) 만 사용.
+    """
+    blocks: list[dict] = []
+    for block_lines in blocks_spec:
+        spans_lines = []
+        for text, first_x in block_lines:
+            spans_lines.append(
+                {
+                    "spans": [
+                        {
+                            "text": text,
+                            "size": 10.0,
+                            "bbox": [first_x, 0.0, first_x + 50.0, 12.0],
+                        }
+                    ]
+                }
+            )
+        blocks.append({"type": 0, "lines": spans_lines})
+    return {"blocks": blocks}
+
+
 class EntityRegexTest(unittest.TestCase):
     """(a) entity regex — 표·그림·식 reference 패턴 (D2 deprecated 권고에도
     regex 자체는 보존 — 분석·디버깅용)."""
@@ -443,6 +468,168 @@ class CompositeScoreTest(unittest.TestCase):
         )
         # density 가 1e-3 의 정확히 2배 → density_signal = 0
         self.assertEqual(score, 0.0)
+
+
+class MultiLineTableV3Test(unittest.TestCase):
+    """S1.5 v3 — block 단위 multi-line table align 휴리스틱 (work-log 2026-05-09).
+
+    block 안 line ≥ 3 + 첫 span x 좌표 distinct bucket ≥ 3 (≤ 4pt cluster) 이면
+    본 block 의 모든 line 을 multi_col 로 합산. line 단위 휴리스틱과 OR 결합.
+    """
+
+    def test_block_with_3_aligned_lines_triggers_table_like(self) -> None:
+        """3 line + first_x 3 distinct bucket → table-like block, score > 0.5."""
+        page = _make_page_with_blocks(
+            [
+                [
+                    ("순번", 50.0),
+                    ("구분", 150.0),
+                    ("면적", 250.0),
+                ]
+            ]
+        )
+        score = score_page(page, page_num=1, page_area_pt2=_A4_AREA)
+        # block 단위 hit → 3/3 line 이 multi_col → table_like_score = 1.0
+        self.assertEqual(score.table_like_score, 1.0)
+        self.assertIn("table_like", score.signal_kinds())
+
+    def test_block_x_cluster_tolerance_within_4pt(self) -> None:
+        """첫 span x 가 ≤ 4pt 차 인 line 은 같은 bucket → distinct bucket 부족."""
+        # x = 50.0 / 51.5 / 53.0 — 모두 ≤ 4pt cluster → 1 bucket → table-like 미발화
+        page = _make_page_with_blocks(
+            [
+                [
+                    ("줄1", 50.0),
+                    ("줄2", 51.5),
+                    ("줄3", 53.0),
+                ]
+            ]
+        )
+        score = score_page(page, page_num=1, page_area_pt2=_A4_AREA)
+        # bucket 1개 → table-like 미발화. line 단위도 single span/짧은 텍스트 → 0
+        self.assertEqual(score.table_like_score, 0.0)
+
+    def test_block_x_cluster_distinct_3_required(self) -> None:
+        """distinct bucket 2개 (3 미만) 면 table-like block 미인정."""
+        # x = 50.0 / 200.0 / 50.5 → 2 bucket (50계열 + 200) → 임계 미달
+        page = _make_page_with_blocks(
+            [
+                [
+                    ("A", 50.0),
+                    ("B", 200.0),
+                    ("C", 50.5),
+                ]
+            ]
+        )
+        score = score_page(page, page_num=1, page_area_pt2=_A4_AREA)
+        self.assertEqual(score.table_like_score, 0.0)
+
+    def test_normal_paragraph_block_not_table(self) -> None:
+        """일반 본문 — 모든 line first_x 가 같은 bucket (왼쪽 정렬) → table-like X."""
+        # 한국어 본문 mock — 모두 left margin 50.0 ± 1.0
+        page = _make_page_with_blocks(
+            [
+                [
+                    ("이 보고서는 데이터센터 산업 현황을 다룬다.", 50.0),
+                    ("본 절에서는 통계 자료를 정리한다.", 50.5),
+                    ("자세한 내용은 다음 장을 참조하라.", 50.0),
+                    ("표 1 은 별도 첨부 자료에서 확인 가능하다.", 50.5),
+                ]
+            ]
+        )
+        score = score_page(page, page_num=1, page_area_pt2=_A4_AREA)
+        self.assertEqual(score.table_like_score, 0.0)
+
+    def test_block_min_lines_2_not_table(self) -> None:
+        """block line 수 < 3 (= 2 line) 이면 align 좋아도 table-like X."""
+        # 2 line, 3 bucket — line 수 미달
+        page = _make_page_with_blocks(
+            [
+                [
+                    ("A", 50.0),
+                    ("B", 150.0),
+                ]
+            ]
+        )
+        score = score_page(page, page_num=1, page_area_pt2=_A4_AREA)
+        self.assertEqual(score.table_like_score, 0.0)
+
+
+class CaptionRegexTest(unittest.TestCase):
+    """S1.5 v3 — caption regex 정밀화 (work-log 2026-05-09).
+
+    "표/그림/Figure/Table/Fig." + 숫자 형태일 때만 caption-like 인정. 키워드만 있고
+    숫자 없는 본문 ("그림 좋다", "표면 처리") false positive 차단.
+    """
+
+    def test_caption_regex_requires_number(self) -> None:
+        # "그림 좋다" — 키워드 hit 이지만 숫자 없음 → caption_score 0
+        page_no = _make_page_dict([["그림 좋다"]])
+        score_no = score_page(page_no, page_num=1, page_area_pt2=_A4_AREA)
+        self.assertEqual(score_no.caption_score, 0.0)
+
+        # "<그림 3>" — regex 매치 → caption-like 인정
+        page_yes = _make_page_dict([["<그림 3>"]])
+        score_yes = score_page(page_yes, page_num=1, page_area_pt2=_A4_AREA)
+        self.assertGreater(score_yes.caption_score, 0.0)
+
+    def test_caption_regex_matches_korean_do(self) -> None:
+        """P1-1 fix — "도 1" (한국어 도면 약자) caption 인정.
+
+        기존 regex group `(표|그림|Figure|Table|Fig\\.?)` 가 "도" 미포함 →
+        키워드 hit 하더라도 regex 미스로 caption 미인정 (false negative). entity
+        set 확장 후 "도 1" 도 caption-like 로 인정되어야 함.
+        """
+        page = _make_page_dict([["도 1"]])
+        score = score_page(page, page_num=1, page_area_pt2=_A4_AREA)
+        self.assertGreater(score.caption_score, 0.0)
+
+    def test_caption_regex_matches_photo_and_sajin(self) -> None:
+        """P1-1 fix — "Photo 1" / "사진 1" 두 entity 모두 caption 인정.
+
+        기존 regex 미포함 entity 의 false negative 회수 검증. 한 페이지 안에
+        두 entity 가 동시에 와도 모두 caption-like 로 인정되어 score > 0.
+        """
+        page_photo = _make_page_dict([["Photo 1"]])
+        score_photo = score_page(page_photo, page_num=1, page_area_pt2=_A4_AREA)
+        self.assertGreater(score_photo.caption_score, 0.0)
+
+        page_sajin = _make_page_dict([["사진 1"]])
+        score_sajin = score_page(page_sajin, page_num=1, page_area_pt2=_A4_AREA)
+        self.assertGreater(score_sajin.caption_score, 0.0)
+
+
+class DatacenterP40RegressionTest(unittest.TestCase):
+    """S1.5 v3 — 데이터센터 안내서 p.40 single-line table 회수 검증.
+
+    raw signal: density 1.62e-3 / table 0 / image 0.009 / quality 0.97 / caption 0.067
+    — D3 5 신호 OR rule 모두 미달이라 needs_vision=False 였음.
+    v3 block 단위 align 휴리스틱이 들어가면 same-line cell 이 줄별로 분리된 PyMuPDF
+    출력에서도 table-like 가 hit 해 needs_vision=True 로 회수되어야 함.
+
+    추정 PyMuPDF dict mock — p.40 의 18행 5열 표를 line/block 으로 단순화.
+    """
+
+    def test_p40_signature_catches_with_v3_default(self) -> None:
+        # p.40 추정 — block 1개 안에 18 line, 각 line 의 첫 span x 좌표가
+        # 5 column align (50 / 130 / 230 / 330 / 430). 본문 그 외 (본문 단락 1개) 는
+        # 일반 paragraph block 으로 따로.
+        col_xs = [50.0, 130.0, 230.0, 330.0, 430.0]
+        table_lines: list[tuple[str, float]] = []
+        for row in range(18):
+            for ci, x in enumerate(col_xs):
+                table_lines.append((f"r{row}c{ci}", x))
+        # column 5개 × 18 row → 90 line — 같은 block 안 cluster 가능하도록 packing
+        # 본 mock 은 기본적으로 한 block 에 90 line 이 있고, 5 distinct bucket 보장
+        body_block = [
+            ("일반 본문 한 줄 — page 40 의 캡션 직전 단락이다.", 50.0),
+        ]
+        page = _make_page_with_blocks([table_lines, body_block])
+        score = score_page(page, page_num=40, page_area_pt2=_A4_AREA)
+        # v3: table block 의 90 line 이 multi_col 로 합산 → table_like_score 매우 높음
+        self.assertGreaterEqual(score.table_like_score, 0.30)
+        self.assertIn("table_like", score.signal_kinds())
+        self.assertTrue(score.needs_vision)
 
 
 if __name__ == "__main__":

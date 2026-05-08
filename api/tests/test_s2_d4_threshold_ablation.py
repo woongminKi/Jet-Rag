@@ -26,10 +26,14 @@ if str(_EVALS_PATH) not in sys.path:
     sys.path.insert(0, str(_EVALS_PATH))
 
 from run_s2_d4_threshold_ablation import (  # noqa: E402
+    CandidateResult,
     D3PageSignal,
     GoldenRow,
+    HintHit,
     Threshold,
     _build_candidates,
+    _format_markdown,
+    build_recommendation,
     cross_check_hints,
     datacenter_p40_catch,
     recompute_with_thresholds,
@@ -315,6 +319,68 @@ class GoldenHintCrossCheckTest(unittest.TestCase):
         self.assertEqual(nopage.note, "page 미상")
         self.assertIsNone(nodoc.needs_vision_at_hint)
         self.assertEqual(nodoc.note, "doc 미매칭")
+
+
+class RecommendationGuardTest(unittest.TestCase):
+    """P1 권고 #2 — hint cross-check 측정 가능 row < 6 → build_recommendation 결정 보류."""
+
+    def _result(self, name: str, measurable: int, hit_rate: float) -> CandidateResult:
+        """`build_recommendation` 입력용 CandidateResult mock — measurable / hit_rate 만 의미.
+
+        실제 데이터 (per_doc_skip / hint_hits / chunk_hits) 는 본 분기 판단에 영향 없음.
+        """
+        return CandidateResult(
+            threshold=Threshold(
+                name=name, density=1e-3, table=0.30, image=0.30,
+                quality=0.40, caption=0.20,
+            ),
+            overall_skip_rate=0.50,
+            overall_total_pages=100,
+            overall_skipped=50,
+            per_doc_skip={},
+            hint_hits=[],
+            hint_hit_rate=hit_rate,
+            hint_measurable=measurable,
+            datacenter_p40_caught=False,
+            chunk_hits=None,
+            chunk_hit_rate=None,
+        )
+
+    def test_low_measurable_returns_hold_recommendation(self) -> None:
+        """측정 가능 row 의 최댓값이 6 미만이면 chosen=None / needs_user_confirm=True / s15_v3_trigger=False."""
+        results = [
+            self._result("C0_baseline", measurable=3, hit_rate=1.0),
+            self._result("C5_density_aggr", measurable=5, hit_rate=0.9),
+            self._result("V1_v3_table_default", measurable=4, hit_rate=0.85),
+        ]
+        rec = build_recommendation(results)
+        self.assertIsNone(rec.chosen_candidate)
+        self.assertTrue(rec.needs_user_confirm)
+        self.assertFalse(rec.s15_v3_trigger)
+        # rationale 와 user_confirm_reason 모두 hard constraint 근거 포함
+        self.assertIn("결정 보류", rec.rationale)
+        self.assertIn("hard constraint", rec.user_confirm_reason)
+
+    def test_hold_recommendation_markdown_uses_clear_message(self) -> None:
+        """P1-2 fix — hard constraint 분기 markdown 출력에서 ``s15_v3_trigger`` 라인이
+        그대로 노출되지 않고, "S2 D5 채택 임계 patch" 명시 메시지가 대신 출력되어야 함.
+
+        기존 출력은 ``s15_v3_trigger=False`` 가 그대로 노출되어 "v3 ship 자체가 보류"
+        로 오해 가능 — display_message 로 의미 명확화.
+        """
+        results = [
+            self._result("C0_baseline", measurable=3, hit_rate=1.0),
+            self._result("V1_v3_table_default", measurable=4, hit_rate=0.85),
+        ]
+        rec = build_recommendation(results)
+        md = _format_markdown(results, rec, use_db=False)
+
+        # display_message 가 출력에 포함되어야 — "S2 D5 채택 임계 patch" 라는
+        # 명시 메시지로 trigger 의미 모호성 제거.
+        self.assertIn("S2 D5 채택 임계 patch", md)
+        # 기존 "S1.5 v3 trigger 권고" 라인은 출력되면 안 됨 (display_message 가
+        # set 된 hard constraint 분기에서는 본 라인 숨김).
+        self.assertNotIn("S1.5 v3 trigger 권고", md)
 
 
 if __name__ == "__main__":

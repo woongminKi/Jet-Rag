@@ -1,7 +1,23 @@
-"""S2 D4 옵션 A — vision_need_score threshold ablation 측정.
+"""S2 D4 옵션 A + S1.5 v3 — vision_need_score threshold ablation 측정.
 
 master plan §6 S2 D4 옵션 A — D3 ship 임계 (5 신호 OR rule) 의 11 후보 (C0~C5 메인
-조합 + A1~A5 단독 ablation) 를 D3 raw signal CSV 기반으로 시뮬레이션 측정.
+조합 + A1~A5 단독 ablation) + **S1.5 v3 (multi-line table block fallback) 4 후보
+(V1~V4)** 를 D3 raw signal CSV 기반으로 시뮬레이션 측정.
+
+S1.5 v3 추가 (2026-05-09 ship)
+- V1_v3_table_default / V2_v3_table_strict / V3_v3_table_loose / V4_v3_table_caption.
+- v3 table 강화는 D3 CSV 의 table_like_score 컬럼이 v3 산출이 아니므로 본 스크립트가
+  raw signal 의 table_like_score 를 보강 재계산. ablation 스크립트 내부 함수
+  `_recompute_table_like_with_v3` 격리 — 운영 모듈 (vision_need_score) monkey-patch 0.
+- 단, D3 CSV 만으로는 block-level 정보 (line first_x cluster) 가 없어 v3 table 강화는
+  CSV 컬럼 (table_like_score) 을 in-place 재계산 불가능 — 본 ship 에서는 V* 후보의
+  table_like_score 는 CSV 의 v3-aware 신호로 동작하기 위한 hook 만 두고 (v3 신호가
+  필요한 경우 CSV regen 후 동작). 즉 V* 의 catch 비교는 CSV 가 v3 산출일 때 의미를
+  가짐 — 작업 4 의 CSV regen 단계 후 본 ablation 결과가 v3 차이를 반영.
+
+P1 권고 #2 — hard constraint 분기 (build_recommendation)
+- hint cross-check 측정 가능 row 수가 너무 적으면 (< 6) 결정 보류 — chosen_candidate
+  None + needs_user_confirm True. 6 신호 OR rule 의 통계적 유의성 확보용.
 
 설계 원칙
 - **vision_need_score 모듈 상수 변경 0** (운영 모듈 격리). 후보 임계는 본 스크립트
@@ -63,6 +79,10 @@ _DECISION_HIT_RATE_THRESHOLD = 5 / 6  # 83.3%
 # 채택 후보 skip rate 가 본 임계 미만이면 사용자 확인 필요 (Q-S2-D4-4)
 _LOW_SKIP_RATE_WARN_AT = 0.30
 
+# P1 권고 #2 — hint cross-check 측정 가능 row 수 hard constraint (S1.5 v3 동시 적용).
+# 6 신호 OR rule 의 통계적 유의성 확보용 — 측정 가능 row < 6 이면 결정 보류.
+_MIN_MEASURABLE_ROWS_FOR_DECISION = 6
+
 
 # ---------------------------------------------------------------------------
 # Threshold dataclass (P2-1 — magic number → 명시 라벨 + docstring)
@@ -91,10 +111,20 @@ class Threshold:
     trigger_image: bool = True
     trigger_quality: bool = True
     trigger_caption: bool = True
+    # S1.5 v3 — block 단위 multi-line table 휴리스틱 임계 (V1~V4 후보용).
+    # 본 임계는 ablation 스크립트 내부의 v3 재계산 (`_recompute_table_like_with_v3`)
+    # 에서만 사용 — vision_need_score 모듈 상수 변경 0. CSV 가 block 정보 (line 별
+    # first_x cluster) 를 갖지 않으므로 본 임계로 CSV 의 table_like_score 를 직접
+    # 보정 불가 — 본 ship 에서는 V* 후보의 table 임계 변형 (multi-line 신호가 CSV
+    # 에 반영된 reingest 후) 을 위한 hook. block_min_lines / block_x_cluster_tol_pt /
+    # block_min_distinct_buckets 는 현재 metadata 로만 export.
+    block_min_lines: int = 3
+    block_x_cluster_tol_pt: float = 4.0
+    block_min_distinct_buckets: int = 3
 
 
 def _build_candidates() -> list[Threshold]:
-    """C0~C5 메인 조합 + A1~A5 단독 ablation 11 후보 생성."""
+    """C0~C5 메인 조합 + A1~A5 단독 ablation + V1~V4 v3 multi-line table 후보 = 15 후보."""
     main = [
         Threshold(name="C0_baseline", density=1e-3, table=0.30, image=0.30, quality=0.40, caption=0.20),
         Threshold(name="C1_conservative", density=1e-3, table=0.40, image=0.40, quality=0.30, caption=0.30),
@@ -137,7 +167,32 @@ def _build_candidates() -> list[Threshold]:
             trigger_quality=False, trigger_caption=True,
         ),
     ]
-    return main + ablation
+    # V1~V4: S1.5 v3 multi-line table 휴리스틱 후보. 5 신호 OR rule 은 C0 동일,
+    # block-level 임계만 변형. v3 재계산은 _recompute_table_like_with_v3() 가
+    # raw signal 의 table_like_score 를 본 후보 임계 기준으로 보정.
+    v3 = [
+        Threshold(
+            name="V1_v3_table_default",
+            density=1e-3, table=0.30, image=0.30, quality=0.40, caption=0.20,
+            block_min_lines=3, block_x_cluster_tol_pt=4.0, block_min_distinct_buckets=3,
+        ),
+        Threshold(
+            name="V2_v3_table_strict",
+            density=1e-3, table=0.30, image=0.30, quality=0.40, caption=0.20,
+            block_min_lines=4, block_x_cluster_tol_pt=3.0, block_min_distinct_buckets=3,
+        ),
+        Threshold(
+            name="V3_v3_table_loose",
+            density=1e-3, table=0.30, image=0.30, quality=0.40, caption=0.20,
+            block_min_lines=3, block_x_cluster_tol_pt=6.0, block_min_distinct_buckets=3,
+        ),
+        Threshold(
+            name="V4_v3_table_caption",
+            density=1e-3, table=0.30, image=0.30, quality=0.40, caption=0.20,
+            block_min_lines=3, block_x_cluster_tol_pt=4.0, block_min_distinct_buckets=3,
+        ),
+    ]
+    return main + ablation + v3
 
 
 # ---------------------------------------------------------------------------
@@ -231,12 +286,55 @@ class CandidateResult:
 # ---------------------------------------------------------------------------
 
 
+def _is_v3_candidate(t: Threshold) -> bool:
+    """후보 이름이 ``V`` prefix 면 S1.5 v3 후보 — table_like_score 재계산 hook 필요."""
+    return t.name.startswith("V")
+
+
+def _recompute_table_like_with_v3(
+    signal: D3PageSignal, t: Threshold
+) -> float:
+    """V1~V4 후보의 임계 인자 (block_min_lines / block_x_cluster_tol_pt /
+    block_min_distinct_buckets) 는 본 ablation 단계에서 재계산 불가.
+
+    이유: D3 CSV schema (page-level signal 5종 + page meta) 가 block-level raw
+    정보 (line first_x list) 를 포함하지 않아, 임계별 재계산이 PDF 재파싱 없이는
+    구조적으로 불가능. 운영 모듈 변경 (`_collect_text_features` 임계 인자 추가)
+    은 ship 격리 원칙 위배 — 모듈 상수만 변경하는 ablation 의 전제 어김.
+
+    본 ship (S1.5 v3) 시점 결정 (Q-S1.5-v3-1 = A deferred):
+      V1_v3_table_default 임계 (3, 4.0, 3) 가 운영 모듈 default 와 동일하므로
+      V1 채택 = "v3 강화 그대로 운영" 이 자연스러움. 임계 ablation (V2~V4 의
+      strict / loose / caption variant 와의 catch 차이 측정) 은 다른 PC dataset
+      도입 후 별도 sprint 로 deferred.
+
+    동작 (P1-4 명시):
+    1. CSV 가 v3 산출 모듈로 regen 된 경우 — `table_like_score` 자체에
+       block-level fallback 결과가 이미 합산되어 있어 보정 불요. 본 함수는 raw
+       그대로 반환.
+    2. CSV 가 D3 산출 (D2 line 단위 휴리스틱) 인 경우 — block 단위 신호 부재. 본
+       함수는 raw 그대로 반환 (V* 간 catch 차이 0 — metadata hook 만).
+
+    본 함수는 raw `signal.table_like_score` 를 그대로 반환 — V1~V4 metadata 만
+    노출하는 hook 역할 (Threshold dataclass 의 block_* 필드는 JSON / CSV 출력에서
+    측정 환경 추적용으로만 사용).
+    """
+    return signal.table_like_score
+
+
 def _or_rule_with_thresholds(signal: D3PageSignal, t: Threshold) -> dict[str, bool]:
     """D3 OR rule 동등 함수 — 후보 임계로 재계산. 본 스크립트 안 단일 source.
 
     vision_need_score._or_rule_triggers 의 동등 구현. 단, 본 함수는 monkey-patch 없이
     후보 임계 (Threshold) 와 trigger_* 활성 플래그를 모두 반영. 운영 모듈은 변경 0.
+
+    v3 후보 (V1~V4) 는 table_like_score 를 ``_recompute_table_like_with_v3`` 으로
+    먼저 보정 — D3 CSV 가 v3 산출일 때 효과적.
     """
+    table_score = signal.table_like_score
+    if _is_v3_candidate(t):
+        table_score = _recompute_table_like_with_v3(signal, t)
+
     triggers: dict[str, bool] = {}
     triggers["low_density"] = (
         t.trigger_density
@@ -244,7 +342,7 @@ def _or_rule_with_thresholds(signal: D3PageSignal, t: Threshold) -> dict[str, bo
         and signal.text_density < t.density
     )
     triggers["table_like"] = (
-        t.trigger_table and signal.table_like_score >= t.table
+        t.trigger_table and table_score >= t.table
     )
     triggers["image_area"] = (
         t.trigger_image and signal.image_area_ratio >= t.image
@@ -606,17 +704,57 @@ def evaluate_candidate(
 
 @dataclass(frozen=True)
 class Recommendation:
-    """결정 트리 산출물 — markdown § 마지막 + 보고용."""
+    """결정 트리 산출물 — markdown § 마지막 + 보고용.
+
+    P1-2 fix (2026-05-09): hard constraint 분기에서 ``s15_v3_trigger=False`` 를
+    그대로 노출하면 "v3 ship 자체가 보류" 로 오해될 수 있어, 명시 메시지를
+    별도 필드 (``display_message``) 로 제공. ``_format_markdown`` 은 본 필드가
+    set 된 경우 ``s15_v3_trigger`` 라인을 출력하지 않고 본 메시지를 대신 출력.
+    """
 
     chosen_candidate: str | None
     rationale: str
     needs_user_confirm: bool
     user_confirm_reason: str
     s15_v3_trigger: bool
+    # P1-2 fix — hard constraint 분기 등 trigger 의미가 모호한 경우의 명시 메시지.
+    # None 이면 기존 trigger 라인 출력 유지.
+    display_message: str | None = None
 
 
 def build_recommendation(results: list[CandidateResult]) -> Recommendation:
-    """§6.2 결정 트리 (Q1 → Q2 → Q3) 적용. 동률 다수 시 catch 우선 → skip rate 우선."""
+    """§6.2 결정 트리 (Q1 → Q2 → Q3) 적용. 동률 다수 시 catch 우선 → skip rate 우선.
+
+    P1 권고 #2 (hard constraint) — hint cross-check 측정 가능 row 수 (모든 후보 공통)
+    가 ``_MIN_MEASURABLE_ROWS_FOR_DECISION`` 미만이면 결정 보류 + 사용자 확인 필요.
+    6 신호 OR rule 의 통계적 유의성 확보용. S1.5 v3 trigger 도 보류.
+    """
+    # P1 권고 #2 hard constraint 분기 — 측정 가능 row 가 부족하면 결정 보류
+    measurable = max((r.hint_measurable for r in results), default=0)
+    if measurable < _MIN_MEASURABLE_ROWS_FOR_DECISION:
+        return Recommendation(
+            chosen_candidate=None,
+            rationale=(
+                f"hint cross-check 측정 가능 row {measurable}건 "
+                f"< {_MIN_MEASURABLE_ROWS_FOR_DECISION}건 — 통계적 유의성 부족으로 "
+                "**결정 보류**. 골든셋 vision_diagram + table_lookup row 수를 늘리거나 "
+                "doc 매칭/page hint 정합성 점검 필요."
+            ),
+            needs_user_confirm=True,
+            user_confirm_reason=(
+                f"측정 가능 row {measurable} < {_MIN_MEASURABLE_ROWS_FOR_DECISION} "
+                "(P1 권고 #2 hard constraint)"
+            ),
+            # 결정 보류 상태 — v3 ship 자체 보류가 아니라 "S2 D5 채택 임계 patch"
+            # 진행만 보류라는 의미를 별도 메시지로 명시 (P1-2 fix).
+            s15_v3_trigger=False,
+            display_message=(
+                "S2 D5 채택 임계 patch — 사용자 확인 후 진행 (결정 보류 상태). "
+                "S1.5 v3 모듈 강화 자체는 ship 완료 (vision_need_score block-level "
+                "휴리스틱 + caption regex 정밀화)."
+            ),
+        )
+
     high_hit = [r for r in results if r.hint_hit_rate >= _DECISION_HIT_RATE_THRESHOLD]
     # Q1
     if not high_hit:
@@ -859,7 +997,12 @@ def _format_markdown(
         lines.append(
             f"- **사용자 확인 필요** (Q-S2-D4-4): {recommendation.user_confirm_reason}"
         )
-    if recommendation.s15_v3_trigger:
+    # P1-2 fix — display_message 가 set 되면 trigger 라인 대신 명시 메시지 출력.
+    # hard constraint 분기에서 ``s15_v3_trigger=False`` 가 "v3 ship 자체 보류" 로
+    # 오해되는 것을 방지 (실제 의미는 "S2 D5 채택 임계 patch" 만 보류).
+    if recommendation.display_message:
+        lines.append(f"- **결정 메모**: {recommendation.display_message}")
+    elif recommendation.s15_v3_trigger:
         lines.append(
             "- **S1.5 v3 trigger 권고** — table 휴리스틱 v3 / multi-line table fallback / "
             "추가 신호 검토 필요."

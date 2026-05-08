@@ -1,8 +1,24 @@
-"""S1.5 D3 — vision_need_score 휴리스틱 v2 (master plan §6 S1.5).
+"""S1.5 v3 — vision_need_score 휴리스틱 v3 (master plan §6 S1.5 v3).
 
-D1 (PoC) → D2 (분포 분석) → D3 (임계·가중 정정 + 신호 확장) 누적 산출물.
+D1 (PoC) → D2 (분포 분석) → D3 (임계·가중 정정 + 신호 확장) → S2 D4 ablation →
+**S1.5 v3 (multi-line table 휴리스틱 + caption regex 정밀화)** 누적 산출물.
 
-D2 분석 결정 7건 적용 (work-log 2026-05-07 S1.5 D2 §5):
+S1.5 v3 추가 결정 (work-log 2026-05-09 S1.5 v3):
+1. **multi-line table block fallback** — line 단위만 보던 table_like 휴리스틱에
+   block 단위 신호 추가. 한 block 안 line 수 ≥ 3 + 첫 span x 좌표 cluster
+   (≤ 4pt 허용) 후 distinct bucket ≥ 3 → table-like block. block 안의 모든 line
+   을 multi_col_lines 카운트에 합산해 D2 의 line 단위 휴리스틱과 OR 결합.
+   데이터센터 안내서 p.40 처럼 cell 이 줄별로 분리되어 single-span 만 떨어지는
+   한국어 PDF 보강 — D4 ablation 결과 5 신호 OR rule 의 구조적 사각지대 회수.
+2. **caption regex 정밀화** — 키워드 hit + line ≤ 80자 + 신규 caption regex
+   매치 시만 caption-like 인정. ``표/그림/Figure/Table/Fig.`` 뒤에 숫자
+   (``표 1``, ``[그림 2]``, ``<표 1-2>``, ``Figure 3`` 등) 가 있어야 hit —
+   "그림 좋다" / "표면 처리" 같은 false positive 차단.
+3. **OR rule 신호 수 유지** (5 → 6 안 늘림) — table_like_score 자체를 강화해
+   `_or_rule_triggers` 시그니처 영향 0. `score_page` / `needs_vision` /
+   `PageScore` / `signal_kinds()` 시그니처 영향 0 — D1/D3 호환.
+
+D2 분석 결정 7건 (이전 ship — 본 v3 에서도 그대로 유지):
 1. **needs_vision = OR rule 채택** (composite score 보류). D1 OR rule 의 실 골든셋
    recall 5/6 (83.3%) 가 composite score 0.3 임계 (33%) 보다 우수.
 2. density 임계 1e-3 유지 — sonata 카탈로그 신호 보호 (29 pages 중 20 = 69%).
@@ -18,11 +34,12 @@ D2 분석 결정 7건 적용 (work-log 2026-05-07 S1.5 D2 §5):
    entity 가중치만 0 으로 회수해 다른 신호로 재분배.
 
 회귀 영향 0
-- 운영 파이프라인 (extract.py / pymupdf_parser.py / chunk.py) 미참조. 본 모듈은 PoC
-  + 분석 스크립트 + 단위 테스트에서만 사용. S2 D1 본 ship 시 운영 hook.
+- 운영 파이프라인 (extract.py / pymupdf_parser.py / chunk.py) 의 호출 경로는 변경 0
+  (table_like_score 산출만 강화) — S2 D5 채택 임계 patch 시 reingest 대상.
 - 외부 API 0, DB 0, 마이그 0.
 - D1 API 호환 — `score_page()` / `PageScore.signal_kinds()` 시그니처 유지. v2 신호 3종은
   `PageScore` 필드로 추가 (default 값 0.0 → 기존 호출자 mock 영향 0).
+- v3 신호 통합은 `table_like_score` 자체 강화 → OR rule / PageScore 시그니처 0 변경.
 """
 
 from __future__ import annotations
@@ -91,6 +108,33 @@ _CAPTION_NEEDS_AT = 0.20
 
 _CAPTION_KEYWORDS = ("표", "그림", "도", "사진", "Figure", "Fig.", "Table", "Photo")
 _CAPTION_MAX_LINE_LEN = 80
+
+# v3 — caption regex 정밀화 (2026-05-09 S1.5 v3 결정 #2).
+# "표/그림/도/사진/Figure/Fig./Table/Photo" 뒤에 숫자 (선택적 [-.] 보조 번호) 가
+# 와야 caption 인정. `[`, `<`, `(` 같은 괄호 prefix / suffix 도 cover.
+# "그림 좋다" / "표면 처리" / "사진작가" 등 false positive 차단.
+#
+# P1-1 fix (2026-05-09): regex group 의 entity set 을 ``_CAPTION_KEYWORDS`` 와
+# 동기화 — 기존 5 entity (표/그림/Figure/Table/Fig.) 만 매치되어 키워드 hit 한
+# "도 1" / "사진 1" / "Photo 1" 등이 caption 미인정 (false negative). 한국어 빈도
+# 순으로 정렬해 매치 효율도 함께 개선.
+_CAPTION_PATTERN = re.compile(
+    r"(?:[\[\<\(]\s*)?(표|그림|도|사진|Figure|Fig\.?|Table|Photo)\s*\d+(?:[\-\.]\d+)?(?:\s*[\]\>\)])?",
+    re.IGNORECASE,
+)
+
+
+# ---------------------------------------------------------------------------
+# v3 — multi-line table block fallback 임계 (2026-05-09 S1.5 v3 결정 #1).
+#   block 안 line 수 ≥ _BLOCK_TABLE_MIN_LINES + 첫 span x 좌표 cluster (≤
+#   _BLOCK_TABLE_X_TOL_PT 허용) 후 distinct bucket ≥ _BLOCK_TABLE_MIN_BUCKETS
+#   → 본 block 의 모든 line 을 multi_col_lines 카운트에 합산.
+#   D2 의 line 단위 fallback 과 OR 결합 — "한 line 이라도 hit" 또는
+#   "block 단위 align hit" 둘 중 하나면 multi_col 로 인정.
+# ---------------------------------------------------------------------------
+_BLOCK_TABLE_MIN_LINES = 3
+_BLOCK_TABLE_X_TOL_PT = 4.0
+_BLOCK_TABLE_MIN_BUCKETS = 3
 
 
 # ---------------------------------------------------------------------------
@@ -332,11 +376,14 @@ def _collect_text_features(page_dict: dict[str, Any]) -> _TextFeatures:
     """페이지 dict 에서 text_chars + table_like + caption 3 신호 동시 추출.
 
     table_like_score = (column 후보 line 수) / (전체 non-empty line 수).
-    column 후보 = (≥3 span 인 line) OR (single-span 인데 v2 fallback 으로 다중
-    공백·탭 분리 시 ≥3 column 인 line). single-span 만 있는 한국어 PDF 대응.
+    column 후보 = (line 단위 휴리스틱 hit) OR (block 단위 v3 align hit).
+      - line 단위 (D1/D2): ≥3 span line / single-span 의 다중 공백·탭 분리
+      - block 단위 (v3): block 안 line ≥ 3 + 첫 span x 좌표 distinct bucket ≥ 3
+        (≤ 4pt cluster 허용) → 본 block 의 모든 line 을 multi_col 로 합산
+    line 단위 hit 인 line 은 block hit 와 중복으로 세지 않음 (block hit set 우선).
 
     caption_score = (caption-like line 수) / (전체 non-empty line 수).
-    caption-like = ≤80자 + 키워드 (표/그림/도/사진/Figure/Fig./Table/Photo).
+    caption-like = ≤80자 + 키워드 (표/그림/도/사진/…) + caption regex 매치 (v3).
     """
     text_chars = 0
     total_lines = 0
@@ -346,27 +393,111 @@ def _collect_text_features(page_dict: dict[str, Any]) -> _TextFeatures:
     for block in page_dict.get("blocks", []):
         if block.get("type", 0) != 0:  # 0 = text block (PyMuPDF)
             continue
+
+        block_lines_meta: list[dict[str, Any]] = []
         for line in block.get("lines", []):
-            spans = line.get("spans", [])
+            spans = line.get("spans") or []
             non_empty = [s for s in spans if (s.get("text") or "").strip()]
             if not non_empty:
                 continue
-            total_lines += 1
             line_text = "".join(s.get("text", "") for s in non_empty)
+            block_lines_meta.append(
+                {
+                    "non_empty": non_empty,
+                    "text": line_text,
+                    "first_x": _line_first_x(non_empty),
+                }
+            )
             text_chars += sum(len(s.get("text", "")) for s in non_empty)
 
-            if _is_multi_column_line(non_empty, line_text):
+        if not block_lines_meta:
+            continue
+
+        # v3 — block 단위 align 판정 (안전 default — first_x None 인 line 은 cluster 제외)
+        block_is_table = _is_table_like_block(block_lines_meta)
+        block_line_count = len(block_lines_meta)
+        total_lines += block_line_count
+
+        if block_is_table:
+            # block 단위 hit — block 의 모든 line 을 multi_col 로 합산 (line 단위 OR
+            # 결합 — line 단위 hit 와 중복 카운트 회피)
+            multi_col_lines += block_line_count
+            # caption 은 별도 — block 안 line 별로 그대로 측정
+            for meta in block_lines_meta:
+                if _is_caption_line(meta["text"]):
+                    caption_lines += 1
+            continue
+
+        for meta in block_lines_meta:
+            if _is_multi_column_line(meta["non_empty"], meta["text"]):
                 multi_col_lines += 1
-            if _is_caption_line(line_text):
+            if _is_caption_line(meta["text"]):
                 caption_lines += 1
 
     table_score = (multi_col_lines / total_lines) if total_lines > 0 else 0.0
+    # block 단위 hit + line 단위 hit 가 합쳐지면 비율이 1.0 초과할 수 있으므로 clamp
+    table_score = min(1.0, table_score)
     caption_score = (caption_lines / total_lines) if total_lines > 0 else 0.0
     return _TextFeatures(
         text_chars=text_chars,
         table_like_score=table_score,
         caption_score=caption_score,
     )
+
+
+def _line_first_x(non_empty_spans: list[dict[str, Any]]) -> float | None:
+    """line 의 첫 span 좌측 x 좌표 (PyMuPDF span.bbox = [x0, y0, x1, y1]).
+
+    bbox 누락·길이 비정상 시 None — block align 판정에서 cluster 제외.
+    """
+    if not non_empty_spans:
+        return None
+    bbox = non_empty_spans[0].get("bbox") or non_empty_spans[0].get("box")
+    if not bbox or len(bbox) < 1:
+        return None
+    try:
+        return float(bbox[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_table_like_block(block_lines_meta: list[dict[str, Any]]) -> bool:
+    """v3 — block 단위 table-like 판정 (multi-line cell fallback).
+
+    조건 (3개 모두 만족):
+    1. block 안 non-empty line 수 ≥ ``_BLOCK_TABLE_MIN_LINES`` (default 3)
+    2. 각 line 의 첫 span x 좌표를 ``_BLOCK_TABLE_X_TOL_PT`` (default 4pt) 허용으로
+       cluster 했을 때 distinct bucket 수 ≥ ``_BLOCK_TABLE_MIN_BUCKETS`` (default 3)
+    3. cluster 입력에 사용 가능한 first_x (= bbox 가 정상) line ≥ min_lines
+
+    cluster 알고리즘: x 좌표 정렬 후 인접 차 ≤ tol 이면 같은 bucket. 단순 1-pass —
+    PyMuPDF 좌표 노이즈 (소수점 round-off) 를 ≤ tol 로 흡수.
+    """
+    if len(block_lines_meta) < _BLOCK_TABLE_MIN_LINES:
+        return False
+    xs_with_value = sorted(
+        meta["first_x"] for meta in block_lines_meta if meta["first_x"] is not None
+    )
+    if len(xs_with_value) < _BLOCK_TABLE_MIN_LINES:
+        return False
+    distinct_buckets = _count_x_clusters(xs_with_value, _BLOCK_TABLE_X_TOL_PT)
+    return distinct_buckets >= _BLOCK_TABLE_MIN_BUCKETS
+
+
+def _count_x_clusters(sorted_xs: list[float], tol: float) -> int:
+    """정렬된 x 좌표 list 에서 인접 차 ≤ tol 인 bucket 수 카운트.
+
+    빈 리스트 → 0. 단일 원소 → 1. tol < 0 이면 동일 좌표만 같은 bucket.
+    """
+    if not sorted_xs:
+        return 0
+    buckets = 1
+    prev = sorted_xs[0]
+    for x in sorted_xs[1:]:
+        if (x - prev) > tol:
+            buckets += 1
+        prev = x
+    return buckets
 
 
 def _is_multi_column_line(non_empty_spans: list[dict[str, Any]], line_text: str) -> bool:
@@ -388,17 +519,20 @@ def _is_multi_column_line(non_empty_spans: list[dict[str, Any]], line_text: str)
 
 
 def _is_caption_line(line_text: str) -> bool:
-    """caption-like 판정 — ≤80자 + 키워드 1개 이상.
+    """caption-like 판정 — ≤80자 + 키워드 hit + v3 regex 매치.
 
-    "[표 1]" / "<그림 2>" / "Figure 3" / "표 1. 데이터센터 현황" 등 cover.
+    v3: 키워드만 있으면 false positive 가 너무 많음 (`그림 좋다`, `표면 처리`,
+    `사진작가` 등). caption regex 로 "표/그림/Figure/Table/Fig. + 숫자" 형태일
+    때만 caption-like 인정 — `[표 1]` / `<그림 2>` / `표 1-2` / `Figure 3` /
+    `Fig. 4` cover.
     """
     text = line_text.strip()
     if not text or len(text) > _CAPTION_MAX_LINE_LEN:
         return False
-    for kw in _CAPTION_KEYWORDS:
-        if kw in text:
-            return True
-    return False
+    keyword_hit = any(kw in text for kw in _CAPTION_KEYWORDS)
+    if not keyword_hit:
+        return False
+    return bool(_CAPTION_PATTERN.search(text))
 
 
 def _signal_image_area_ratio(page_dict: dict[str, Any], page_area_pt2: float) -> float:
