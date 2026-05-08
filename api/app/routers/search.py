@@ -24,7 +24,7 @@ import unicodedata
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from pydantic import BaseModel
 
 from app.adapters.impl.bge_reranker_hf import (
@@ -37,7 +37,7 @@ from app.adapters.impl.bgem3_hf_embedding import (
 )
 from app.config import get_settings
 from app.db import get_supabase_client
-from app.services import search_metrics
+from app.services import meta_filter_fast_path, search_metrics
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["search"])
@@ -232,6 +232,9 @@ class SearchResponse(BaseModel):
     items: list[SearchHit]
     took_ms: int
     query_parsed: QueryParsedInfo  # W3 신규 — 기존 필드는 변경 X (backward compatible)
+    # S3 D2 — 메타 필터 fast path 진입 시 진단 정보. None 이면 RAG path (기존 흐름).
+    # 응답 헤더 X-Search-Path 와 동일 의미를 본문에도 노출 → 프론트가 stream 없이도 path 식별.
+    meta: dict | None = None
 
 
 @router.get("/search", response_model=SearchResponse)
@@ -274,6 +277,7 @@ def search(
             "ablation 측정용 (W13 Day 2 — KPI '하이브리드 +5pp 우세' 비교 인프라)."
         ),
     ),
+    response: Response = None,  # type: ignore[assignment]
 ) -> SearchResponse:
     start_t = time.monotonic()
     client = get_supabase_client()
@@ -287,6 +291,26 @@ def search(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="검색어가 비어있습니다.",
         )
+
+    # ------------------------------------------------------------------
+    # S3 D2 — 메타 필터 fast path 분기 (planner v0.1 §C).
+    # - 단일 문서 스코프 (doc_id) / mode ablation 시에는 RAG path 강제 (의도 우선).
+    # - is_meta_only 가 plan 반환 시 임베딩·RPC·reranker 호출 0 으로 바로 응답.
+    # ------------------------------------------------------------------
+    if doc_id is None and mode == "hybrid":
+        plan = meta_filter_fast_path.is_meta_only(clean_q)
+        if plan is not None:
+            return _run_meta_fast_path(
+                clean_q=clean_q,
+                plan=plan,
+                limit=limit,
+                offset=offset,
+                user_id=str(user_id),
+                response=response,
+                start_t=start_t,
+            )
+    if response is not None:
+        response.headers["X-Search-Path"] = "rag"
     if doc_type is not None and doc_type not in _DOC_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -856,6 +880,73 @@ def search(
 
 
 # ---------------------- helpers ----------------------
+
+
+def _run_meta_fast_path(
+    *,
+    clean_q: str,
+    plan: meta_filter_fast_path.MetaFilterPlan,
+    limit: int,
+    offset: int,
+    user_id: str,
+    response: Response | None,
+    start_t: float,
+) -> SearchResponse:
+    """S3 D2 — 메타 필터 fast path 실행 + SearchResponse 조립.
+
+    임베딩/RPC/reranker 호출 0. documents SELECT 1회.
+    응답 schema 는 RAG path 와 동일 (matched_chunks 는 빈 list — 메타만 매칭이라
+    개별 청크 매칭 정보는 없음).
+    """
+    rows = meta_filter_fast_path.run(plan, user_id=user_id)
+    paged = rows[offset : offset + limit]
+
+    items: list[SearchHit] = []
+    for r in paged:
+        items.append(
+            SearchHit(
+                doc_id=r["id"],
+                doc_title=r.get("title") or "",
+                doc_type=r.get("doc_type") or "",
+                tags=r.get("tags") or [],
+                summary=r.get("summary"),
+                created_at=r.get("created_at") or "",
+                relevance=1.0,  # 메타 매칭은 boolean — 동일 점수
+                matched_chunk_count=0,
+                matched_chunks=[],
+            )
+        )
+
+    took_ms = int((time.monotonic() - start_t) * 1000)
+    if response is not None:
+        response.headers["X-Search-Path"] = "meta_fast"
+
+    return SearchResponse(
+        query=clean_q,
+        total=len(rows),
+        limit=limit,
+        offset=offset,
+        items=items,
+        took_ms=took_ms,
+        query_parsed=QueryParsedInfo(
+            has_dense=False,
+            has_sparse=False,
+            dense_hits=0,
+            sparse_hits=0,
+            fused=len(rows),
+        ),
+        meta={
+            "path": "meta_fast",
+            "matched_kind": plan.matched_kind,
+            "tags": list(plan.tags),
+            "title_ilike": plan.title_ilike,
+            "date_range": (
+                [plan.date_range[0].isoformat(), plan.date_range[1].isoformat()]
+                if plan.date_range
+                else None
+            ),
+        },
+    )
 
 
 def _cosine(a: list[float], b: list[float]) -> float | None:

@@ -43,7 +43,13 @@ from app.adapters.llm import ChatMessage, LLMProvider
 from app.config import get_settings
 from app.db import get_supabase_client
 from app.routers.search import _build_pgroonga_query
+from app.services import intent_router
 from app.services.quota import is_quota_exhausted
+
+# S3 D2 — confidence 안전망 임계 (planner v0.1 §A).
+# 룰 confidence_score 가 본 임계 미만이면 응답 meta.low_confidence=true 마킹.
+# D3 에서 이 flag + T1_cross_doc 신호 조합으로 decomposition 호출 결정 예정.
+_LOW_CONFIDENCE_THRESHOLD = 0.75
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["answer"])
@@ -105,6 +111,9 @@ class AnswerResponse(BaseModel):
     model: str
     took_ms: int
     query_parsed: QueryParsedInfo
+    # S3 D2 — intent_router 룰 결과 노출 (planner v0.1 §A).
+    # low_confidence 는 D3 decomposition 진입 결정에 사용 — 본 D2 는 마킹만.
+    meta: dict | None = None
 
 
 def _gather_chunks(
@@ -253,6 +262,15 @@ def answer(
             detail="질문이 비어있습니다.",
         )
 
+    # S3 D2 — intent_router 룰 호출 (외부 API 0). low_confidence 마킹 + signals 노출.
+    # TODO(S3-D3): if low_confidence and "T1_cross_doc" in signals: call decomposer
+    router_decision = intent_router.route(clean_q)
+    answer_meta: dict = {
+        "low_confidence": router_decision.confidence_score < _LOW_CONFIDENCE_THRESHOLD,
+        "router_signals": list(router_decision.triggered_signals),
+        "router_confidence": router_decision.confidence_score,
+    }
+
     chunks, query_parsed = _gather_chunks(
         query=clean_q, doc_id=doc_id, top_k=top_k, user_id=user_id
     )
@@ -267,6 +285,7 @@ def answer(
             model=_resolve_model_label(None),
             took_ms=int((time.monotonic() - start_t) * 1000),
             query_parsed=QueryParsedInfo(**query_parsed),
+            meta=answer_meta,
         )
 
     messages = _build_messages(clean_q, chunks)
@@ -310,6 +329,7 @@ def answer(
         model=_resolve_model_label(llm),
         took_ms=int((time.monotonic() - start_t) * 1000),
         query_parsed=QueryParsedInfo(**query_parsed),
+        meta=answer_meta,
     )
 
 
