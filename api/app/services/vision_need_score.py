@@ -48,7 +48,9 @@ _ENTITY_PATTERN = re.compile(
 # (b) table-like — line 한 개 내 span 수 임계 + line 비율 임계 + v2 fallback
 # ---------------------------------------------------------------------------
 _TABLE_MIN_SPANS_PER_LINE = 3
-# D2 결정 #3 — 0.5 → 0.3 (보강, OR rule 임계).
+# OR rule 임계 — table_like_score (≥) 본 값 이상이면 vision 후보.
+# S1.5 D3 결정값 (0.5 → 0.3, work-log 2026-05-07 §5 결정 #3).
+# S2 D4 ablation (`evals/run_s2_d4_threshold_ablation.py`) 으로 정정 후보 측정 중.
 _TABLE_LIKE_NEEDS_AT = 0.3
 
 # v2 fallback (D2 결정 #4) — single-span line 안에서도 다중 공백·탭으로 column 추정.
@@ -59,6 +61,7 @@ _TABLE_FALLBACK_MIN_COLS = _TABLE_MIN_SPANS_PER_LINE
 
 # ---------------------------------------------------------------------------
 # (c) text_density — chars / pt². D2 결정 #2 — 1e-3 유지.
+#     S1.5 D3 결정값 (sonata 카탈로그 신호 보호). S2 D4 ablation 으로 정정 후보 측정 중.
 # ---------------------------------------------------------------------------
 _DENSITY_NEEDS_AT = 1e-3
 
@@ -66,6 +69,7 @@ _DENSITY_NEEDS_AT = 1e-3
 # ---------------------------------------------------------------------------
 # (d) image_area_ratio — D3 신규. 페이지 안 image block 면적 합 / page 면적.
 #     PyMuPDF dict schema 의 block.type == 1 (image). 0.30 이상이면 vision 후보.
+#     S1.5 D3 결정값. S2 D4 ablation 으로 정정 후보 측정 중.
 # ---------------------------------------------------------------------------
 _IMAGE_AREA_NEEDS_AT = 0.30
 
@@ -73,6 +77,7 @@ _IMAGE_AREA_NEEDS_AT = 0.30
 # ---------------------------------------------------------------------------
 # (e) text_quality — D3 신규. 0.0 ~ 1.0 (1=정상, 0=깨짐).
 #     printable 문자 비율로 추정. 0.40 이하면 OCR 필요 시그널.
+#     S1.5 D3 결정값. S2 D4 ablation 으로 정정 후보 측정 중.
 # ---------------------------------------------------------------------------
 _TEXT_QUALITY_NEEDS_AT = 0.40
 
@@ -80,6 +85,7 @@ _TEXT_QUALITY_NEEDS_AT = 0.40
 # ---------------------------------------------------------------------------
 # (f) caption_score — D3 신규. 0.0 ~ 1.0. caption 패턴 (≤80자 line + 표/그림/figure
 #     keyword) 의 line 비율. 0.20 이상이면 그림 캡션 페이지 후보.
+#     S1.5 D3 결정값. S2 D4 ablation 으로 정정 후보 측정 중.
 # ---------------------------------------------------------------------------
 _CAPTION_NEEDS_AT = 0.20
 
