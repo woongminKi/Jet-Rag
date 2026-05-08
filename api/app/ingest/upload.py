@@ -36,8 +36,13 @@ def run_full_ingest(
     sha256: str,
     ext: str,
     content_type: str,
+    page_cap_override: int | None = None,
 ) -> None:
-    """Storage upload → storage_path update → run_pipeline 위임."""
+    """Storage upload → storage_path update → run_pipeline 위임.
+
+    S2 D3 — `page_cap_override` 가 주어지면 mode 별 vision page cap.
+    None 이면 settings.vision_page_cap_per_doc (S2 D2 기존 동작).
+    """
     settings = get_settings()
     supabase = get_supabase_client()
 
@@ -72,8 +77,8 @@ def run_full_ingest(
         fail_job(job_id, error_msg=f"storage_path update 실패: {exc}")
         return
 
-    # 3) 정상 — 8-stage 파이프라인 본 실행
-    run_pipeline(job_id, doc_id)
+    # 3) 정상 — 8-stage 파이프라인 본 실행 (S2 D3: page_cap_override 전달).
+    run_pipeline(job_id, doc_id, page_cap_override=page_cap_override)
 
 
 def _mark_upload_failed(supabase, *, doc_id: str, error: str) -> None:

@@ -539,5 +539,122 @@ class TestVisionPageCapHook(unittest.TestCase):
             get_settings_real.cache_clear()
 
 
+class TestPageCapOverride(unittest.TestCase):
+    """S2 D3 (2026-05-09) — page_cap_override 회귀 보호. master plan §6 S2 D3.
+
+    `_enrich_pdf_with_vision` 의 page_cap_override 인자가 mode 별 cap 으로
+    settings.vision_page_cap_per_doc 을 override 하는지 + kill switch (settings 0)
+    가 override 보다 강한지 검증. router 의 mode → page_cap 매핑은 별도 단위 테스트
+    (test_ingest_mode.py) 에서 검증 — 본 클래스는 stage 측 적용 책임만.
+    """
+
+    def test_override_reduces_cap_below_settings(self) -> None:
+        """T-B-04 — override=2 (fast 모드 효과) 가 settings=50 보다 강함."""
+        from app.ingest.stages import extract as ext_mod
+
+        data = _make_pdf_bytes(5)
+        base = ExtractionResult(
+            source_type="pdf", sections=[], raw_text="", warnings=[]
+        )
+        per_page = [
+            [ExtractedSection(text=f"vision p.{i + 1}", page=None, section_title=None)]
+            for i in range(5)
+        ]
+        parser = _stub_image_parser(per_page)
+        # settings 의 cap 은 50 (큼) — override=2 가 우선 적용되어야 함.
+        mock_settings = _settings_with_page_cap(50, need_score=False)
+        with patch.object(ext_mod, "get_settings", return_value=mock_settings):
+            result = _enrich_pdf_with_vision(
+                data, base_result=base, file_name="test.pdf",
+                image_parser=parser, page_cap_override=2,
+            )
+        # cap=2 (override) — page 1, 2 호출 후 break.
+        self.assertEqual(parser.parse.call_count, 2)
+        self.assertEqual(len(result.sections), 2)
+        self.assertTrue(any("page cap 도달" in w for w in result.warnings))
+        self.assertTrue(any("2/2" in w for w in result.warnings))
+
+    def test_override_zero_unlimited_overrides_low_settings(self) -> None:
+        """T-B-05 — override=0 (precise 모드) → 무한, settings cap 무시."""
+        from app.ingest.stages import extract as ext_mod
+
+        data = _make_pdf_bytes(5)
+        base = ExtractionResult(
+            source_type="pdf", sections=[], raw_text="", warnings=[]
+        )
+        per_page = [
+            [ExtractedSection(text=f"vision p.{i + 1}", page=None, section_title=None)]
+            for i in range(5)
+        ]
+        parser = _stub_image_parser(per_page)
+        # settings cap=2 — 평소라면 2에서 break. precise (override=0) 가 모두 풀어줌.
+        mock_settings = _settings_with_page_cap(2, need_score=False)
+        with patch.object(ext_mod, "get_settings", return_value=mock_settings):
+            result = _enrich_pdf_with_vision(
+                data, base_result=base, file_name="test.pdf",
+                image_parser=parser, page_cap_override=0,
+            )
+        # override=0 → 무한. 5 페이지 모두 호출.
+        self.assertEqual(parser.parse.call_count, 5)
+        self.assertEqual(len(result.sections), 5)
+        self.assertFalse(any("page cap 도달" in w for w in result.warnings))
+
+    def test_kill_switch_settings_zero_overrides_override(self) -> None:
+        """T-B-06 — settings.vision_page_cap_per_doc=0 (전역 kill switch) → 무한.
+
+        Q-S2-1e A 안: ENV 가 0 이면 mode/override 무관 항상 무한 (회복 토글).
+        override=2 처럼 작은 값이 들어와도 settings=0 이 우선.
+        """
+        from app.ingest.stages import extract as ext_mod
+
+        data = _make_pdf_bytes(5)
+        base = ExtractionResult(
+            source_type="pdf", sections=[], raw_text="", warnings=[]
+        )
+        per_page = [
+            [ExtractedSection(text=f"vision p.{i + 1}", page=None, section_title=None)]
+            for i in range(5)
+        ]
+        parser = _stub_image_parser(per_page)
+        # settings=0 (kill switch) — override=2 무시되고 모든 페이지 호출.
+        mock_settings = _settings_with_page_cap(0, need_score=False)
+        with patch.object(ext_mod, "get_settings", return_value=mock_settings):
+            result = _enrich_pdf_with_vision(
+                data, base_result=base, file_name="test.pdf",
+                image_parser=parser, page_cap_override=2,
+            )
+        self.assertEqual(parser.parse.call_count, 5)
+        self.assertEqual(len(result.sections), 5)
+        self.assertFalse(any("page cap 도달" in w for w in result.warnings))
+
+    def test_override_none_preserves_s2d2_behavior(self) -> None:
+        """T-B-09 — override=None → settings.vision_page_cap_per_doc 그대로 (S2 D2 호환).
+
+        S2 D3 변경이 S2 D2 단위 테스트 (TestVisionPageCapHook) 의 기존 동작을 깨뜨리지
+        않는지 명시적 회귀 보호.
+        """
+        from app.ingest.stages import extract as ext_mod
+
+        data = _make_pdf_bytes(5)
+        base = ExtractionResult(
+            source_type="pdf", sections=[], raw_text="", warnings=[]
+        )
+        per_page = [
+            [ExtractedSection(text=f"vision p.{i + 1}", page=None, section_title=None)]
+            for i in range(5)
+        ]
+        parser = _stub_image_parser(per_page)
+        # settings=2 — override 미지정 (S2 D2 path).
+        mock_settings = _settings_with_page_cap(2, need_score=False)
+        with patch.object(ext_mod, "get_settings", return_value=mock_settings):
+            result = _enrich_pdf_with_vision(
+                data, base_result=base, file_name="test.pdf",
+                image_parser=parser,  # page_cap_override 미전달
+            )
+        # settings=2 가 그대로 cap — page 1,2 호출 후 break.
+        self.assertEqual(parser.parse.call_count, 2)
+        self.assertEqual(len(result.sections), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

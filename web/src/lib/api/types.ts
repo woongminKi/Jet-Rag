@@ -9,6 +9,28 @@ export type DocType =
   | 'txt'
   | 'md';
 
+/** S2 D3 — 운영 모드 (UI 토글). 백엔드 Literal 동일 (api/app/services/ingest_mode.py).
+ *  - fast: page_cap=10, 메모/짧은 문서용
+ *  - default: page_cap=50, 권장 (대다수 자료에 안전)
+ *  - precise: page_cap=무한 (비용 한도까지) */
+export type IngestMode = 'fast' | 'default' | 'precise';
+
+/** S2 D3 — `flags.ingest_mode` 마킹 (백엔드가 doc 단 저장). */
+export interface IngestModeFlag {
+  ingest_mode?: IngestMode;
+}
+
+/** S2 D2 — `flags.vision_page_cap_exceeded` + `flags.vision_page_cap` 페이로드.
+ *  cost cap (`vision_budget_exceeded`) 와 직교 — 같은 doc 안 둘 다 도달 가능. */
+export interface VisionPageCapFlag {
+  vision_page_cap_exceeded?: boolean;
+  vision_page_cap?: {
+    called_pages: number;
+    page_cap: number;
+    reason: string;
+  };
+}
+
 export type SourceChannel =
   | 'drag-drop'
   | 'os-share'

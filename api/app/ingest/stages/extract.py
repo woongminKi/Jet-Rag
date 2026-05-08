@@ -127,11 +127,37 @@ _BUDGET_RECHECK_EVERY_N_PAGES = int(
 )
 
 
-def run_extract_stage(job_id: str, doc_id: str) -> ExtractionResult | None:
+def _resolve_page_cap_for_doc(*, override: int | None, settings) -> int:
+    """S2 D3 — page_cap 결정 헬퍼. 전역 kill switch 우선.
+
+    - settings.vision_page_cap_per_doc <= 0 → 0 (ENV 전역 무한, mode 무관)
+    - override 가 None 이면 settings.vision_page_cap_per_doc 사용 (S2 D2 기존 동작)
+    - override 가 양수면 그 값 사용 (mode 별 cap)
+    - override 가 0 이면 0 (precise mode — 무한)
+
+    extract / incremental 양쪽이 같은 helper 를 import 해 단일 진실원 유지.
+    """
+    if settings.vision_page_cap_per_doc <= 0:
+        return 0
+    if override is None:
+        return settings.vision_page_cap_per_doc
+    return override
+
+
+def run_extract_stage(
+    job_id: str,
+    doc_id: str,
+    *,
+    page_cap_override: int | None = None,
+) -> ExtractionResult | None:
     """스테이지 실행. 지원 포맷이면 `ExtractionResult`, 그 외는 skip 후 `None`.
 
     스테이지 로그 갱신·flags 마킹까지 내부에서 처리한다. 호출자(pipeline)는 반환값이 None 이면
     다음 스테이지를 건너뛰고 job 을 completed 로 마감하면 된다.
+
+    S2 D3 — `page_cap_override` 가 주어지면 해당 doc 한정 page_cap 으로 사용
+    (기본은 settings.vision_page_cap_per_doc). 운영 모드 (fast/default/precise)
+    UI 토글의 백엔드 진입점.
     """
     client = get_supabase_client()
     doc = _fetch_document(client, doc_id)
@@ -221,6 +247,7 @@ def run_extract_stage(job_id: str, doc_id: str) -> ExtractionResult | None:
                     job_id=job_id,
                     doc_id=doc_id,
                     sha256=doc.get("sha256"),
+                    page_cap_override=page_cap_override,
                 )
 
     return result
@@ -436,6 +463,7 @@ def _enrich_pdf_with_vision(
     doc_id: str | None = None,
     sha256: str | None = None,
     client: Any | None = None,
+    page_cap_override: int | None = None,
 ) -> ExtractionResult:
     """W25 D14 — 일반 PDF 의 표/그림/다이어그램 정보를 vision 으로 보강.
 
@@ -512,7 +540,11 @@ def _enrich_pdf_with_vision(
         # 검사에 그대로 사용 (needs_vision skip 페이지는 increment X — 사용자 가치
         # 페이지만 cap 차감, cap 도달 지연 정합). cost cap 과 직교 — 둘 중 먼저
         # 닿는 지점 stop. ENV `JETRAG_VISION_PAGE_CAP_PER_DOC=0` 시 무한 (회복 토글).
-        page_cap = settings.vision_page_cap_per_doc
+        # S2 D3 — page_cap_override 가 주어지면 mode 별 cap 사용 (전역 ENV 가
+        # 0 일 때는 mode 무관 0 — _resolve_page_cap_for_doc 의 kill switch).
+        page_cap = _resolve_page_cap_for_doc(
+            override=page_cap_override, settings=settings,
+        )
         page_cap_exceeded_status: budget_guard.BudgetStatus | None = None
 
         # W25 D14 Sprint 4 — sweep 로직: 503 random 실패 페이지 자동 재시도.

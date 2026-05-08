@@ -219,5 +219,42 @@ class TestIncrementalVisionPageCap(unittest.TestCase):
         self.assertIsNone(page_cap_status)
 
 
+class TestIncrementalMaxSweepsDefault(unittest.TestCase):
+    """S2 D3 P1-1 — `_MAX_SWEEPS` 의 ENV fallback default 가 extract.py 와 통일됨을 보호.
+
+    같은 ENV 키 (`JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS`) 를 공유하면서 fallback 이 갈리면
+    ENV 미설정 시 incremental 흐름이 cost/latency 1.5배. master plan §7.3 정합 위반.
+    """
+
+    def test_max_sweeps_env_default_is_2(self) -> None:
+        # ENV 미설정 상태로 incremental 모듈 재로드 → default 2 확인.
+        # 동시에 extract.py 의 `_VISION_ENRICH_MAX_SWEEPS` 와 동일 값임도 확인 (단일 진실원).
+        import importlib
+        from unittest.mock import patch
+
+        env_without_key = {
+            k: v
+            for k, v in os.environ.items()
+            if k != "JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS"
+        }
+        with patch.dict(os.environ, env_without_key, clear=True):
+            # HF_API_TOKEN 은 모듈 import 단계 의존이라 보존.
+            os.environ.setdefault("HF_API_TOKEN", "dummy-test-token")
+            import app.ingest.incremental as inc_reload
+            import app.ingest.stages.extract as extract_reload
+
+            importlib.reload(inc_reload)
+            importlib.reload(extract_reload)
+
+            self.assertEqual(inc_reload._MAX_SWEEPS, 2)
+            self.assertEqual(extract_reload._VISION_ENRICH_MAX_SWEEPS, 2)
+            self.assertEqual(
+                inc_reload._MAX_SWEEPS,
+                extract_reload._VISION_ENRICH_MAX_SWEEPS,
+                "incremental._MAX_SWEEPS 와 extract._VISION_ENRICH_MAX_SWEEPS 의 default 가 갈리면 "
+                "ENV 미설정 운영자에게 cost/latency 차이 발생.",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

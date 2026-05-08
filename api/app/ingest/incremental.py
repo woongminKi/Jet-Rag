@@ -46,7 +46,11 @@ logger = logging.getLogger(__name__)
 
 _VISION_ENRICH_TITLE_PREFIX = "(vision) p."  # extract.py 의 vision section_title 패턴
 _SCAN_RENDER_DPI = 150
-_MAX_SWEEPS = int(os.environ.get("JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS", "3"))
+# 2026-05-09 S2 D3 P1-1 fix — extract.py 의 `_VISION_ENRICH_MAX_SWEEPS` 와 default 통일.
+#   같은 ENV 키를 공유하는데 fallback 이 3 vs 2 로 갈리면 ENV 미설정 시 incremental 흐름이
+#   cost/latency 1.5배 (master plan §7.3 "default 3 → 2, sweep × retry 곱셈 제거" 정합 위반).
+#   회귀 발생 시 ENV `JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS=3` 으로 즉시 회복.
+_MAX_SWEEPS = int(os.environ.get("JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS", "2"))
 # S0 D4 — extract.py 와 동일 정책. ENV 공유.
 _BUDGET_RECHECK_EVERY_N_PAGES = int(
     os.environ.get("JETRAG_BUDGET_RECHECK_EVERY_N_PAGES", "5")
@@ -117,6 +121,7 @@ def _vision_pages_with_sweep(
     image_parser: ImageParser,
     doc_id: str | None = None,
     sha256: str | None = None,
+    page_cap_override: int | None = None,
 ) -> tuple[list[ExtractedSection], list[str], budget_guard.BudgetStatus | None]:
     """누락 페이지 list 만 vision 호출 + sweep. 성공한 페이지의 sections 반환.
 
@@ -155,7 +160,11 @@ def _vision_pages_with_sweep(
     # extract 시점부터 누적된 chunks 상태와 무관 (vision call 페이지 수만 cap).
     # 첫 진입 시 called_count=0 부터 시작 — full extract 와 incremental 누적 합산이
     # 필요한 case 는 cost cap (DB SUM) 이 책임 (page cap 은 단일 sweep run 한도).
-    page_cap = settings.vision_page_cap_per_doc
+    # S2 D3 — page_cap_override 가 주어지면 mode 별 cap (extract.py 와 동일 helper).
+    from app.ingest.stages.extract import _resolve_page_cap_for_doc
+    page_cap = _resolve_page_cap_for_doc(
+        override=page_cap_override, settings=settings,
+    )
     page_cap_exceeded_status: budget_guard.BudgetStatus | None = None
 
     try:
@@ -325,8 +334,13 @@ def _sections_to_chunks(
 def run_incremental_vision_pipeline(
     job_id: str,
     doc_id: str,
+    *,
+    page_cap_override: int | None = None,
 ) -> dict[str, Any]:
     """incremental reingest entrypoint — 기존 chunks 보존 + 누락 페이지만 vision 처리.
+
+    S2 D3 — `page_cap_override` 가 주어지면 mode 별 cap. None 이면
+    settings.vision_page_cap_per_doc 사용 (S2 D2 기존 동작).
 
     Returns dict: { processed_pages, skipped_pages, chunks_inserted, total_pages, warnings }
     """
@@ -423,6 +437,7 @@ def run_incremental_vision_pipeline(
 
         # 누락 페이지 vision 호출 (sweep)
         # S2 D2 — 반환 tuple 3번째 = page_cap_exceeded_status (도달 시 BudgetStatus).
+        # S2 D3 — page_cap_override 전달 (mode 별 cap).
         sections, warnings, page_cap_status = _vision_pages_with_sweep(
             pdf_data,
             pages=missing,
@@ -430,6 +445,7 @@ def run_incremental_vision_pipeline(
             image_parser=_image_parser,
             doc_id=doc_id,
             sha256=doc_sha256,
+            page_cap_override=page_cap_override,
         )
 
         # ChunkRecord 변환

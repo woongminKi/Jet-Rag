@@ -35,6 +35,7 @@ from app.ingest import (
 from app.ingest.eta import compute_remaining_ms
 from app.routers._input_gate import HEAD_BYTES, validate_magic
 from app.routers._url_gate import recheck_dns_consistency, validate_url_safety
+from app.services.ingest_mode import INGEST_MODES, IngestMode, resolve_page_cap
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,31 @@ _CHUNK_SIZE = 64 * 1024              # 스트리밍 read chunk
 # 자연스럽게 대응. documents.user_id (UUID) 와 별개의 path 라벨.
 _PENDING_PATH_NAMESPACE = "default"
 _SourceChannel = Literal["drag-drop", "os-share", "clipboard", "url", "camera", "api"]
+
+# S2 D3 — 운영 모드 default. UI/router 양쪽이 같은 default 를 본다.
+_DEFAULT_INGEST_MODE: IngestMode = "default"
+
+
+def _validate_ingest_mode(raw: str | None) -> IngestMode:
+    """입력 mode 검증 — invalid 시 400. None/빈 문자열 → default 반환."""
+    if raw is None or raw == "":
+        return _DEFAULT_INGEST_MODE
+    if raw not in INGEST_MODES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"지원되지 않는 모드입니다: {raw!r} "
+                f"(허용: {', '.join(INGEST_MODES)})"
+            ),
+        )
+    return raw  # type: ignore[return-value]
+
+
+def _flags_with_ingest_mode(existing: dict | None, mode: IngestMode) -> dict:
+    """기존 flags 보존 + ingest_mode 만 갱신 (S2 D3)."""
+    out = dict(existing or {})
+    out["ingest_mode"] = mode
+    return out
 
 
 # ============================================================
@@ -125,6 +151,11 @@ class UrlUploadRequest(BaseModel):
         description="제공 안 할 시 trafilatura 메타·OG title·hostname 순으로 자동 추정.",
     )
     source_channel: _SourceChannel = "url"
+    # S2 D3 — 운영 모드 (fast/default/precise). default=default. invalid 시 400.
+    mode: str = Field(
+        "default",
+        description="운영 모드: 'fast' | 'default' | 'precise'.",
+    )
 
 
 _URL_FETCH_TIMEOUT_SECONDS = 10
@@ -349,6 +380,7 @@ async def upload_document(
     file: UploadFile = File(...),
     source_channel: _SourceChannel = Form("api"),
     title: str | None = Form(None),
+    mode: str = Form(_DEFAULT_INGEST_MODE),
 ) -> UploadResponse:
     """수신 ≤ 2초 SLO. Storage upload 는 BG `run_full_ingest` 위임.
 
@@ -363,6 +395,9 @@ async def upload_document(
     """
     started_at = time.perf_counter()
     file_name = file.filename or "untitled"
+
+    # S2 D3 — 운영 모드 검증 (확장자 검증 직전, SLO 영향 0).
+    ingest_mode: IngestMode = _validate_ingest_mode(mode)
 
     # ---- 입력 게이트 단계 A: 확장자 화이트리스트 ----
     ext = PurePosixPath(file_name).suffix.lower()
@@ -429,9 +464,16 @@ async def upload_document(
         if existing_flags.get("failed"):
             _reset_doc_for_reingest(supabase, existing_doc_id)
             received_ms = int((time.perf_counter() - started_at) * 1000)
+            # S2 D3 — 새 mode 를 flags 에 보존 + page_cap 결정.
+            page_cap_override = resolve_page_cap(ingest_mode, settings)
             (
                 supabase.table("documents")
-                .update({"received_ms": received_ms})
+                .update(
+                    {
+                        "received_ms": received_ms,
+                        "flags": _flags_with_ingest_mode({}, ingest_mode),
+                    }
+                )
                 .eq("id", existing_doc_id)
                 .execute()
             )
@@ -444,6 +486,7 @@ async def upload_document(
                 sha256=sha256,
                 ext=ext,
                 content_type=content_type,
+                page_cap_override=page_cap_override,
             )
             return UploadResponse(
                 doc_id=existing_doc_id,
@@ -465,6 +508,8 @@ async def upload_document(
     # → ilike/검색 query (NFC) 와 byte 매칭 fail. 인제스트 단에서 NFC 통일.
     doc_title = unicodedata.normalize("NFC", title or PurePosixPath(file_name).stem)
     received_ms = int((time.perf_counter() - started_at) * 1000)
+    # S2 D3 — mode → flags + page_cap 결정.
+    page_cap_override = resolve_page_cap(ingest_mode, settings)
     doc_row = (
         supabase.table("documents")
         .insert(
@@ -478,6 +523,7 @@ async def upload_document(
                 "size_bytes": size,
                 "content_type": content_type,
                 "received_ms": received_ms,
+                "flags": _flags_with_ingest_mode({}, ingest_mode),
             }
         )
         .execute()
@@ -494,6 +540,7 @@ async def upload_document(
         sha256=sha256,
         ext=ext,
         content_type=content_type,
+        page_cap_override=page_cap_override,
     )
     return UploadResponse(doc_id=doc_id, job_id=job.id, duplicated=False)
 
@@ -516,6 +563,9 @@ async def upload_url(
     명세 v0.3 §3.E. doc_type='url', `flags.source_url` 에 원본 URL 보존.
     """
     started_at = time.perf_counter()
+
+    # S2 D3 — 운영 모드 검증 (SSRF 직전, SLO 영향 0).
+    ingest_mode: IngestMode = _validate_ingest_mode(payload.mode)
 
     # SSRF 검증 (multi-IP round-robin 차단 포함). resolved IP 집합 캐시 → recheck 입력.
     safe, reason, resolved_ips = validate_url_safety(payload.url)
@@ -594,9 +644,18 @@ async def upload_url(
         if existing_flags.get("failed"):
             _reset_doc_for_reingest(supabase, existing_doc_id)
             received_ms = int((time.perf_counter() - started_at) * 1000)
+            # S2 D3 — 새 mode 를 flags 에 보존 + page_cap 결정. 기존 source_url 도 유지.
+            page_cap_override = resolve_page_cap(ingest_mode, settings)
+            preserved_flags = dict(existing_flags)
+            # _reset_doc_for_reingest 가 flags 를 빈 dict 로 reset 했지만 source_url 은
+            # POST /documents/url 의 dedup 분기 이전 SELECT 한 existing_flags 에서 보존.
+            new_flags: dict = {}
+            if "source_url" in preserved_flags:
+                new_flags["source_url"] = preserved_flags["source_url"]
+            new_flags["ingest_mode"] = ingest_mode
             (
                 supabase.table("documents")
-                .update({"received_ms": received_ms})
+                .update({"received_ms": received_ms, "flags": new_flags})
                 .eq("id", existing_doc_id)
                 .execute()
             )
@@ -609,6 +668,7 @@ async def upload_url(
                 sha256=sha256,
                 ext=".html",
                 content_type=content_type,
+                page_cap_override=page_cap_override,
             )
             return UploadResponse(
                 doc_id=existing_doc_id, job_id=job.id, duplicated=False
@@ -637,10 +697,11 @@ async def upload_url(
     # W25 D14 — title NFC 정규화 (한국어 NFD/NFC 불일치 회피)
     title = unicodedata.normalize("NFC", title)
 
-    # ---- documents insert (pending path + flags.source_url) ----
+    # ---- documents insert (pending path + flags.source_url + ingest_mode) ----
     doc_uuid = uuid.uuid4().hex
     pending_path = f"pending/{_PENDING_PATH_NAMESPACE}/{doc_uuid}.html"
     received_ms = int((time.perf_counter() - started_at) * 1000)
+    page_cap_override = resolve_page_cap(ingest_mode, settings)
     doc_row = (
         supabase.table("documents")
         .insert(
@@ -654,7 +715,10 @@ async def upload_url(
                 "size_bytes": size,
                 "content_type": content_type,
                 "received_ms": received_ms,
-                "flags": {"source_url": payload.url},
+                "flags": {
+                    "source_url": payload.url,
+                    "ingest_mode": ingest_mode,
+                },
             }
         )
         .execute()
@@ -670,6 +734,7 @@ async def upload_url(
         sha256=sha256,
         ext=".html",
         content_type=content_type,
+        page_cap_override=page_cap_override,
     )
     return UploadResponse(doc_id=doc_id, job_id=job.id, duplicated=False)
 
@@ -685,6 +750,13 @@ async def upload_url(
 def reingest_document(
     doc_id: str,
     background_tasks: BackgroundTasks,
+    mode: str | None = Query(
+        None,
+        description=(
+            "운영 모드 (fast/default/precise). 미지정 시 기존 flags.ingest_mode "
+            "재사용 (없으면 'default')."
+        ),
+    ),
 ) -> ReingestResponse:
     """기존 doc 의 chunks/메타를 reset 하고 같은 storage_path 로 파이프라인 재실행.
 
@@ -693,14 +765,18 @@ def reingest_document(
 
     - 진행 중 job (queued/running) 이 있으면 409 로 거부
     - 기존 chunks 전부 삭제 + documents.tags/summary/flags/doc_embedding NULL reset
+      (단 flags.ingest_mode 는 보존 — _reset_doc_for_reingest 가 처리)
     - 새 ingest_jobs row 추가 (이전 jobs/logs 는 history 로 보존)
     - storage_path · sha256 등 원본 식별자는 유지 — Storage 재업로드 X
+
+    S2 D3 — `?mode=` 쿼리로 운영 모드 변경 가능. 미지정 시 기존 mode 보존.
     """
     supabase = get_supabase_client()
+    settings = get_settings()
 
     existing = (
         supabase.table("documents")
-        .select("id")
+        .select("id, flags")
         .eq("id", doc_id)
         .is_("deleted_at", "null")
         .limit(1)
@@ -711,6 +787,7 @@ def reingest_document(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="문서를 찾을 수 없습니다.",
         )
+    existing_flags = dict(existing.data[0].get("flags") or {})
 
     latest = get_latest_job_for_doc(doc_id)
     if latest and latest.status in ("queued", "running"):
@@ -719,10 +796,27 @@ def reingest_document(
             detail=f"진행 중인 작업이 있습니다 (job={latest.id}, status={latest.status}). 완료 후 다시 시도하세요.",
         )
 
+    # S2 D3 — mode 결정: 명시 > 기존 flags > default. invalid 시 400.
+    if mode is None:
+        prior_mode = existing_flags.get("ingest_mode")
+        ingest_mode: IngestMode = (
+            prior_mode if prior_mode in INGEST_MODES else _DEFAULT_INGEST_MODE
+        )
+    else:
+        ingest_mode = _validate_ingest_mode(mode)
+
     chunks_deleted = _reset_doc_for_reingest(supabase, doc_id)
 
+    # _reset 후 새 mode 명시 — 호출자 책임 (S2 D3 _reset 정책).
+    supabase.table("documents").update(
+        {"flags": _flags_with_ingest_mode({}, ingest_mode)}
+    ).eq("id", doc_id).execute()
+
+    page_cap_override = resolve_page_cap(ingest_mode, settings)
     job = create_job(doc_id=doc_id)
-    background_tasks.add_task(run_pipeline, job.id, doc_id)
+    background_tasks.add_task(
+        run_pipeline, job.id, doc_id, page_cap_override=page_cap_override,
+    )
 
     return ReingestResponse(
         doc_id=doc_id, job_id=job.id, chunks_deleted=chunks_deleted
@@ -740,6 +834,13 @@ def reingest_document(
 def reingest_missing_vision(
     doc_id: str,
     background_tasks: BackgroundTasks,
+    mode: str | None = Query(
+        None,
+        description=(
+            "운영 모드 (fast/default/precise). 미지정 시 기존 flags.ingest_mode "
+            "재사용 (없으면 'default')."
+        ),
+    ),
 ) -> ReingestMissingResponse:
     """incremental vision reingest — 기존 chunks 보존 + 누락 페이지만 vision 처리.
 
@@ -757,10 +858,11 @@ def reingest_missing_vision(
     PDF 자체가 변경된 경우는 부정확 — full reingest 권장.
     """
     supabase = get_supabase_client()
+    settings = get_settings()
 
     existing = (
         supabase.table("documents")
-        .select("id,doc_type")
+        .select("id,doc_type,flags")
         .eq("id", doc_id)
         .is_("deleted_at", "null")
         .limit(1)
@@ -776,6 +878,7 @@ def reingest_missing_vision(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="incremental vision reingest 는 PDF 만 지원합니다.",
         )
+    existing_flags = dict(existing.data[0].get("flags") or {})
 
     latest = get_latest_job_for_doc(doc_id)
     if latest and latest.status in ("queued", "running"):
@@ -783,6 +886,15 @@ def reingest_missing_vision(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"진행 중인 작업이 있습니다 (job={latest.id}, status={latest.status}).",
         )
+
+    # S2 D3 — mode 결정 (incremental). 명시 > 기존 > default.
+    if mode is None:
+        prior_mode = existing_flags.get("ingest_mode")
+        ingest_mode: IngestMode = (
+            prior_mode if prior_mode in INGEST_MODES else _DEFAULT_INGEST_MODE
+        )
+    else:
+        ingest_mode = _validate_ingest_mode(mode)
 
     # 호출 시점 누락 페이지 계산 (응답 immediate)
     from app.ingest.incremental import (
@@ -800,15 +912,27 @@ def reingest_missing_vision(
         .execute()
         .data[0]
     )
-    storage = SupabaseBlobStorage(bucket=get_settings().supabase_storage_bucket)
+    storage = SupabaseBlobStorage(bucket=settings.supabase_storage_bucket)
     pdf_data = storage.get(doc_row["storage_path"])
     with fitz.open(stream=pdf_data, filetype="pdf") as fdoc:
         total_pages = len(fdoc)
     processed = _vision_processed_pages(supabase, doc_id)
     missing = sorted(set(range(1, total_pages + 1)) - processed)
 
+    # S2 D3 — mode 가 변경되었으면 flags 갱신 + page_cap 결정.
+    if existing_flags.get("ingest_mode") != ingest_mode:
+        supabase.table("documents").update(
+            {"flags": _flags_with_ingest_mode(existing_flags, ingest_mode)}
+        ).eq("id", doc_id).execute()
+    page_cap_override = resolve_page_cap(ingest_mode, settings)
+
     job = create_job(doc_id=doc_id)
-    background_tasks.add_task(run_incremental_vision_pipeline, job.id, doc_id)
+    background_tasks.add_task(
+        run_incremental_vision_pipeline,
+        job.id,
+        doc_id,
+        page_cap_override=page_cap_override,
+    )
 
     return ReingestMissingResponse(
         doc_id=doc_id,
@@ -827,6 +951,10 @@ def _reset_doc_for_reingest(supabase, doc_id: str) -> int:
     POST /documents 의 failed 자동 reingest 분기와 POST /documents/{id}/reingest
     가 공통으로 사용한다. 새 ingest_jobs row 생성과 BackgroundTasks 큐잉은
     호출자가 책임진다 (응답 형태가 다르기 때문).
+
+    S2 D3 — `flags.ingest_mode` 는 보존 (호출자가 새 mode 로 덮어쓸 수 있도록).
+    이전에는 flags 를 빈 dict 로 reset → reingest 시 mode 정보 손실. 호출자가
+    새 mode 를 명시하지 않아도 이전 mode 가 유지되도록 보존.
     """
     chunks_count_resp = (
         supabase.table("chunks")
@@ -838,11 +966,26 @@ def _reset_doc_for_reingest(supabase, doc_id: str) -> int:
     if chunks_deleted > 0:
         supabase.table("chunks").delete().eq("doc_id", doc_id).execute()
 
+    # S2 D3 — flags.ingest_mode 보존 (다른 시그널은 reset).
+    existing_resp = (
+        supabase.table("documents")
+        .select("flags")
+        .eq("id", doc_id)
+        .limit(1)
+        .execute()
+    )
+    existing_flags = (
+        dict((existing_resp.data or [{}])[0].get("flags") or {})
+    )
+    preserved_flags: dict = {}
+    if "ingest_mode" in existing_flags:
+        preserved_flags["ingest_mode"] = existing_flags["ingest_mode"]
+
     supabase.table("documents").update(
         {
             "tags": [],
             "summary": None,
-            "flags": {},
+            "flags": preserved_flags,
             "doc_embedding": None,
         }
     ).eq("id", doc_id).execute()

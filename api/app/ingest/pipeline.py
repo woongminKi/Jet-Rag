@@ -28,11 +28,23 @@ logger = logging.getLogger(__name__)
 _FAIL_ERROR_MSG_LIMIT = 500
 
 
-def run_pipeline(job_id: str, doc_id: str) -> None:
+def run_pipeline(
+    job_id: str,
+    doc_id: str,
+    *,
+    page_cap_override: int | None = None,
+) -> None:
+    """8-stage 파이프라인 entrypoint.
+
+    S2 D3 — `page_cap_override` 가 주어지면 mode 별 vision page cap 사용.
+    None 이면 settings.vision_page_cap_per_doc (S2 D2 기존 동작).
+    """
     try:
         start_job(job_id, stage="extract")
 
-        extraction = run_extract_stage(job_id, doc_id)
+        extraction = run_extract_stage(
+            job_id, doc_id, page_cap_override=page_cap_override,
+        )
         if extraction is None:
             # 비 PDF graceful skip — 후속 스테이지 스킵, job 은 정상 완료
             finish_job(job_id)

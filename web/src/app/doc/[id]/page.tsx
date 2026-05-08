@@ -36,6 +36,7 @@ import {
   type MatchedChunk,
   type SearchResponse,
 } from '@/lib/api';
+import { VisionPageCapExceededCard } from '@/components/jet-rag/cards/vision-page-cap-exceeded-card';
 import { docTypeLabel } from '@/lib/doc-type-label';
 import { buildDocsUrl } from '@/lib/docs-filter';
 import { formatBytes } from '@/lib/format';
@@ -528,8 +529,10 @@ function FlagsSection({ doc }: { doc: DocumentDetailResponse }) {
 
   // S0 D4 — vision_budget_exceeded 별도 카드로 분리 (재처리 버튼 포함).
   const budgetExceeded = f.vision_budget_exceeded === true;
+  // S2 D3 — vision_page_cap_exceeded 별도 카드 (cost cap 과 직교, 동시 노출 가능).
+  const pageCapExceeded = f.vision_page_cap_exceeded === true;
 
-  if (items.length === 0 && !budgetExceeded) return null;
+  if (items.length === 0 && !budgetExceeded && !pageCapExceeded) return null;
   return (
     <>
       {items.length > 0 && (
@@ -552,8 +555,12 @@ function FlagsSection({ doc }: { doc: DocumentDetailResponse }) {
           </ul>
         </Card>
       )}
+      {/* S2 D3 — 동시 노출 시 cost cap 카드를 위에. 사용자가 한도 정보를 위에서 아래로 읽음. */}
       {budgetExceeded && doc.doc_type === 'pdf' && (
         <VisionBudgetExceededCard doc={doc} />
+      )}
+      {pageCapExceeded && doc.doc_type === 'pdf' && (
+        <VisionPageCapExceededCard doc={doc} />
       )}
     </>
   );
