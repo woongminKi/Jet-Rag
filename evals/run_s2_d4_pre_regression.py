@@ -84,6 +84,10 @@ class GoldenRow:
     expected_doc_title: str
     relevant_chunks: tuple[int, ...]  # chunk_idx
     source_hint: str  # "p.40" 같은 자유 텍스트
+    # graded relevance — relevant 와 disjoint, weight 0.5 의 보조 정답
+    # (D5 phase 1 §6.3 도구 보강 — `_measure_baseline_retrieval` 에 전달하여
+    #  G-A-021 같이 acceptable hit 만 있는 row 의 R@10 false negative 회복)
+    acceptable_chunks: tuple[int, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +131,10 @@ def _load_golden_targets(csv_path: Path) -> list[GoldenRow]:
             relv = tuple(
                 int(x.strip()) for x in relv_str.split(",") if x.strip().isdigit()
             )
+            accept_str = (row.get("acceptable_chunks") or "").strip()
+            accept = tuple(
+                int(x.strip()) for x in accept_str.split(",") if x.strip().isdigit()
+            )
             out.append(
                 GoldenRow(
                     id=row["id"].strip(),
@@ -136,6 +144,7 @@ def _load_golden_targets(csv_path: Path) -> list[GoldenRow]:
                     expected_doc_title=(row.get("expected_doc_title") or "").strip(),
                     relevant_chunks=relv,
                     source_hint=(row.get("source_hint") or "").strip(),
+                    acceptable_chunks=accept,
                 )
             )
     return out
@@ -470,6 +479,7 @@ def _measure_baseline_retrieval(
                     "doc_id": "",
                     "recall_at_10": None,
                     "predicted_top10": [],
+                    "acceptable_used": bool(g.acceptable_chunks),
                     "note": "doc_id 없음 (U-row, retrieval 평가 skip)",
                 }
             )
@@ -499,7 +509,10 @@ def _measure_baseline_retrieval(
                     chunks = [c["chunk_idx"] for c in matched]
                     break
             relv_set = set(g.relevant_chunks)
-            recall = recall_at_k(chunks, relv_set, k=k)
+            accept_set = set(g.acceptable_chunks)
+            recall = recall_at_k(
+                chunks, relv_set, k=k, acceptable_chunks=accept_set
+            )
             results.append(
                 {
                     "id": g.id,
@@ -507,6 +520,7 @@ def _measure_baseline_retrieval(
                     "doc_id": g.doc_id,
                     "recall_at_10": recall,
                     "predicted_top10": chunks[:k],
+                    "acceptable_used": bool(accept_set),
                     "note": "OK",
                 }
             )
@@ -518,6 +532,7 @@ def _measure_baseline_retrieval(
                     "doc_id": g.doc_id,
                     "recall_at_10": None,
                     "predicted_top10": [],
+                    "acceptable_used": bool(g.acceptable_chunks),
                     "note": f"ERROR: {exc}",
                 }
             )
@@ -898,6 +913,7 @@ def main() -> int:
                         "predicted_top10": ",".join(
                             map(str, r.get("predicted_top10", []))
                         ),
+                        "acceptable_used": str(r.get("acceptable_used", False)),
                         "note": r["note"],
                     }
                     for r in retrieval
