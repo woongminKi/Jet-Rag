@@ -246,13 +246,18 @@ def _measure_one_cell(g: GoldenV2Row) -> CellResult:
     qp = data.get("query_parsed") or {}
     cell.reranker_path = qp.get("reranker_path") or "disabled"
 
-    target_item = _pick_target_item(items, g)
-    if target_item is None:
+    target_items = _pick_target_items(items, g)
+    if not target_items:
         cell.note = "doc 매칭 fail"
         return cell
 
+    # Phase 2-A — multi-doc cross_doc U-row 한정으로 다중 item 의 matched_chunks 합산.
+    # Single-doc / single-item 일 때는 기존 path 와 동치 (하위 호환).
+    merged: list[dict[str, Any]] = []
+    for it in target_items:
+        merged.extend(it.get("matched_chunks") or [])
     matched = sorted(
-        target_item.get("matched_chunks") or [],
+        merged,
         key=lambda c: (c.get("rrf_score") or 0.0),
         reverse=True,
     )
@@ -278,31 +283,87 @@ def _measure_one_cell(g: GoldenV2Row) -> CellResult:
     return cell
 
 
-def _pick_target_item(
+def _pick_target_items(
     items: list[dict[str, Any]], g: GoldenV2Row
-) -> dict[str, Any] | None:
-    """search 응답 items 중 golden row 의 expected doc 와 매칭되는 item 1건 선택.
+) -> list[dict[str, Any]]:
+    """search 응답 items 중 golden row 의 expected doc 와 매칭되는 item 들 선택.
 
-    - doc_id 명시 row → ``it.doc_id == g.doc_id``
-    - U-row (doc_id 비어있음) → ``expected_doc_title`` partial match (12자 prefix) 후
-      RRF top-1 fallback
+    Phase 2-A 보강 — multi-doc cross_doc U-row 의 R@10 폭락 fix.
+
+    매칭 규칙
+    --------
+    - doc_id 명시 row → ``it.doc_id == g.doc_id`` 단일 item (single-doc, 1건).
+    - U-row (doc_id 비어있음) + ``|`` separator 없는 expected_doc_title →
+      title 12자 prefix 매칭 1건 + RRF top-1 fallback (하위 호환, single-doc 동치).
+    - U-row + ``|`` separator 있는 expected_doc_title → 각 sub-title 12자 prefix
+      매칭 item 합산 (multi-doc, 1+ 건). cross_doc 정답 chunk 가 다중 doc 에
+      흩어진 경우 모든 doc 의 matched_chunks 를 RRF desc 합산해 R@10 측정.
+
+    합산 대상 item 은 RRF score 중복 없이 search 응답 그대로. predicted_top10 의
+    chunk_idx 는 chunks 테이블이 (doc_id, chunk_idx) unique 라도 cross_doc U-row
+    가 라벨러가 chunk_idx 만 명시한 schema (relevant=`15,0` 등) 라 doc 무관 비교.
+    중복 chunk_idx 가 다른 doc 에서 등장 시 RRF score 큰 쪽이 먼저 정렬됨.
     """
     if g.doc_id:
         for it in items:
             if it.get("doc_id") == g.doc_id:
-                return it
-        return None
+                return [it]
+        return []
     if not g.expected_doc_title:
-        return items[0] if items else None
-    title_norm = unicodedata.normalize("NFC", g.expected_doc_title).lower()
-    head = title_norm[:12]
-    for it in items:
-        item_title = unicodedata.normalize(
-            "NFC", it.get("doc_title") or ""
+        return [items[0]] if items else []
+
+    sub_titles = [
+        s.strip()
+        for s in g.expected_doc_title.split("|")
+        if s.strip()
+    ]
+    if len(sub_titles) <= 1:
+        # single-doc U-row — 기존 12자 prefix 매칭 + top-1 fallback
+        title_norm = unicodedata.normalize(
+            "NFC", g.expected_doc_title
         ).lower()
-        if head and head in item_title:
-            return it
-    return items[0] if items else None
+        head = title_norm[:12]
+        for it in items:
+            item_title = unicodedata.normalize(
+                "NFC", it.get("doc_title") or ""
+            ).lower()
+            if head and head in item_title:
+                return [it]
+        return [items[0]] if items else []
+
+    # multi-doc cross_doc U-row — 각 sub-title 별 첫 매칭 item 합산
+    matched: list[dict[str, Any]] = []
+    seen_doc_ids: set[str] = set()
+    for sub in sub_titles:
+        sub_norm = unicodedata.normalize("NFC", sub).lower()
+        head = sub_norm[:12]
+        if not head:
+            continue
+        for it in items:
+            doc_id = it.get("doc_id")
+            if doc_id and doc_id in seen_doc_ids:
+                continue
+            item_title = unicodedata.normalize(
+                "NFC", it.get("doc_title") or ""
+            ).lower()
+            if head in item_title:
+                matched.append(it)
+                if doc_id:
+                    seen_doc_ids.add(doc_id)
+                break
+    return matched
+
+
+def _pick_target_item(
+    items: list[dict[str, Any]], g: GoldenV2Row
+) -> dict[str, Any] | None:
+    """``_pick_target_items`` single-result 래퍼 — 하위 호환 + 단위 테스트 호환.
+
+    multi-doc cross_doc 매칭은 ``_pick_target_items`` 직접 호출. 본 함수는
+    single-item path 만 반환 (기존 단위 테스트 / API 호환).
+    """
+    res = _pick_target_items(items, g)
+    return res[0] if res else None
 
 
 # ---------------------------------------------------------------------------

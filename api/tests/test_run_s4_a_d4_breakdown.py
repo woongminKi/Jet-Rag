@@ -391,6 +391,166 @@ class MarkdownFormatTest(unittest.TestCase):
         self.assertIn("R@10 gap (false − true)", md)
 
 
+class PickTargetItemsTest(unittest.TestCase):
+    """`_pick_target_items` — Phase 2-A multi-doc cross_doc 매칭."""
+
+    def _make_row(
+        self,
+        *,
+        golden_id: str = "G-T",
+        doc_id: str = "",
+        expected_doc_title: str = "",
+        relevant: tuple[int, ...] = (1,),
+    ):
+        from run_s4_a_d4_breakdown_eval import GoldenV2Row
+
+        return GoldenV2Row(
+            id=golden_id,
+            query="q",
+            query_type="cross_doc",
+            doc_id=doc_id,
+            expected_doc_title=expected_doc_title,
+            relevant_chunks=relevant,
+            acceptable_chunks=(),
+            doc_type="",
+            caption_dependent=False,
+        )
+
+    def test_doc_id_match_single_item(self) -> None:
+        """doc_id 명시 row — 매칭된 item 1건만 반환."""
+        from run_s4_a_d4_breakdown_eval import _pick_target_items
+
+        items = [
+            {"doc_id": "doc-A", "doc_title": "A doc", "matched_chunks": []},
+            {"doc_id": "doc-B", "doc_title": "B doc", "matched_chunks": []},
+        ]
+        g = self._make_row(doc_id="doc-A")
+        out = _pick_target_items(items, g)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["doc_id"], "doc-A")
+
+    def test_doc_id_no_match_returns_empty(self) -> None:
+        """doc_id 매칭 없음 → 빈 list (doc 매칭 fail)."""
+        from run_s4_a_d4_breakdown_eval import _pick_target_items
+
+        items = [{"doc_id": "doc-A", "doc_title": "A", "matched_chunks": []}]
+        g = self._make_row(doc_id="doc-Z")
+        out = _pick_target_items(items, g)
+        self.assertEqual(out, [])
+
+    def test_single_title_prefix_match(self) -> None:
+        """U-row + single title — 12자 prefix 매칭 1건."""
+        from run_s4_a_d4_breakdown_eval import _pick_target_items
+
+        items = [
+            {
+                "doc_id": "doc-A",
+                "doc_title": "한마음생활체육관_운영_내규(2024)",
+                "matched_chunks": [],
+            },
+        ]
+        g = self._make_row(
+            expected_doc_title="한마음생활체육관_운영_내규(2024)"
+        )
+        out = _pick_target_items(items, g)
+        self.assertEqual(len(out), 1)
+
+    def test_single_title_top1_fallback(self) -> None:
+        """U-row + single title prefix 매칭 fail → top-1 fallback."""
+        from run_s4_a_d4_breakdown_eval import _pick_target_items
+
+        items = [
+            {"doc_id": "doc-A", "doc_title": "다른 문서", "matched_chunks": []},
+        ]
+        g = self._make_row(expected_doc_title="없는 문서")
+        out = _pick_target_items(items, g)
+        # top-1 fallback
+        self.assertEqual(len(out), 1)
+
+    def test_multi_doc_pipe_separator_merges_items(self) -> None:
+        """U-row + `|` separator → 각 sub-title 별 첫 매칭 item 합산.
+
+        cross_doc R@10 폭락 fix 핵심 — D4 raw G-U-015 형태 회복.
+        """
+        from run_s4_a_d4_breakdown_eval import _pick_target_items
+
+        items = [
+            {
+                "doc_id": "doc-A",
+                "doc_title": "한마음생활체육관_운영_내규(2024)",
+                "matched_chunks": [
+                    {"chunk_idx": 15, "rrf_score": 0.9},
+                ],
+            },
+            {
+                "doc_id": "doc-B",
+                "doc_title": "직제_규정(2024.4.30.개정)",
+                "matched_chunks": [
+                    {"chunk_idx": 0, "rrf_score": 0.8},
+                ],
+            },
+            {
+                "doc_id": "doc-C",
+                "doc_title": "관련 없는 문서",
+                "matched_chunks": [],
+            },
+        ]
+        g = self._make_row(
+            expected_doc_title=(
+                "한마음생활체육관_운영_내규(2024)|직제_규정(2024.4.30.개정)"
+            )
+        )
+        out = _pick_target_items(items, g)
+        # 두 doc 모두 매칭
+        self.assertEqual(len(out), 2)
+        doc_ids = {it["doc_id"] for it in out}
+        self.assertEqual(doc_ids, {"doc-A", "doc-B"})
+
+    def test_multi_doc_no_duplicate_doc(self) -> None:
+        """다중 sub-title 이 같은 doc 에 매칭되어도 중복 추가 안 함."""
+        from run_s4_a_d4_breakdown_eval import _pick_target_items
+
+        items = [
+            {
+                "doc_id": "doc-A",
+                "doc_title": "쏘나타 디 엣지 카탈로그",
+                "matched_chunks": [],
+            },
+        ]
+        g = self._make_row(expected_doc_title="쏘나타|쏘나타 디 엣지")
+        out = _pick_target_items(items, g)
+        # doc-A 가 두 sub-title 모두 매칭되지만 중복 없이 1건
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["doc_id"], "doc-A")
+
+    def test_multi_doc_partial_match_still_returns(self) -> None:
+        """sub-title 중 1건만 매칭되어도 그 1건 반환 (cross_doc 부분 cover)."""
+        from run_s4_a_d4_breakdown_eval import _pick_target_items
+
+        items = [
+            {"doc_id": "doc-A", "doc_title": "쏘나타 카탈로그", "matched_chunks": []},
+            {"doc_id": "doc-X", "doc_title": "관련 없음", "matched_chunks": []},
+        ]
+        g = self._make_row(expected_doc_title="쏘나타|없는 문서")
+        out = _pick_target_items(items, g)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["doc_id"], "doc-A")
+
+    def test_pick_target_item_single_wrapper_back_compat(self) -> None:
+        """single-result 래퍼 — 기존 단위 테스트 호환."""
+        from run_s4_a_d4_breakdown_eval import _pick_target_item
+
+        items = [{"doc_id": "doc-A", "doc_title": "A", "matched_chunks": []}]
+        g = self._make_row(doc_id="doc-A")
+        out = _pick_target_item(items, g)
+        self.assertIsNotNone(out)
+        self.assertEqual(out["doc_id"], "doc-A")
+
+        # 매칭 없음 → None
+        g2 = self._make_row(doc_id="doc-Z")
+        self.assertIsNone(_pick_target_item(items, g2))
+
+
 class BaselineEnvTest(unittest.TestCase):
     """`_apply_baseline_env` — RRF-only 강제 + restore."""
 
