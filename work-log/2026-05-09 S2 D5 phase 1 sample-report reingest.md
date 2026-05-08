@@ -148,6 +148,99 @@ Ran 684 tests in 15.312s OK (skipped 1 / 회귀 0)
 - [ ] `chunks.metadata.vision_incremental=true` 셋팅 (incremental 트레이서빌리티)
 - [ ] `vision_usage_log.latency_ms` 컬럼 추가
 
+## §측정 도구 fix — R@10 acceptable_chunks 전달 (2026-05-09 추가 ship)
+
+### F.1 fix 내용 (planner v0.1 명세 그대로)
+
+§5.2 [P1] / §6.3 첫 항목 (acceptable_chunks 전달 누락) 해결.
+
+| 변경 위치 | LOC | 내용 |
+|---|---:|---|
+| `evals/run_s2_d4_pre_regression.py` `GoldenRow` (L77~) | +4 | `acceptable_chunks: tuple[int, ...] = ()` 필드 추가 |
+| `evals/run_s2_d4_pre_regression.py` `_load_golden_targets` (L130 부근) | +5 | `acceptable_chunks` 컬럼 파싱 — `relevant_chunks` 와 동일 로직 |
+| `evals/run_s2_d4_pre_regression.py` `_measure_baseline_retrieval` (L501~) | +3 | `recall_at_k(..., acceptable_chunks=accept_set)` 호출 + 결과 dict 에 `acceptable_used` 추가 (3 분기 일관) |
+| `evals/run_s2_d4_pre_regression.py` retrieval CSV writer (L900) | +1 | `acceptable_used` 컬럼 출력 (트레이서빌리티) |
+| `api/tests/test_retrieval_metrics.py` `GradedRecallFourCaseTest` | +66 | acceptable hit only / relevant hit only / both hit / both miss 4 케이스 |
+| `api/tests/test_s2_d4_pre_regression_acceptable.py` (신규) | +138 | 통합 테스트 1건 — golden CSV → GoldenRow → recall_at_k 호출 인자 캡처 |
+
+명세 외 리팩토링 0 — `_check_chunk_pages` 등 다른 함수의 `g.relevant_chunks` 사용 미변경.
+
+### F.2 단위 테스트 회귀 0
+
+```bash
+cd api && uv run python -m unittest discover tests
+# 결과: Ran 689 tests in 14.583s, OK (skipped=0 표기 / baseline 684 → +5)
+```
+
+baseline (684 / skipped 1) → fix 후 689 / 회귀 0. 4 케이스 + 통합 1건 = +5 추가.
+
+### F.3 D4-pre baseline v1 ↔ v2 delta (per-row R@10)
+
+`evals/results/s2_d4_pre_baseline_v2.md` 산출. v1 = 어제 명세 §3.3 baseline, v2 = 본 fix 후 graded recall.
+
+| id | acc | predicted top10 hit | v1 R@10 (binary) | v2 R@10 (graded) | delta | 해석 |
+|---|---:|---|---:|---:|---:|---|
+| G-A-008 | 2 | relv 374 hit, acc miss | 1.000 | **0.500** | -0.500 | acceptable 2개 추가로 max_score 분모 inflation (1.0 + 0.5×2 = 2.0). hit 동일 (1.0/2.0). 품질 변화 0. |
+| G-A-011 | 0 | relv 1 hit | 1.000 | **1.000** | 0.000 | acceptable 0건 → binary 동일. |
+| G-A-021 | 29 | relv 868 miss, acc 904+908 hit | 0.000 | **0.182** | **+0.182** | **실 회복** — predicted 의 904/908 이 golden acceptable 에 포함, hit_score=0.5+0.5=1.0, max_score = 1.0+0.5×9 (cap k=10) = 5.5 → 1.0/5.5. **§5.2 [P1] 핵심 수정.** |
+| G-A-107 | 1 | empty (search 미포함) | 0.000 | 0.000 | 0.000 | search 응답에 doc 미포함 — 변화 없음. |
+| G-A-111 | 3 | empty (search 미포함) | 0.000 | 0.000 | 0.000 | 동일. |
+| **평균** | — | — | **0.4000** | **0.3364** | **-0.0636** | 표면 평균 하락은 G-A-008 분모 inflation 영향. **수치 하락 ≠ 품질 저하**. |
+
+### F.4 S2 D5 phase 1 post 재측정 (G-A-021)
+
+기존 §2 M8 / §5.2 의 한계가 본 fix 로 회복:
+
+| 측정 시점 | predicted top10 (head) | relevant hit | acceptable hit | R@10 (graded) | 비고 |
+|---|---|---|---|---:|---|
+| §2 M8 (도구 fix 전) | 904, 963, 810, 1018, 902 | 868 miss | (미전달) | 0.000 | 도구 한계로 false negative |
+| F.4 (도구 fix 후) | 904, 963, 810, 1018, 902, 937, 1028, 935, 908, 772 | 868 miss | 904, 908 hit | **0.182** | 회복 — acceptable 2 hit, max_score 5.5, hit_score 1.0 |
+
+post-reingest doc (sample-report d1259dfe-…) 의 retrieval 동작 자체는 본 fix 로 변경되지 않음 — 도구 측의 graded 평가만 추가. **신규 vision-derived chunk (1045~1060) 가 G-A-021 search 결과에 진입했는지 별개 검증은 §6.1 phase 2 (per-doc cap 상향 후 sample-report 재시도) 로 이연.**
+
+### F.5 "수치 하락 ≠ 품질 저하" 메모
+
+| 지표 | v1 (binary) | v2 (graded) | 의미 |
+|---|---:|---:|---|
+| 평균 R@10 | 0.4000 | 0.3364 | 분모(max_score) 가 acceptable 포함으로 커지면서 표면 하락 |
+| G-A-021 R@10 | 0.000 | 0.182 | **실 회복** — false negative 제거 |
+| G-A-008 R@10 | 1.000 | 0.500 | 분모 inflation, hit 자체는 동일 |
+
+graded recall 의 정의상:
+- 분자 = relevant hit × 1.0 + acceptable hit × 0.5
+- 분모 = ideal sort (relevant 1.0×n_r + acceptable 0.5×n_a) 후 cap K 합
+
+acceptable 이 많은 row 일수록 분모가 커져 표면 R@10 이 낮아진다. 따라서 v1 (binary) 와 v2 (graded) 직접 비교는 부적절 — **v2 vs (앞으로의) post-reingest v2 측정** 만이 회귀 판정 기준이다. 본 fix 의 효과는 G-A-021 같이 acceptable hit 만 잡히는 row 의 false negative 제거이며, 회귀 가드 도구로서의 신뢰도가 높아졌다.
+
+### F.6 신규 산출물
+
+| 파일 | 역할 |
+|---|---|
+| `evals/results/s2_d4_pre_baseline_v2.md` | D4-pre baseline 재실행 markdown |
+| `evals/results/s2_d4_pre_baseline_v2_hints.csv` | source_hint cross-check per-row |
+| `evals/results/s2_d4_pre_baseline_v2_chunks.csv` | DB chunk page cross-check per-row |
+| `evals/results/s2_d4_pre_baseline_v2_retrieval.csv` | graded R@10 + acceptable_used per-row |
+| `api/tests/test_s2_d4_pre_regression_acceptable.py` | 통합 테스트 1건 (golden CSV → recall_at_k 인자 캡처) |
+
+### F.7 사이드 이펙트 점검
+
+- 운영 코드 변경 0 — `evals/` + `api/tests/` 만 변경
+- DB 마이그 0 / 외부 API 0 / 새 패키지 0
+- 본 fix 의 결과 dict `acceptable_used` 키 추가 — retrieval CSV writer (L890~) 도 일관 추가하여 다운스트림 파이프라인 신규 키 처리 0
+- vision API 호출 0 (`--measure-retrieval` 만 사용, search 는 BGE-M3 무료 티어)
+- `_check_chunk_pages` 의 `g.relevant_chunks` 사용은 의도적으로 미변경 — chunk-level 회귀 위험 분석은 relevant 한정이 정합 (acceptable 은 사용자 의도 여유분으로 회귀 위험 분모 오염 방지)
+
+### F.8 후속 (S3 함께)
+
+§6.3 도구 보강 항목 갱신:
+- [x] `_measure_baseline_retrieval` 에 acceptable_chunks 전달 (graded R@10 측정) ← **본 fix 로 완료**
+- [ ] `chunks.metadata.vision_incremental=true` 셋팅 (incremental 트레이서빌리티)
+- [ ] `vision_usage_log.latency_ms` 컬럼 추가
+
+phase 2 진입 시 sample-report 재 reingest 후 **v2 baseline ↔ v2 post** 비교로 vision 보강 ROI 정량 검증 가능.
+
+---
+
 ## 7. ENV diff
 변경 0. (기본값 그대로)
 - `JET_VISION_PER_DOC_CAP_USD=0.10` (default)
@@ -157,6 +250,7 @@ Ran 684 tests in 15.312s OK (skipped 1 / 회귀 0)
 ## 8. commit hash
 - baseline: 514c368 (S1.5 v3 ship + P1 fix 4건 + QA 검증 통합)
 - D5 phase 1 commit: **미커밋** — work-log 만 신규, 코드 변경 0
+- 측정 도구 fix commit: **미커밋** — `evals/run_s2_d4_pre_regression.py` + `api/tests/` 보강
 - 신규 산출물:
   - `evals/results/s2_d5_phase1_post_retrieval.md`
   - `evals/results/s2_d5_phase1_post_retrieval_hints.csv`
