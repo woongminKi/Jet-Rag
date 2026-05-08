@@ -37,6 +37,7 @@ from app.adapters.vectorstore import ChunkRecord
 from app.config import get_settings
 from app.db import get_supabase_client
 from app.ingest.jobs import fail_job, finish_job, start_job
+from app.ingest.stages.chunk import _compose_vision_text
 from app.ingest.stages.embed import run_embed_stage
 from app.ingest.stages.load import run_load_stage
 from app.services import budget_guard
@@ -251,6 +252,10 @@ def _vision_pages_with_sweep(
                         page=page_idx + 1,
                         sha256=sha256,
                     )
+                    # S4-A D2 — ImageParser 가 caption section 에 부착한
+                    # caption 메타 (`table_caption` / `figure_caption`) 를 보존.
+                    # incremental path 는 `_sections_to_chunks` 가 vision_incremental
+                    # 분기로 text 합성 진입.
                     for sec in page_result.sections:
                         base_title = (sec.section_title or "").strip()
                         enriched_title = (
@@ -264,6 +269,7 @@ def _vision_pages_with_sweep(
                                 page=page_idx + 1,
                                 section_title=enriched_title,
                                 bbox=None,
+                                metadata=dict(sec.metadata),
                             )
                         )
                     warnings.extend(page_result.warnings)
@@ -313,19 +319,36 @@ def _sections_to_chunks(
     doc_id: str,
     start_chunk_idx: int,
 ) -> list[ChunkRecord]:
-    """vision sections → ChunkRecord (dense_vec NULL — embed stage 가 채움)."""
+    """vision sections → ChunkRecord (dense_vec NULL — embed stage 가 채움).
+
+    S4-A D2 — section.metadata 의 `table_caption` / `figure_caption` 이 set 이면
+    chunk.metadata 에 주입 + text 합성 (vision_incremental 분기). v1 cache row 는
+    두 필드 부재 → 합성 skip → 기존 동작 100% 유지.
+    """
     out: list[ChunkRecord] = []
     for offset, sec in enumerate(sections):
+        chunk_metadata: dict = {"vision_incremental": True}
+        table_caption = sec.metadata.get("table_caption")
+        figure_caption = sec.metadata.get("figure_caption")
+        if table_caption is not None:
+            chunk_metadata["table_caption"] = table_caption
+        if figure_caption is not None:
+            chunk_metadata["figure_caption"] = figure_caption
+        synthesized = _compose_vision_text(
+            sec.text,
+            table_caption=table_caption,
+            figure_caption=figure_caption,
+        )
         out.append(
             ChunkRecord(
                 doc_id=doc_id,
                 chunk_idx=start_chunk_idx + offset,
-                text=sec.text,
+                text=synthesized,
                 page=sec.page,
                 section_title=sec.section_title,
                 bbox=sec.bbox,
-                char_range=(0, len(sec.text)),
-                metadata={"vision_incremental": True},
+                char_range=(0, len(synthesized)),
+                metadata=chunk_metadata,
             )
         )
     return out

@@ -302,6 +302,50 @@ def _merge_short_sections(sections: list[ExtractedSection]) -> list[ExtractedSec
 # ---------------------- 레코드 변환 ----------------------
 
 
+_VISION_TITLE_PREFIX = "(vision)"  # S4-A D2 — vision-derived chunk 식별 prefix
+
+
+def _is_vision_derived(section: ExtractedSection) -> bool:
+    """S4-A D2 — chunk text 합성 + caption metadata 주입 진입 조건.
+
+    명세 §C 분기 — 둘 중 하나라도 참:
+    - section.metadata 의 `vision_incremental` 키가 truthy (incremental reingest path)
+    - section_title 이 `(vision)` prefix 로 시작 (extract.py vision_enrich path)
+
+    둘 다 충족하지 않는 일반 chunk 는 기존 동작 100% 유지.
+    """
+    if section.metadata.get("vision_incremental"):
+        return True
+    title = section.section_title or ""
+    return title.startswith(_VISION_TITLE_PREFIX)
+
+
+def _compose_vision_text(
+    base_text: str,
+    *,
+    table_caption: str | None,
+    figure_caption: str | None,
+) -> str:
+    """S4-A D2 — vision-derived chunk text 합성 (명세 §C).
+
+    규칙:
+    - 둘 다 None → base_text 그대로 (skip)
+    - 한쪽만 set → 해당 한 줄만 부착
+    - 양쪽 set → 두 줄 모두 부착 (table 먼저)
+    - 빈 줄 1개로 분리
+
+    포맷: `{base}\n\n[표: {table}]\n[그림: {figure}]`
+    """
+    extras: list[str] = []
+    if table_caption:
+        extras.append(f"[표: {table_caption}]")
+    if figure_caption:
+        extras.append(f"[그림: {figure_caption}]")
+    if not extras:
+        return base_text
+    return base_text + "\n\n" + "\n".join(extras)
+
+
 def _to_chunk_records(
     *, doc_id: str, sections: list[ExtractedSection]
 ) -> list[ChunkRecord]:
@@ -313,6 +357,10 @@ def _to_chunk_records(
     W25 D12 B3 (section_title prepend) 시도 후 dry-run 결과로 SKIP — 격차 정답 청크 (39, 43,
     44) 의 본문 head 가 이미 title 포함되어 prepend 회피, 효과 없음 + 인접 chunks (45, 46)
     prepend 로 G-S-009 더 악화 위험. work-log/2026-05-04 W25 D12 답변 생성 PoC.md 참조.
+
+    S4-A D2 — vision-derived chunk (vision_incremental flag 또는 `(vision)` prefix)
+    한정으로 `table_caption` / `figure_caption` 을 chunk.metadata 주입 + text 풍부화.
+    v1 cache row 는 두 필드 None → 합성 skip 으로 기존 동작 보존.
     """
     records: list[ChunkRecord] = []
     for idx, section in enumerate(sections):
@@ -323,13 +371,36 @@ def _to_chunk_records(
             # 현재는 idx>0 에 일괄 표시 (디버깅 가시성 우선). 정확화는 split 단계에서
             # overlap 적용 여부를 ExtractedSection 메타에 전파 후 여기서 참조 권장.
             metadata["overlap_with_prev_chunk_idx"] = idx - 1
+
+        # S4-A D2 — vision-derived chunk 한정 caption 메타 주입 + text 합성.
+        # 일반 chunk 는 분기 미진입 → 기존 동작 100% 유지.
+        table_caption: str | None = None
+        figure_caption: str | None = None
+        if _is_vision_derived(section):
+            table_caption = section.metadata.get("table_caption")
+            figure_caption = section.metadata.get("figure_caption")
+            # None 이 아닌 경우만 chunk.metadata 에 주입. 양쪽 None 이면 키 자체 미주입.
+            if table_caption is not None:
+                metadata["table_caption"] = table_caption
+            if figure_caption is not None:
+                metadata["figure_caption"] = figure_caption
+            # vision_incremental 플래그는 incremental path 호환을 위해 그대로 보존.
+            if section.metadata.get("vision_incremental"):
+                metadata["vision_incremental"] = True
+
+        synthesized = _compose_vision_text(
+            section.text,
+            table_caption=table_caption,
+            figure_caption=figure_caption,
+        )
+
         # W25 D14+1 D1 — 한국어 NFC 정규화 (인제스트단).
         # query 측은 W25 D14 (commit 5eed8d4) 로 NFC 강제. chunks.text 도 NFC 강제로
         # sparse path (PGroonga Mecab 형태소) 의 NFD 매칭 fail 회피.
         # dense_vec (BGE-M3) 도 NFC 입력으로 인덱싱·검색 일관성 보장.
         # idempotent — 이미 NFC 인 텍스트는 변화 없음 (PDF/DOCX/PPTX 등).
         # 효과 큰 case: HWP/HWPX (한컴 파서가 NFD 로 추출하는 경향).
-        text_nfc = unicodedata.normalize("NFC", section.text)
+        text_nfc = unicodedata.normalize("NFC", synthesized)
         title_nfc = (
             unicodedata.normalize("NFC", section.section_title)
             if section.section_title

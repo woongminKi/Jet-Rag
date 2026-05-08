@@ -641,6 +641,10 @@ def _enrich_pdf_with_vision(
                         sha256=sha256,
                     )
                     # vision 결과의 sections 를 page 메타 보강해 추가
+                    # S4-A D2 — ImageParser 가 caption section 에 부착한
+                    # `table_caption` / `figure_caption` metadata 키를 enriched
+                    # section 에 보존. 후속 chunk 단계가 chunk.metadata 주입 +
+                    # text 합성에 활용. 키 부재 시 빈 dict 그대로 (graceful).
                     for sec in page_result.sections:
                         base_title = (sec.section_title or "").strip()
                         enriched_title = (
@@ -654,6 +658,7 @@ def _enrich_pdf_with_vision(
                                 page=page_num + 1,
                                 section_title=enriched_title,
                                 bbox=None,
+                                metadata=dict(sec.metadata),
                             )
                         )
                     if page_result.raw_text:

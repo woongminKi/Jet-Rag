@@ -164,12 +164,22 @@ class ImageParser:
 
         sections: list[ExtractedSection] = []
         # caption section — 분류 + 한국어 한 줄 요약
+        # S4-A D2 — caption 두 필드 (table_caption / figure_caption) 가 set 이면
+        # section.metadata 로 부착. PDF vision enrich path 가 vision-derived chunk
+        # metadata + text 합성에 활용. 둘 다 None 이면 키 미주입 (graceful — 기존
+        # 비-vision 흐름과 동일하게 빈 dict 유지).
+        caption_metadata: dict = {}
+        if caption.table_caption is not None:
+            caption_metadata["table_caption"] = caption.table_caption
+        if caption.figure_caption is not None:
+            caption_metadata["figure_caption"] = caption.figure_caption
         sections.append(
             ExtractedSection(
                 text=f"[{caption.type}] {caption.caption}".strip(),
                 page=None,
                 section_title=f"이미지 분류: {caption.type}",
                 bbox=None,
+                metadata=caption_metadata,
             )
         )
         # OCR section — 텍스트 있을 때만

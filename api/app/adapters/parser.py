@@ -8,6 +8,11 @@ class ExtractedSection:
     page: int | None = None
     section_title: str | None = None
     bbox: tuple[float, float, float, float] | None = None  # x0, y0, x1, y1 (PDF 좌표)
+    # S4-A D2 — vision-derived section 의 caption 메타 전파용. PDF vision enrich
+    # path 에서 ImageParser 가 `table_caption` / `figure_caption` 을 부착, chunk
+    # 생성 단계가 chunk.metadata + text 합성에 활용. 비-vision 섹션은 빈 dict.
+    # frozen + factory dict — 인스턴스마다 독립된 dict, 필드 재할당만 차단.
+    metadata: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
