@@ -50,6 +50,11 @@ if (_API_PATH / "app").exists():
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _D3_CSV = _REPO_ROOT / "evals" / "results" / "vision_need_score_d3.csv"
 _GOLDEN_CSV = _REPO_ROOT / "evals" / "golden_v1.csv"
+# S4-A D3 — `--goldenset {v1|v2}` 듀얼 지원. v1 default 유지 (회귀 0).
+_GOLDEN_CSV_BY_VERSION: dict[str, Path] = {
+    "v1": _REPO_ROOT / "evals" / "golden_v1.csv",
+    "v2": _REPO_ROOT / "evals" / "golden_v2.csv",
+}
 
 # 골든셋 v1 의 vision_diagram + table_lookup row 만 측정 대상
 _TARGET_QUERY_TYPES = {"vision_diagram", "table_lookup"}
@@ -829,10 +834,26 @@ def main() -> int:
         default=str(_GOLDEN_CSV),
         help=f"골든셋 CSV 경로 (default: {_GOLDEN_CSV})",
     )
+    parser.add_argument(
+        "--goldenset",
+        choices=["v1", "v2"],
+        default=None,
+        help=(
+            "골든셋 버전 선택 — 지정 시 --golden-csv 보다 우선. "
+            "v1 (default) / v2 (S4-A D3 보강 14 컬럼)."
+        ),
+    )
     args = parser.parse_args()
 
     d3_path = Path(args.d3_csv)
-    golden_path = Path(args.golden_csv)
+    if args.goldenset:
+        golden_path = _GOLDEN_CSV_BY_VERSION[args.goldenset]
+        print(
+            f"[INFO] --goldenset={args.goldenset} → {golden_path.name}",
+            file=sys.stderr,
+        )
+    else:
+        golden_path = Path(args.golden_csv)
     if not d3_path.exists():
         print(f"[ERROR] D3 CSV 없음: {d3_path}", file=sys.stderr)
         return 1

@@ -79,6 +79,11 @@ if (_API_PATH / "app").exists():
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _GOLDEN_CSV = _REPO_ROOT / "evals" / "golden_v1.csv"
+# S4-A D3 — `--goldenset {v1|v2}` 듀얼 지원. v1 default 유지 (회귀 0).
+_GOLDEN_CSV_BY_VERSION: dict[str, Path] = {
+    "v1": _REPO_ROOT / "evals" / "golden_v1.csv",
+    "v2": _REPO_ROOT / "evals" / "golden_v2.csv",
+}
 _DEFAULT_OUT_MD = _REPO_ROOT / "evals" / "results" / "s3_d5_results.md"
 _DEFAULT_OUT_JSON = _REPO_ROOT / "evals" / "results" / "s3_d5_raw.json"
 
@@ -837,6 +842,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "production 측정에서는 절대 사용 금지."
         ),
     )
+    p.add_argument(
+        "--goldenset",
+        choices=["v1", "v2"],
+        default="v1",
+        help=(
+            "골든셋 버전 — v1 (default, 12 컬럼 158 row) / "
+            "v2 (S4-A D3 보강 14 컬럼)."
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -859,7 +873,13 @@ def main(argv: list[str] | None = None) -> int:
         _patch_mock_reranker()
         print("[INFO] mock-reranker 활성 — HF 호출 0", file=sys.stderr)
 
-    rows = _load_golden_rows(_GOLDEN_CSV)
+    golden_path = _GOLDEN_CSV_BY_VERSION.get(args.goldenset, _GOLDEN_CSV)
+    if args.goldenset != "v1":
+        print(
+            f"[INFO] --goldenset={args.goldenset} → {golden_path.name}",
+            file=sys.stderr,
+        )
+    rows = _load_golden_rows(golden_path)
     if args.limit_rows > 0:
         rows = rows[: args.limit_rows]
         print(
