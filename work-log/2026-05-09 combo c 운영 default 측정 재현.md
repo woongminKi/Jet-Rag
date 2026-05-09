@@ -9,7 +9,7 @@
 
 ## 0. 한 줄 요약
 
-> **combo c (RRF+reranker+MMR) 측정 재현 ship — R@10 0.7315 (+0.0096 vs RRF-only) / top-1 0.6424 (+0.0289)** 의미 있는 개선. 단 **P95 latency 29568ms (29.5s) — 어제 D6 측정 263ms 대비 112배 폭증**. 원인 추정: HF inference cold start (인터넷 끊김 직후 측정) + degrade rate 0.145 (월간 cap 80% 임계 도달). DoD R@10 ≥ 0.75 미달 (-0.0185). **운영 default 채택은 보류 권고** — P95 안정성 검증 (측정 시점 차이 / cap 회복 후 재측정) 후 결정. 단위 테스트 775 OK / 회귀 0. 운영 코드 변경 0. 다음 후보 1순위 = **multi-doc cross_doc retrieve 진단** (cost 0, cross-doc R@10 0.0833 잔존).
+> **combo c (RRF+reranker+MMR) 2회 측정 ship — R@10 ~0.73 / top-1 ~0.65 (RRF-only 대비 +0.01~0.03)** 효과 일관. 단 **P95 latency 비정상 폭증** — 1차 (cap 임계) 29.5s, 2차 (cap clean 5000) **71.7s** ⚠⚠. **2026-05-09 2차 정정 — cap 임계 도달도 root cause 아님** (cap 5000 clean 측정에서 degrade=0.000 인데 P95 71.7s 더 폭증). **진짜 root cause = HF inference API 자체의 시간대별 부하 / latency 변동** (어제 D6 측정 263ms → 오늘 71.7s, 273배). 추정 영향: HF free tier 부하 또는 측정 시점 인프라 상태. R@10 0.7256 < DoD 0.75 미달 (-0.0244). **운영 default 채택 보류** — HF API latency 가 보장되지 않으면 운영 SLO 부적합. 단위 테스트 775 OK / 회귀 0. 운영 코드 변경 0. 다음 후보 1순위 = **multi-doc cross_doc retrieve 진단** (cap/HF 무관, cross-doc R@10 0.0833 잔존).
 
 ---
 
@@ -67,9 +67,62 @@
 | **P95 lat** | **263 ms** | **29568 ms** | **+29305 ms (112배 폭증)** ⚠⚠ |
 | degrade rate | (미측정 / 낮음) | 0.145 | 신규 발동 |
 
-→ **P95 latency 가 비정상적으로 폭증**. 어제 측정 시점에 비해:
-1. **인터넷 끊김 직후 재시작** — HF inference cold start
-2. **reranker 월간 cap 80% 임계** 도달 (degrade rate 0.145) — 일부 호출이 cap 카운팅 차단되며 latency spike
+→ **P95 latency 가 비정상적으로 폭증**.
+
+### 2.2.1 (정정 2026-05-09) Root cause — reranker monthly cap 임계 도달
+
+DB 검증 결과:
+
+```
+vision_usage_log.source_type='reranker_invoke' (이번 달 누적)
+→ 800 rows = cap 1000 × degrade threshold 0.8 = 정확히 임계점 ⚠
+```
+
+내역 (추정):
+- 어제 D6 측정 (golden v2 150 row × invoked rate ~0.83) ≈ 125 calls
+- 어제~오늘 누적 다른 측정 + 1차 끊긴 측정 (출력 비어있어 카운트 불명) + 오늘 2차 재측정 (172 × 0.831) ≈ 143 calls
+- 총 누적 = 800 (정확히 임계)
+
+→ **2차 측정 시작 시 이미 임계 도달 직전 → 측정 도중 임계 넘어가며 일부 row 가 degrade path 진입 (rate 0.145)**. 진짜 원인.
+
+### 2.2.2 추정 1차 정정 ("HF cold start" → "cap 임계 도달")
+
+초기 work-log 의 "인터넷 끊김 직후 HF cold start" 추정은 **부정확** (사용자 지적):
+
+| 초기 추정 | 1차 정정 |
+|---|---|
+| ~~인터넷 끊김 직후 HF cold start~~ | 측정은 인터넷 복구 후 신선하게 진행됨. cold start 영향 X |
+| ~~degrade rate 0.145 가 부수 영향~~ | degrade rate 0.145 + cap 임계 도달이 직접 root cause |
+
+### 2.2.3 추정 2차 정정 — cap 임계 도달도 root cause 아님
+
+cap 상향 후 (`JETRAG_RERANKER_MONTHLY_CAP_CALLS=5000`) 재측정 결과:
+
+| 측정 | degrade | P95 (ms) | avg (ms) | invoked rate |
+|---|---:|---:|---:|---:|
+| 어제 D6 (golden v2 150) | 낮음 | 263 | — | ~0.83 |
+| 오늘 1차 cap=1000 (172) | 0.145 | 29568 | 8841 | 0.831 |
+| **오늘 2차 cap=5000 (172)** | **0.000** | **71687** | **15904** | **0.983** |
+
+→ **cap clean 상태에서 P95 더 폭증** (29.5s → 71.7s). cap 임계 도달이 직접 원인이 아니었음.
+
+### 2.2.4 진짜 root cause — HF API latency 변동
+
+DB 검증 (cap 임계 도달은 사실이지만 latency 와 분리):
+- vision_usage_log 의 reranker_invoke 누적 = 800 (cap 임계점)
+- 단 cap 5000 으로 상향 후 degrade 0.000 인데도 P95 71.7s
+
+**진짜 root cause = HF inference API 자체의 시간대별 부하 / latency 변동**:
+
+| 가능성 | 근거 |
+|---|---|
+| **A. HF free tier 부하** | 어제 263ms → 오늘 71.7s (273배). 어제와 오늘 사이 HF inference 의 응답시간 자체가 다름 |
+| B. HF 인프라 상태 변동 | free tier 의 GPU 자원 가용성이 시간대별로 다를 수 있음 |
+| C. invoked rate 증가 (0.831 → 0.983) | cap 차단 없으니 호출 수 증가 → P95 의 outlier row 수 증가 |
+| ~~cap 임계 도달~~ | 5000 cap 시 degrade 0.000 인데도 P95 폭증 → 무관 |
+| ~~HF cold start (인터넷 끊김)~~ | 측정은 신선했음 |
+
+→ **운영 default 채택 위험성 더 명확** — HF API latency 가 시간대별로 263ms ~ 71.7s 로 273배 변동. SLO 부적합.
 
 ### 2.3 cross-doc sub-report
 
