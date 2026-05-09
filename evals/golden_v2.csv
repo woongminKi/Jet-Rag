@@ -15,7 +15,7 @@ G-U-013,운영내규에서 위원회 구성 어떻게 돼있어,exact_fact,2e083
 G-U-014,한마음생활체육관 시설 이용료 얼마야,numeric_lookup,2e083cb0-05c3-4910-8345-2658c46fb7ed,한마음생활체육관_운영_내규(2024.4.30.개정),38,,,시설별 이용 요금,이용료;요금,,false,hwpx,false
 G-U-015,운영내규랑 직제규정에서 위원회 역할 어떻게 달라,cross_doc,,한마음생활체육관_운영_내규(2024.4.30.개정)|직제_규정(2024.4.30.개정),102,"0,15",,두 자료의 위원회 역할 비교,위원회;역할,각 자료 위원회 조항,false,hwpx,false
 G-U-016,직제규정에서 부서 구조 그림 같은 거 있나,vision_diagram,a5f3cfae-5059-41d4-8623-e9b6f23231c2,직제_규정(2024.4.30.개정),95,,,조직도 또는 부서 구조,조직;부서,,false,hwpx,true
-G-U-017,법률 자료 중에 임대차 분쟁 관련 있었나,fuzzy_memory,,law sample2|law sample3,"6,3",,,임대차 관련 판례 또는 조항,임대차,,false,hwp,false
+G-U-017,법률 자료들에서 원심 파기환송 사례들 어디 있었지,cross_doc,,law sample2|law sample3,"10,13","29,27","law2 ch10 (대구고등법원 환송), law3 ch13 (인천지방법원 환송)",두 판결 모두 원심 패소 부분 파기 후 고등/지방법원에 환송,파기;환송,,false,hwp,false
 G-U-018,law sample 자료에서 손해배상 기준 어디 있었지,fuzzy_memory,,law sample2|law sample3,"16,27",17,,손해배상 산정 기준,손해배상,,false,hwp,false
 G-U-019,경제전망에서 12% 증가 그게 어디였지,numeric_lookup,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,2,,,특정 지표 12% 증가 부분,12%;증가,,false,pdf,false
 G-U-020,sample-report 경제전망 핵심만 알려줘,summary,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,"770,848,849",,,주요 경제 지표와 전망 요약,경제;전망,,false,pdf,false
