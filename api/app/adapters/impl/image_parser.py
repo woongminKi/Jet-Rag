@@ -168,6 +168,10 @@ class ImageParser:
         # section.metadata 로 부착. PDF vision enrich path 가 vision-derived chunk
         # metadata + text 합성에 활용. 둘 다 None 이면 키 미주입 (graceful — 기존
         # 비-vision 흐름과 동일하게 빈 dict 유지).
+        # 2026-05-09 — caption_metadata 를 OCR / action_items section 에도 broadcast.
+        # 같은 vision page 의 모든 sections 가 동일 caption metadata 공유 → chunks
+        # 단계가 OCR chunk 에도 caption text 합성 + chunk.metadata 주입. caption gap
+        # full 회수 + dense/lex 매칭 효과 4~5배 (기존 caption section 1 chunk 한정).
         caption_metadata: dict = {}
         if caption.table_caption is not None:
             caption_metadata["table_caption"] = caption.table_caption
@@ -179,7 +183,7 @@ class ImageParser:
                 page=None,
                 section_title=f"이미지 분류: {caption.type}",
                 bbox=None,
-                metadata=caption_metadata,
+                metadata=dict(caption_metadata),
             )
         )
         # OCR section — 텍스트 있을 때만
@@ -191,6 +195,7 @@ class ImageParser:
                     page=None,
                     section_title="OCR 텍스트",
                     bbox=None,
+                    metadata=dict(caption_metadata),
                 )
             )
 
@@ -206,6 +211,7 @@ class ImageParser:
                     page=None,
                     section_title="액션 아이템",
                     bbox=None,
+                    metadata=dict(caption_metadata),
                 )
             )
 

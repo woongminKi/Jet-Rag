@@ -98,6 +98,11 @@ def _split_long_sections(sections: list[ExtractedSection]) -> list[ExtractedSect
                     page=section.page,
                     section_title=section.section_title,
                     bbox=section.bbox,  # 분할 조각은 원 bbox 를 공유 (근사)
+                    # 2026-05-09 — split 시 section.metadata 보존 (S4-A D2 caption
+                    # 전파 회귀 fix). 이전엔 default 빈 dict 로 채워져 vision-derived
+                    # OCR section 의 table_caption/figure_caption 이 split chunks
+                    # 전체에서 손실. dict() 복사로 frozen 격리.
+                    metadata=dict(section.metadata),
                 )
             )
     return out
@@ -283,6 +288,11 @@ def _merge_short_sections(sections: list[ExtractedSection]) -> list[ExtractedSec
             and len(buf.text) + len(section.text) + 2 <= _MAX_SIZE
         )
         if can_merge:
+            # 2026-05-09 — merge 시 양쪽 metadata dict-merge (section 우선) 로 보존.
+            # S4-A D2 caption 전파 회귀 fix — 이전엔 default 빈 dict 로 채워져 caption
+            # metadata 손실. 같은 vision page 의 sections 는 동일 caption 공유라
+            # 충돌 시 section 우선이 안전 (vision_incremental flag 등도 보존).
+            merged_metadata: dict = {**buf.metadata, **section.metadata}
             buf = ExtractedSection(
                 text=f"{buf.text}\n\n{section.text}",
                 page=buf.page,
@@ -290,6 +300,7 @@ def _merge_short_sections(sections: list[ExtractedSection]) -> list[ExtractedSec
                 # 일 가능성 (buf 가 None title 의 짧은 청크일 가능성 ↑) → KPI §13.1 채움 비율 ↑
                 section_title=section.section_title or buf.section_title,
                 bbox=None,  # 병합 시 bbox 합성은 근사가 어려워 None
+                metadata=merged_metadata,
             )
         else:
             merged.append(buf)
