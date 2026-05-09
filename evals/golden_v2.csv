@@ -163,10 +163,10 @@ G-A-202,시나리오별 성장 물가 전망 표,table_lookup,d1259dfe-c402-4cd0
 G-A-203,물가 경상수지 고용 전망 표,table_lookup,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,914,,물가·경상수지·고용 전망 / 소비자물가 전망경로,"소비자물가, 경상수지, 취업자수 전망",물가;경상수지,,false,pdf,true
 G-A-204,2026년 경제전망 요약표 어디 있어,table_lookup,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,918,,경제전망 요약표 (2026.2월),2026.2월 기준 세계경제 성장률 등 경제전망 요약표,2026;전망;요약,,false,pdf,true
 G-A-205,빅테크 인프라투자 진행 상황 표,table_lookup,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,929,,빅테크 기업의 인프라투자 진행 상황,빅테크 기업별 자본지출 일정 및 정부 전력 인프라 지원 계획,빅테크;인프라,,false,pdf,true
-G-U-100,그때 한마음 체육관 회비 어떻게 됐었지,fuzzy_memory,2e083cb0-05c3-4910-8345-2658c46fb7ed,한마음생활체육관_운영_내규,26,"19,50","이용료 표 (개인/단체, 일일입장/월회원)",이용료는 일일입장/월회원 기준,이용료;회원,,false,hwpx,false
-G-U-101,법률 자료에서 계약 합의해지 관련 있었나,fuzzy_memory,80b48fa9-fe83-4fef-af31-af116494183d,law sample2,4,,계약의 합의해지는 계속적 채권채무관계,계약의 합의해지에 관한 판결 요지,합의해지;계약,,false,hwp,false
+G-U-100,그때 한마음 체육관 회비 어떻게 됐었지,fuzzy_memory,2e083cb0-05c3-4910-8345-2658c46fb7ed,한마음생활체육관_운영_내규,26,"11,19,50","이용료 표 (개인/단체, 일일입장/월회원)",이용료는 일일입장/월회원 기준,이용료;회원,,false,hwpx,false
+G-U-101,법률 자료에서 계약 합의해지 관련 있었나,fuzzy_memory,80b48fa9-fe83-4fef-af31-af116494183d,law sample2,4,"3,19",계약의 합의해지는 계속적 채권채무관계,계약의 합의해지에 관한 판결 요지,합의해지;계약,,false,hwp,false
 G-U-102,쏘나타 카탈로그에서 그때 모노블록 브레이크 봤었지,fuzzy_memory,92c38315-659e-42f4-9043-8cec1d62823a,sonata-the-edge_catalog,57,123,모노블록 브레이크 19인치 경량 휠 패키지,모노블록 4P 캘리퍼 + 19인치 휠 패키지,모노블록;브레이크,,false,pdf,false
-G-U-103,law sample 에서 채무자 변제 충당 관련 어디 있었지,fuzzy_memory,0ed5a024-e076-4893-a766-90b5d689f372,law sample3,20,"5,21",채무자가 부담하는 수 개의 채무 / 변제 충당,수개 채무의 변제 충당과 소멸시효 중단 효력,변제;채무,,false,pdf,false
+G-U-103,law sample 에서 채무자 변제 충당 관련 어디 있었지,fuzzy_memory,0ed5a024-e076-4893-a766-90b5d689f372,law sample3,20,"5,21,18",채무자가 부담하는 수 개의 채무 / 변제 충당,수개 채무의 변제 충당과 소멸시효 중단 효력,변제;채무,,false,pdf,false
 G-A-206,유로지역 GDP 및 PMI 그림 어디,vision_diagram,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,931,,[그림 1.8] 유로지역 GDP 및 PMI,"유로경제 성장 흐름과 GDP, PMI, 국방·인프라 지출 기여도",유로;GDP,,false,pdf,true
 G-A-207,국가별 평균관세율 변화 그림,exact_fact,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,907,,전망시점별 주요 관세 정책 내용 / 국가별 평균관세율 변화,관세 정책 현황 및 국가별 평균관세율 변화,관세;국가별,,false,pdf,true
 G-A-208,중국 경제성장률 부문별 성장기여도 그림,vision_diagram,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,933,,중국 경제성장률 및 부문별 성장기여도,중국경제 성장세 둔화 (4% 중반대) 전망,중국;성장률,,false,pdf,true
