@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 import unicodedata
 from collections import defaultdict
@@ -81,6 +82,27 @@ _RETRY_AFTER_SECONDS = "60"
 # 짧은 헤딩 (예: "결론") 은 chunk_idx>0 또는 page>1 이라 false positive 회피.
 _COVER_GUARD_TEXT_LEN = 30
 _COVER_GUARD_PENALTY = 0.3
+
+# 2026-05-09 — TOC (목차) 가드 heuristic. **default OFF** (opt-in).
+# vision-derived chunk (section_title `(vision)` prefix) 의 text head 가 목차/차례
+# 키워드 매칭 시 cover-equivalent penalty 적용. table_lookup 6 row top-1 약점:
+# G-A-021 / G-A-204 의 search top-1 = ch 902 (목차) — text_len=350 으로 cover
+# guard 미발동, 키워드 매칭은 강해 RRF top 차지. 별도 TOC penalty 로 회복.
+# 2026-05-09 ablation 결과:
+# - summary top-1 +0.111, numeric_lookup R@10 +0.036
+# - 단 table_lookup R@10 -0.083 / top-1 -0.083 회귀
+# - net Overall R@10 -0.0046 → 운영 default OFF 채택 (opt-in 유지).
+# ENV `JETRAG_TOC_GUARD_ENABLED=true` 시 활성 (디버깅 / 추가 ablation).
+_TOC_GUARD_PENALTY = _COVER_GUARD_PENALTY  # 동일 penalty 0.3 (cover/toc 동일 가드)
+_TOC_GUARD_ENABLED_ENV = "JETRAG_TOC_GUARD_ENABLED"
+_TOC_GUARD_HEAD_LEN = 100
+# 매칭 조건 (text head 첫 100자 기준):
+# - "목차" 또는 "목 차" 단독 (vision prefix 시 chunk text 앞부분에 등장)
+# - line head 의 "차 례 " 또는 "차례 " (단독 시작, "다섯 차례" 같은 숫자+차례 회피)
+_TOC_PATTERN = re.compile(
+    r"(?:목\s*차)|(?:^|[\n\.\s])(?:차\s+례|차례)(?=\s|$)"
+)
+
 
 # W25 D14+1 (S2) — BGE-reranker-v2-m3 cross-encoder rerank.
 # RRF top-K (~50) → reranker score → 재정렬. opt-in ENV (default off).
@@ -564,6 +586,8 @@ def search(
             "chunk_idx": c.get("chunk_idx"),
             "page": c.get("page"),
             "text_len": len(c.get("text") or ""),
+            "section_title": c.get("section_title") or "",
+            "text_head": (c.get("text") or "")[:_TOC_GUARD_HEAD_LEN],
         }
         for cid, c in chunks_by_id.items()
     }
@@ -575,6 +599,23 @@ def search(
         if meta["text_len"] > _COVER_GUARD_TEXT_LEN:
             return False
         return meta["chunk_idx"] == 0 or meta["page"] == 1
+
+    # 2026-05-09 — TOC 가드: vision-derived chunk 의 text head 가 목차/차례 매칭 시 True.
+    # cover_chunk 와 직교 (cover = 짧은 표지, toc = 긴 목차 본문). **default OFF**.
+    _toc_guard_enabled = (
+        os.environ.get(_TOC_GUARD_ENABLED_ENV, "false").lower() == "true"
+    )
+
+    def _is_toc_chunk(chunk_id: str) -> bool:
+        if not _toc_guard_enabled:
+            return False
+        meta = cover_guard_meta.get(chunk_id)
+        if not meta:
+            return False
+        # vision-derived (section_title `(vision)` prefix) 한정 — PDF 본문 목차와 분리.
+        if not meta["section_title"].startswith("(vision)"):
+            return False
+        return bool(_TOC_PATTERN.search(meta["text_head"]))
 
     # ------------------------------------------------------------------
     # 2-c) W25 D14+1 (S2) + S3 D4 — BGE-reranker cross-encoder 재정렬 (opt-in).
@@ -710,6 +751,9 @@ def search(
         cover_guard_skip = reranker_used or reranker_path == _RERANKER_PATH_CACHED
         if not cover_guard_skip and _is_cover_chunk(chunk_id):
             score *= _COVER_GUARD_PENALTY
+        # 2026-05-09 — TOC 가드 (cover 와 직교, vision-derived 한정)
+        if not cover_guard_skip and _is_toc_chunk(chunk_id):
+            score *= _TOC_GUARD_PENALTY
         doc_score[doc_id] = max(doc_score.get(doc_id, 0.0), score)
         existing = doc_chunk_scores[doc_id].get(chunk_id)
         if existing is None or score > existing:
