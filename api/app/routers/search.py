@@ -632,6 +632,77 @@ def search(
         for cid, c in chunks_by_id.items()
     }
 
+    # 2026-05-10 — vision adjacent retrieval (opt-in, default OFF).
+    # candidates pool 의 vision-derived chunks 의 같은 (doc, page) 인접 chunk_idx
+    # (±1) 를 DB 에서 추가 fetch → rpc_rows + chunks_by_id + cover_guard_meta 통합.
+    # G-A-204 ch 919 (요약표 데이터) 같은 numeric 표 chunks 가 BM25/dense top-100 밖
+    # 일 때, 같은 page 의 caption chunk (ch 918) 가 candidates 에 있으면 인접
+    # ch 919 을 candidates 에 끌어와 회복 가능.
+    # vision adjacent boost 와 함께 사용 시: retrieval 로 인접 chunk 추가 → boost 가
+    # caption score × 0.5 propagate → top-K 진입.
+    _vision_adj_retrieval_enabled = (
+        os.environ.get("JETRAG_VISION_ADJACENT_RETRIEVAL", "false").lower() == "true"
+    )
+    if _vision_adj_retrieval_enabled and chunks_by_id:
+        # 1) candidates 의 vision-derived chunks 식별 (doc_id, page, chunk_idx)
+        vision_targets: dict[str, set[int]] = defaultdict(set)
+        for cid, c in list(chunks_by_id.items()):
+            st = (c.get("section_title") or "")
+            if not st.startswith("(vision)"):
+                continue
+            page = c.get("page")
+            cidx = c.get("chunk_idx")
+            did = c.get("doc_id")
+            if not did or page is None or cidx is None:
+                continue
+            for adj in (int(cidx) - 1, int(cidx) + 1):
+                if adj >= 0:
+                    vision_targets[did].add(adj)
+        # 2) 인접 chunks DB fetch (이미 candidates 에 있는 chunk_id 는 skip)
+        existing_ids = set(chunks_by_id.keys())
+        for did, cidxs in vision_targets.items():
+            try:
+                resp = (
+                    client.table("chunks")
+                    .select(
+                        "id, doc_id, chunk_idx, page, section_title, text, metadata"
+                    )
+                    .eq("doc_id", did)
+                    .in_("chunk_idx", sorted(cidxs))
+                    .execute()
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("vision adjacent retrieval fetch 실패 (graceful): %s", exc)
+                continue
+            for new_c in resp.data or []:
+                new_cid = new_c.get("id")
+                if not new_cid or new_cid in existing_ids:
+                    continue
+                # 추가 chunk 도 vision-derived 만 (caption 인접 비-vision chunk 회피)
+                if not (new_c.get("section_title") or "").startswith("(vision)"):
+                    continue
+                # 통합
+                chunks_by_id[new_cid] = new_c
+                cover_guard_meta[new_cid] = {
+                    "chunk_idx": new_c.get("chunk_idx"),
+                    "page": new_c.get("page"),
+                    "text_len": len(new_c.get("text") or ""),
+                    "section_title": new_c.get("section_title") or "",
+                    "text_head": (new_c.get("text") or "")[:_TOC_GUARD_HEAD_LEN],
+                }
+                # rpc_rows 에 synthetic low score 추가 (boost 가 propagate 가능)
+                rpc_rows.append(
+                    {
+                        "chunk_id": new_cid,
+                        "doc_id": did,
+                        "rrf_score": 0.001,  # 매우 작음 — boost 만으로 의미 부여
+                        "dense_rank": None,
+                        "sparse_rank": None,
+                    }
+                )
+                candidate_chunk_ids.append(new_cid)
+                existing_ids.add(new_cid)
+
     def _is_cover_chunk(chunk_id: str) -> bool:
         meta = cover_guard_meta.get(chunk_id)
         if not meta:
