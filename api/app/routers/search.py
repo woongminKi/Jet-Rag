@@ -92,15 +92,22 @@ _COVER_GUARD_PENALTY = 0.3
 # - summary top-1 +0.111, numeric_lookup R@10 +0.036
 # - 단 table_lookup R@10 -0.083 / top-1 -0.083 회귀
 # - net Overall R@10 -0.0046 → 운영 default OFF 채택 (opt-in 유지).
+# 2026-05-10 정밀화 (query intent skip):
+# - G-A-200 ("경제전망 보고서 목차 어떻게 구성됐어") 가 명시적으로 목차를 요구 →
+#   penalty 가 사용자 의도 무시 → 정답 ch 902 가 top-10 밖. 회복 필요.
+# - query 자체에 _TOC_INTENT_PATTERN 매칭 시 chunk-level penalty SKIP.
 # ENV `JETRAG_TOC_GUARD_ENABLED=true` 시 활성 (디버깅 / 추가 ablation).
 _TOC_GUARD_PENALTY = _COVER_GUARD_PENALTY  # 동일 penalty 0.3 (cover/toc 동일 가드)
 _TOC_GUARD_ENABLED_ENV = "JETRAG_TOC_GUARD_ENABLED"
 _TOC_GUARD_HEAD_LEN = 100
-# 매칭 조건 (text head 첫 100자 기준):
-# - "목차" 또는 "목 차" 단독 (vision prefix 시 chunk text 앞부분에 등장)
-# - line head 의 "차 례 " 또는 "차례 " (단독 시작, "다섯 차례" 같은 숫자+차례 회피)
+# chunk text head 매칭 — 목차/차례
 _TOC_PATTERN = re.compile(
     r"(?:목\s*차)|(?:^|[\n\.\s])(?:차\s+례|차례)(?=\s|$)"
+)
+# query 자체가 TOC 를 명시적으로 요구하는지 판정 — 매칭 시 penalty SKIP.
+# 패턴: "목차" / "목 차" / "차례" / "차 례" 단어 단위 (조사 허용: 목차가/목차는/목차에/...)
+_TOC_INTENT_PATTERN = re.compile(
+    r"(?:목\s*차|차\s*례)(?:[가-힣]{0,3})?(?=\s|$|[?!.,])"
 )
 
 
@@ -602,12 +609,17 @@ def search(
 
     # 2026-05-09 — TOC 가드: vision-derived chunk 의 text head 가 목차/차례 매칭 시 True.
     # cover_chunk 와 직교 (cover = 짧은 표지, toc = 긴 목차 본문). **default OFF**.
+    # 2026-05-10 정밀화 — query 자체가 목차/차례 를 명시 요구 시 penalty SKIP
+    # (사용자 의도 무시 회피, G-A-200 회복).
     _toc_guard_enabled = (
         os.environ.get(_TOC_GUARD_ENABLED_ENV, "false").lower() == "true"
     )
+    _query_wants_toc = bool(_TOC_INTENT_PATTERN.search(clean_q))
 
     def _is_toc_chunk(chunk_id: str) -> bool:
         if not _toc_guard_enabled:
+            return False
+        if _query_wants_toc:
             return False
         meta = cover_guard_meta.get(chunk_id)
         if not meta:
