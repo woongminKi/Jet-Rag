@@ -360,6 +360,26 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="prompt 만 출력하고 종료 (cost 0).",
     )
+    parser.add_argument(
+        "--cost-cap-usd",
+        type=float,
+        default=None,
+        help=(
+            "cost 가드레일 — 누적 추정 cost (USD) 가 cap 초과 예측 시 "
+            "다음 qtype 측정 break + partial ship. 80% 도달 시 stderr alert. "
+            "qtype 당 1 LLM call ~$0.005-0.030. default: None (비활성)."
+        ),
+    )
+    parser.add_argument(
+        "--cost-per-qtype-usd",
+        type=float,
+        default=0.015,
+        help=(
+            "qtype 당 1 LLM call 추정 cost (cap 비교용). "
+            "Gemini 2.5 Flash + few-shot prompt + 5 candidate 생성 ~$0.005-0.030, "
+            "default 0.015 (보수적 중간값)."
+        ),
+    )
     args = parser.parse_args(argv)
 
     # api/app/config.py → .env 자동 로드
@@ -371,12 +391,34 @@ def main(argv: list[str] | None = None) -> int:
     examples_by_qtype = load_examples_by_qtype(_GOLDEN_V2_CSV)
     print(f"[load] golden v2 qtype 수: {len(examples_by_qtype)}", file=sys.stderr)
 
+    # 2026-05-10 — cost 가드레일 (opt-in via --cost-cap-usd)
+    from _cost_guard import CostGuard, GuardAction
+
+    guard = CostGuard(
+        cap_usd=args.cost_cap_usd,
+        est_per_unit=args.cost_per_qtype_usd,
+    )
+
     candidates: list[CandidateRow] = []
     for qtype in args.qtypes:
         examples = examples_by_qtype.get(qtype, [])
         if not examples:
             print(f"  ⚠ qtype={qtype}: 기존 example 0건 → skip", file=sys.stderr)
             continue
+        # cap 사전 체크
+        action = guard.before_unit(unit_n=1)
+        if action == GuardAction.BREAK:
+            print(
+                f"[cost-cap] {guard.summary()} → 다음 qtype 측정 시 cap 초과 — "
+                f"break, partial ship ({len(candidates)} candidates)",
+                file=sys.stderr,
+            )
+            break
+        if action == GuardAction.ALERT:
+            print(
+                f"[cost-cap] ⚠ 80% 도달 — {guard.summary()}",
+                file=sys.stderr,
+            )
         print(
             f"  [{qtype}] examples={len(examples)} → request {args.count_per_qtype} candidates",
             file=sys.stderr,
@@ -394,6 +436,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  ⚠ {qtype} LLM 실패: {exc}", file=sys.stderr)
             continue
         elapsed = time.monotonic() - t0
+        # 측정 직후 cost 누적
+        guard.add_actual(args.cost_per_qtype_usd)
         try:
             new_rows = parse_candidates(
                 raw_json=raw,

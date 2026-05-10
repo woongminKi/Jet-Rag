@@ -764,6 +764,27 @@ def main(argv: list[str] | None = None) -> int:
             "병목 회피 — 회귀 baseline 권고 옵션."
         ),
     )
+    parser.add_argument(
+        "--cost-cap-usd",
+        type=float,
+        default=None,
+        help=(
+            "cost 가드레일 — 누적 추정 cost (USD) 가 cap 초과 예측 시 row "
+            "측정 break + partial ship. 80% 도달 시 stderr alert. "
+            "skip-context-precision 시 row 당 ~$0.005 (Gemini 2.5 Flash). "
+            "default: None (가드레일 비활성)."
+        ),
+    )
+    parser.add_argument(
+        "--cost-per-row-usd",
+        type=float,
+        default=0.005,
+        help=(
+            "row 1 회 측정의 추정 cost (cap 비교용). "
+            "Gemini 2.5 Flash + Faithfulness/ResponseRelevancy ~$0.003-0.013, "
+            "default 0.005 (보수적 중간값)."
+        ),
+    )
     args = parser.parse_args(argv)
 
     # api/app/config.py 가 .env (load_dotenv) 자동 적용 → GEMINI_API_KEY 로드.
@@ -806,7 +827,30 @@ def main(argv: list[str] | None = None) -> int:
     partial_path = args.out_json.with_suffix(".partial.jsonl")
     partial_path.parent.mkdir(parents=True, exist_ok=True)
     partial_path.write_text("", encoding="utf-8")  # truncate 새 시도
+    # 2026-05-10 — cost 가드레일 (opt-in via --cost-cap-usd)
+    from _cost_guard import CostGuard, GuardAction
+
+    guard = CostGuard(
+        cap_usd=args.cost_cap_usd,
+        est_per_unit=args.cost_per_row_usd,
+    )
     for i, r in enumerate(sample, start=1):
+        # cap 사전 체크 — break 또는 alert
+        action = guard.before_unit(unit_n=1)
+        if action == GuardAction.BREAK:
+            print(
+                f"[cost-cap] {guard.summary()} → 다음 row 측정 시 cap 초과 — "
+                f"break, partial ship ({len(records)}/{len(sample)} 완료)",
+                file=sys.stderr,
+                flush=True,
+            )
+            break
+        if action == GuardAction.ALERT:
+            print(
+                f"[cost-cap] ⚠ 80% 도달 — {guard.summary()}",
+                file=sys.stderr,
+                flush=True,
+            )
         print(
             f"  [{i}/{len(sample)}] [{r.query_type}] {r.id} — {r.query[:60]!r}",
             file=sys.stderr,
@@ -814,6 +858,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         rec = measure_row(r, skip_context_precision=args.skip_context_precision)
         records.append(rec)
+        # 측정 직후 cost 누적 (실측 cost API 부재 → 추정값 사용)
+        if not rec.error:
+            guard.add_actual(args.cost_per_row_usd)
         if rec.error:
             print(f"    ⚠ {rec.error}", file=sys.stderr, flush=True)
         else:
