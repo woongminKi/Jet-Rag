@@ -417,6 +417,21 @@ def _to_chunk_records(
             if section.section_title
             else section.section_title
         )
+
+        # 2026-05-10 — S4-B 엔티티 추출 (룰 기반, master plan §6 P1).
+        # chunks.metadata.entities = {"dates": [...], "amounts": [...],
+        # "percentages": [...], "identifiers": [...]}
+        # 빈 entities (모든 카테고리 비어있음) 시 키 자체 미주입 — metadata 부풀림 회피.
+        # 외부 의존성 0 (정규식만). search filter / boost 는 별도 sprint (ENV opt-in).
+        try:
+            from app.services.entity_extract import extract_entities
+
+            entities = extract_entities(text_nfc)
+            if not entities.is_empty():
+                metadata["entities"] = entities.to_dict()
+        except Exception:  # noqa: BLE001 — chunk 저장 차단 회피
+            pass
+
         records.append(
             ChunkRecord(
                 doc_id=doc_id,
