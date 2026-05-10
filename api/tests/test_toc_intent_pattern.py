@@ -75,5 +75,63 @@ class TocIntentPatternTest(unittest.TestCase):
         self.assertIsNotNone(result)
 
 
+class StripVisionMetaPrefixTest(unittest.TestCase):
+    """2026-05-10 정밀화 2 — `[문서] ... \\n\\n` 메타 설명 skip 후 본문 head 추출."""
+
+    def test_strips_vision_meta_prefix(self) -> None:
+        from app.routers.search import _strip_vision_meta_prefix
+
+        # chunk 77 (G-A-110 FP) 패턴 — 메타 설명에 "목차" 포함, 본문은 prototype 설명
+        text = (
+            "[문서] Mugip 서비스의 프로토타입 화면, 정보 구조도, 정책서 목차를 보여주는 문서"
+            "\n\n"
+            "사이드 Mugip 프로토타입 IA 로그인 로그인 방법"
+        )
+        body = _strip_vision_meta_prefix(text)
+        self.assertNotIn("목차", body)
+        self.assertTrue(body.startswith("사이드 Mugip"))
+
+    def test_keeps_text_when_no_meta_prefix(self) -> None:
+        from app.routers.search import _strip_vision_meta_prefix
+
+        text = "차 례\n경제전망 요약\n국내외 여건"
+        body = _strip_vision_meta_prefix(text)
+        self.assertEqual(body, text)
+
+    def test_keeps_text_when_no_double_newline(self) -> None:
+        from app.routers.search import _strip_vision_meta_prefix
+
+        # "[문서]" 시작이지만 \n\n 없으면 원본 유지 (graceful)
+        text = "[문서] 본문 \n 단일 newline 으로 끝남"
+        body = _strip_vision_meta_prefix(text)
+        self.assertEqual(body, text)
+
+    def test_real_toc_chunk_keeps_pattern_match(self) -> None:
+        """진짜 TOC chunk (ch 902) 의 본문은 메타 prefix 후에 '차 례' 매칭."""
+        from app.routers.search import _TOC_PATTERN, _strip_vision_meta_prefix
+
+        # ch 902 패턴
+        text = (
+            "[문서] 경제전망 요약 보고서의 목차를 보여주는 문서"
+            "\n\n"
+            "차 례\n경제전망 요약\n국내외 여건"
+        )
+        body = _strip_vision_meta_prefix(text)
+        self.assertTrue(body.startswith("차 례"))
+        self.assertIsNotNone(_TOC_PATTERN.search(body))
+
+    def test_chunk_77_pattern_no_match_after_strip(self) -> None:
+        """chunk 77 (G-A-110 FP): meta 설명에만 '목차' → strip 후 매칭 안 됨."""
+        from app.routers.search import _TOC_PATTERN, _strip_vision_meta_prefix
+
+        text = (
+            "[문서] Mugip 서비스의 프로토타입 화면, 정보 구조도, 정책서 목차를 보여주는 문서"
+            "\n\n"
+            "사이드 Mugip 프로토타입 IA 로그인 로그인 방법"
+        )
+        body = _strip_vision_meta_prefix(text)
+        self.assertIsNone(_TOC_PATTERN.search(body))
+
+
 if __name__ == "__main__":
     unittest.main()

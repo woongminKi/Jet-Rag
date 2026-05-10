@@ -92,10 +92,17 @@ _COVER_GUARD_PENALTY = 0.3
 # - summary top-1 +0.111, numeric_lookup R@10 +0.036
 # - 단 table_lookup R@10 -0.083 / top-1 -0.083 회귀
 # - net Overall R@10 -0.0046 → 운영 default OFF 채택 (opt-in 유지).
-# 2026-05-10 정밀화 (query intent skip):
+# 2026-05-10 정밀화 1 (query intent skip):
 # - G-A-200 ("경제전망 보고서 목차 어떻게 구성됐어") 가 명시적으로 목차를 요구 →
 #   penalty 가 사용자 의도 무시 → 정답 ch 902 가 top-10 밖. 회복 필요.
 # - query 자체에 _TOC_INTENT_PATTERN 매칭 시 chunk-level penalty SKIP.
+# 2026-05-10 정밀화 2 (vision OCR 메타 설명 skip):
+# - chunk 77 (G-A-110 FP, doc=9878d7bd Mugip) 의 text head:
+#   `[문서] Mugip 서비스의 프로토타입 화면, 정보 구조도, 정책서 목차를 보여주는 문서\n\n사이드...`
+#   "목차" 가 vision OCR 의 메타 설명 (`[문서] ... 보여주는 문서`) 에만 등장 — 실제 chunk
+#   본문은 prototype 설명이라 TOC 아님. → 메타 설명 prefix 를 skip 후 매칭.
+# - 진짜 TOC chunks (ch 902 "차 례\n경제전망 요약...", ch 920 "목 차\n대외여건 2") 는
+#   메타 설명 다음 본문 head 에 "목차/차례" 패턴 존재 → 정상 매칭 유지.
 # ENV `JETRAG_TOC_GUARD_ENABLED=true` 시 활성 (디버깅 / 추가 ablation).
 _TOC_GUARD_PENALTY = _COVER_GUARD_PENALTY  # 동일 penalty 0.3 (cover/toc 동일 가드)
 _TOC_GUARD_ENABLED_ENV = "JETRAG_TOC_GUARD_ENABLED"
@@ -109,6 +116,23 @@ _TOC_PATTERN = re.compile(
 _TOC_INTENT_PATTERN = re.compile(
     r"(?:목\s*차|차\s*례)(?:[가-힣]{0,3})?(?=\s|$|[?!.,])"
 )
+# vision OCR 메타 설명 prefix — `[문서] ... \n\n` 까지 skip 후 본문 head 매칭.
+_VISION_META_PREFIX = "[문서]"
+_VISION_META_BODY_SEP = "\n\n"
+
+
+def _strip_vision_meta_prefix(text_head: str) -> str:
+    """vision OCR 의 `[문서] ... \\n\\n` 메타 설명 제거 후 본문 head 반환.
+
+    chunk 77 (G-A-110 FP) 같이 메타 설명에만 "목차" 등장하는 false positive 회피.
+    메타 prefix 없으면 원본 그대로 반환.
+    """
+    if not text_head.startswith(_VISION_META_PREFIX):
+        return text_head
+    idx = text_head.find(_VISION_META_BODY_SEP)
+    if idx == -1:
+        return text_head
+    return text_head[idx + len(_VISION_META_BODY_SEP):]
 
 
 # W25 D14+1 (S2) — BGE-reranker-v2-m3 cross-encoder rerank.
@@ -627,7 +651,9 @@ def search(
         # vision-derived (section_title `(vision)` prefix) 한정 — PDF 본문 목차와 분리.
         if not meta["section_title"].startswith("(vision)"):
             return False
-        return bool(_TOC_PATTERN.search(meta["text_head"]))
+        # 2026-05-10 정밀화 2 — vision OCR 메타 설명 (`[문서] ... \n\n`) 제거 후 매칭.
+        body_head = _strip_vision_meta_prefix(meta["text_head"])
+        return bool(_TOC_PATTERN.search(body_head))
 
     # ------------------------------------------------------------------
     # 2-c) W25 D14+1 (S2) + S3 D4 — BGE-reranker cross-encoder 재정렬 (opt-in).
