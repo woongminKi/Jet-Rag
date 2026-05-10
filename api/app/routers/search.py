@@ -120,6 +120,14 @@ _TOC_INTENT_PATTERN = re.compile(
 _VISION_META_PREFIX = "[문서]"
 _VISION_META_BODY_SEP = "\n\n"
 
+# 2026-05-10 — S4-B 엔티티 매칭 boost (opt-in, default OFF).
+# query 의 entities (dates/amounts/percentages/identifiers) 와 chunks.metadata.entities
+# 매칭 chunks 의 RRF score boost (factor 1.10). 새 ingest 부터 적용 가능 (기존
+# chunks 영향 0 = entities 키 없음 → boost 0).
+# ENV `JETRAG_ENTITY_BOOST=true` 시 활성. backfill 후 ablation 측정 권고.
+_ENTITY_BOOST_ENV = "JETRAG_ENTITY_BOOST"
+_ENTITY_BOOST_FACTOR = 1.10  # 작은 boost — 회귀 risk 최소화
+
 # 2026-05-10 — vision 인접 chunk boost (opt-in, default OFF).
 # G-A-204 ch 919 (요약표 데이터 part 2, 거의 숫자) 가 search top-10 밖 — query
 # "요약표" 와 dense/BM25 매칭 약함. 단 같은 page 의 ch 918 (요약표 caption, 강한
@@ -738,6 +746,50 @@ def search(
         body_head = _strip_vision_meta_prefix(meta["text_head"])
         return bool(_TOC_PATTERN.search(body_head))
 
+    # 2026-05-10 — S4-B 엔티티 매칭 boost (opt-in, default OFF).
+    # query 의 entities (룰 기반) ∩ chunks.metadata.entities ≠ ∅ → score × 1.10.
+    # 새 ingest 부터 metadata.entities 자동 채워짐 (별도 sprint backfill 권고).
+    _entity_boost_enabled = (
+        os.environ.get(_ENTITY_BOOST_ENV, "false").lower() == "true"
+    )
+    _query_entities: dict[str, set[str]] = {}
+    if _entity_boost_enabled:
+        try:
+            from app.services.entity_extract import extract_entities
+
+            qe = extract_entities(clean_q)
+            _query_entities = {
+                "dates": set(qe.dates),
+                "amounts": set(qe.amounts),
+                "percentages": set(qe.percentages),
+                "identifiers": set(qe.identifiers),
+            }
+        except Exception:  # noqa: BLE001
+            _query_entities = {}
+
+    def _entity_match_chunk(chunk_id: str) -> bool:
+        if not _entity_boost_enabled or not _query_entities:
+            return False
+        # query 가 entities 1건이라도 가져야 의미 있음 (전부 비어있으면 skip)
+        if not any(_query_entities.values()):
+            return False
+        c = chunks_by_id.get(chunk_id)
+        if not c:
+            return False
+        meta = c.get("metadata") or {}
+        chunk_ents = meta.get("entities") or {}
+        if not isinstance(chunk_ents, dict):
+            return False
+        for cat, q_vals in _query_entities.items():
+            if not q_vals:
+                continue
+            chunk_vals = chunk_ents.get(cat) or []
+            if not isinstance(chunk_vals, list):
+                continue
+            if q_vals & set(chunk_vals):
+                return True
+        return False
+
     # ------------------------------------------------------------------
     # 2-c) W25 D14+1 (S2) + S3 D4 — BGE-reranker cross-encoder 재정렬 (opt-in).
     #     활성 + candidates 2건 이상 시 다음 분기를 거친다 (planner v0.1 §F):
@@ -875,6 +927,9 @@ def search(
         # 2026-05-09 — TOC 가드 (cover 와 직교, vision-derived 한정)
         if not cover_guard_skip and _is_toc_chunk(chunk_id):
             score *= _TOC_GUARD_PENALTY
+        # 2026-05-10 — S4-B 엔티티 매칭 boost (opt-in, default OFF)
+        if _entity_match_chunk(chunk_id):
+            score *= _ENTITY_BOOST_FACTOR
         doc_score[doc_id] = max(doc_score.get(doc_id, 0.0), score)
         existing = doc_chunk_scores[doc_id].get(chunk_id)
         if existing is None or score > existing:
