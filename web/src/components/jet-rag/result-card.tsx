@@ -47,8 +47,9 @@ export function ResultCard({ hit, debug = false, query }: ResultCardProps) {
             "관련도" → "매칭 강도" + ⓘ 툴팁: 정답 신뢰도와 분리 명시.
             W25 D3 hydration fix — Radix Tooltip SSR mismatch 회피 위해
             라벨/막대 영역 통째로 client island 분리 (RelevanceLabel).
+            S5-C — `?debug=1` 시만 노출 (Q-S5-4: 정답 신뢰도와 멘탈 모델 혼동 회피).
           */}
-          <RelevanceLabel relevancePct={relevancePct} />
+          {debug && <RelevanceLabel relevancePct={relevancePct} />}
         </div>
         {hit.summary ? (
           <p className="line-clamp-2 text-sm text-muted-foreground">{hit.summary}</p>
@@ -85,7 +86,8 @@ export function ResultCard({ hit, debug = false, query }: ResultCardProps) {
                         ↻ overlap
                       </span>
                     )}
-                    {typeof chunk.rrf_score === 'number' && (
+                    {/* S5-C — `?debug=1` 시만 노출. raw RRF 점수는 운영 사용자에게 노이즈. */}
+                    {debug && typeof chunk.rrf_score === 'number' && (
                       <span
                         className="font-mono tabular-nums text-[9px] text-muted-foreground"
                         title="RRF score (검색 ranking 근거)"
