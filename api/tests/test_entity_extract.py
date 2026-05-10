@@ -146,5 +146,117 @@ class ExtractEntitiesTest(unittest.TestCase):
         self.assertTrue(result.is_empty())
 
 
+class ParseLLMEntitiesTest(unittest.TestCase):
+    def test_parses_valid_json(self) -> None:
+        from app.services.entity_extract import parse_llm_entities
+        import json
+
+        raw = json.dumps({
+            "persons": ["김뮤지", "이한주"],
+            "orgs": ["한국은행"],
+            "products": ["쏘나타 디 엣지", "Indigo Book"],
+        })
+        result = parse_llm_entities(raw)
+        self.assertEqual(result["persons"], ["김뮤지", "이한주"])
+        self.assertEqual(result["orgs"], ["한국은행"])
+        self.assertEqual(result["products"], ["쏘나타 디 엣지", "Indigo Book"])
+
+    def test_strips_markdown_fence(self) -> None:
+        from app.services.entity_extract import parse_llm_entities
+        import json
+
+        raw = "```json\n" + json.dumps({"persons": ["X"], "orgs": [], "products": []}) + "\n```"
+        result = parse_llm_entities(raw)
+        self.assertEqual(result["persons"], ["X"])
+
+    def test_missing_keys_default_empty(self) -> None:
+        from app.services.entity_extract import parse_llm_entities
+
+        result = parse_llm_entities('{"persons": ["A"]}')
+        self.assertEqual(result["persons"], ["A"])
+        self.assertEqual(result["orgs"], [])
+        self.assertEqual(result["products"], [])
+
+    def test_dedup_and_strip(self) -> None:
+        from app.services.entity_extract import parse_llm_entities
+
+        result = parse_llm_entities('{"persons": ["A", "A", "  B  "], "orgs": null, "products": []}')
+        self.assertEqual(result["persons"], ["A", "B"])
+
+    def test_invalid_json_raises(self) -> None:
+        from app.services.entity_extract import parse_llm_entities
+
+        with self.assertRaises(RuntimeError):
+            parse_llm_entities("{not json}")
+
+    def test_non_dict_raises(self) -> None:
+        from app.services.entity_extract import parse_llm_entities
+
+        with self.assertRaises(RuntimeError):
+            parse_llm_entities('["a", "b"]')
+
+
+class ExtractEntitiesWithLLMTest(unittest.TestCase):
+    def test_integrates_rule_and_llm(self) -> None:
+        from app.services.entity_extract import extract_entities_with_llm
+        import json
+
+        text = "2024년 4월 30일 한국은행 ISSN 2288-7083 발행"
+
+        def mock_llm(system: str, user: str) -> str:
+            return json.dumps({
+                "persons": [],
+                "orgs": ["한국은행"],
+                "products": [],
+            })
+
+        result = extract_entities_with_llm(text, llm_call=mock_llm)
+        # 룰 기반: dates + identifiers
+        self.assertIn("2024년 4월 30일", result.dates)
+        self.assertIn("2288-7083", result.identifiers)
+        # LLM: orgs
+        self.assertEqual(result.orgs, ["한국은행"])
+        self.assertEqual(result.persons, [])
+        self.assertEqual(result.products, [])
+
+    def test_llm_failure_returns_rule_based_only(self) -> None:
+        from app.services.entity_extract import extract_entities_with_llm
+
+        text = "2024년 4월 30일 시행"
+
+        def failing_llm(system: str, user: str) -> str:
+            raise RuntimeError("LLM API down")
+
+        result = extract_entities_with_llm(text, llm_call=failing_llm)
+        # 룰 기반 결과는 있음
+        self.assertIn("2024년 4월 30일", result.dates)
+        # LLM 실패 → persons/orgs/products = None
+        self.assertIsNone(result.persons)
+        self.assertIsNone(result.orgs)
+
+    def test_to_dict_includes_llm_fields_when_set(self) -> None:
+        from app.services.entity_extract import extract_entities_with_llm
+        import json
+
+        def mock_llm(system: str, user: str) -> str:
+            return json.dumps({"persons": ["X"], "orgs": ["Y"], "products": ["Z"]})
+
+        result = extract_entities_with_llm("text", llm_call=mock_llm)
+        d = result.to_dict()
+        self.assertIn("persons", d)
+        self.assertIn("orgs", d)
+        self.assertIn("products", d)
+
+    def test_to_dict_omits_llm_fields_when_rule_only(self) -> None:
+        from app.services.entity_extract import extract_entities
+
+        result = extract_entities("2024년 4월")
+        d = result.to_dict()
+        # 룰 기반만 → persons/orgs/products 키 없음 (None)
+        self.assertNotIn("persons", d)
+        self.assertNotIn("orgs", d)
+        self.assertNotIn("products", d)
+
+
 if __name__ == "__main__":
     unittest.main()
