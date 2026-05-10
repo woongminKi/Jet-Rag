@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   CheckCircle2,
@@ -17,6 +17,7 @@ import { cn } from '@/lib/utils';
 import { ApiError, submitAnswerFeedback, type AnswerResponse, type AnswerSource } from '@/lib/api';
 import { toast } from 'sonner';
 import { RagasEvalCard } from './ragas-eval-card';
+import { RouterSignalsBadge } from './router-signals-badge';
 
 /** W25 D14 — `/ask` 답변 품질 가시화 (B + E + C 통합).
  *
@@ -71,14 +72,9 @@ export function AnswerView({ query, response, docId }: AnswerViewProps) {
   const confidence = useMemo(() => classifyConfidence(response), [response]);
   const meta = CONFIDENCE_META[confidence];
 
-  // S5 PoC (2026-05-10) — backend `meta` (intent_router + query_decomposer 진단)
-  // 데이터가 frontend 까지 도달하는지 dev 환경에서 console verify.
-  // S5-A 진입 시 본 useEffect 는 RouterSignalsBadge 등 UI 분기로 대체 (제거 예정).
-  useEffect(() => {
-    if (process.env.NODE_ENV !== 'production' && response.meta) {
-      console.log('[AnswerView] backend meta:', response.meta);
-    }
-  }, [response.meta]);
+  // S5-A (2026-05-10) — backend `meta.low_confidence` + `meta.router_signals`
+  // 시각화. RouterSignalsBadge 가 신뢰도 배지 아래에 추가 안내 표시.
+  // 명시 액션 패턴 (Q-S5-2) — autoplay X, 안내만 노출.
 
   // 출처 highlight — [N] 클릭 시
   const sourceRefs = useRef<Map<number, HTMLLIElement | null>>(new Map());
@@ -159,6 +155,9 @@ export function AnswerView({ query, response, docId }: AnswerViewProps) {
         <span className="font-medium">{meta.label}</span>
         <span className="text-muted-foreground/80">· {meta.description}</span>
       </div>
+
+      {/* S5-A — backend meta 기반 의도 안내 (low_confidence + router_signals) */}
+      <RouterSignalsBadge meta={response.meta} />
 
       {/* 답변 본문 */}
       <article className="rounded-lg border border-border bg-card px-5 py-5 shadow-sm">
