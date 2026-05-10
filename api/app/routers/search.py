@@ -83,7 +83,7 @@ _RETRY_AFTER_SECONDS = "60"
 _COVER_GUARD_TEXT_LEN = 30
 _COVER_GUARD_PENALTY = 0.3
 
-# 2026-05-09 — TOC (목차) 가드 heuristic. **default OFF** (opt-in).
+# 2026-05-09 — TOC (목차) 가드 heuristic. **default ON** (2026-05-10 변경, 사용자 승인).
 # vision-derived chunk (section_title `(vision)` prefix) 의 text head 가 목차/차례
 # 키워드 매칭 시 cover-equivalent penalty 적용. table_lookup 6 row top-1 약점:
 # G-A-021 / G-A-204 의 search top-1 = ch 902 (목차) — text_len=350 으로 cover
@@ -103,7 +103,7 @@ _COVER_GUARD_PENALTY = 0.3
 #   본문은 prototype 설명이라 TOC 아님. → 메타 설명 prefix 를 skip 후 매칭.
 # - 진짜 TOC chunks (ch 902 "차 례\n경제전망 요약...", ch 920 "목 차\n대외여건 2") 는
 #   메타 설명 다음 본문 head 에 "목차/차례" 패턴 존재 → 정상 매칭 유지.
-# ENV `JETRAG_TOC_GUARD_ENABLED=true` 시 활성 (디버깅 / 추가 ablation).
+# ENV `JETRAG_TOC_GUARD_ENABLED=false` 명시 시 비활성 (회귀 시 즉시 회복 path).
 _TOC_GUARD_PENALTY = _COVER_GUARD_PENALTY  # 동일 penalty 0.3 (cover/toc 동일 가드)
 _TOC_GUARD_ENABLED_ENV = "JETRAG_TOC_GUARD_ENABLED"
 _TOC_GUARD_HEAD_LEN = 100
@@ -644,8 +644,11 @@ def search(
     # cover_chunk 와 직교 (cover = 짧은 표지, toc = 긴 목차 본문). **default OFF**.
     # 2026-05-10 정밀화 — query 자체가 목차/차례 를 명시 요구 시 penalty SKIP
     # (사용자 의도 무시 회피, G-A-200 회복).
+    # 2026-05-10 default 변경 — 정밀화 v3 + G-A-204 라벨 정정으로 회귀 0 검증
+    # (Overall R@10 +0.0050, top-1 +0.006). 사용자 명시 승인. ENV "false" 로 명시
+    # 비활성 가능.
     _toc_guard_enabled = (
-        os.environ.get(_TOC_GUARD_ENABLED_ENV, "false").lower() == "true"
+        os.environ.get(_TOC_GUARD_ENABLED_ENV, "true").lower() == "true"
     )
     _query_wants_toc = bool(_TOC_INTENT_PATTERN.search(clean_q))
 
