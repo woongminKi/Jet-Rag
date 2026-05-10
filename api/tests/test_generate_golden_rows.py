@@ -141,6 +141,22 @@ class BuildPromptTest(unittest.TestCase):
         self.assertIn("1 건", prompt)
 
 
+class SystemPromptStrengthTest(unittest.TestCase):
+    """2026-05-10 — _SYSTEM_PROMPT 가 chunk-text 회피 명시 포함 검증."""
+
+    def test_system_prompt_warns_against_chunk_text(self) -> None:
+        from generate_golden_rows import _SYSTEM_PROMPT
+
+        # 강화된 prompt 는 chunk text 복사 금지 명시 + good/bad 예시 포함
+        self.assertIn("chunk 본문 그대로 복사 금지", _SYSTEM_PROMPT)
+        self.assertIn("의미 요약", _SYSTEM_PROMPT)
+        # bad/good 예시 패턴
+        self.assertIn("Bad", _SYSTEM_PROMPT)
+        self.assertIn("Good", _SYSTEM_PROMPT)
+        # 직전 sprint 정정 사례 포함
+        self.assertIn("재산관리내규", _SYSTEM_PROMPT)
+
+
 class ParseCandidatesTest(unittest.TestCase):
     def test_parses_valid_json_and_assigns_ids(self) -> None:
         from generate_golden_rows import parse_candidates

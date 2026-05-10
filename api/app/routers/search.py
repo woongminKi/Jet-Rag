@@ -120,6 +120,15 @@ _TOC_INTENT_PATTERN = re.compile(
 _VISION_META_PREFIX = "[문서]"
 _VISION_META_BODY_SEP = "\n\n"
 
+# 2026-05-10 — vision 인접 chunk boost (opt-in, default OFF).
+# G-A-204 ch 919 (요약표 데이터 part 2, 거의 숫자) 가 search top-10 밖 — query
+# "요약표" 와 dense/BM25 매칭 약함. 단 같은 page 의 ch 918 (요약표 caption, 강한
+# 매칭) 이 candidates 에 있으면 인접 ch 919 도 score propagate 하여 회복.
+# ENV `JETRAG_VISION_ADJACENT_BOOST=true` 시 활성. factor 0.5 — 인접 chunk 가
+# top score 의 50% 까지 boost (자기 score 가 더 크면 영향 0).
+_VISION_ADJACENT_BOOST_ENV = "JETRAG_VISION_ADJACENT_BOOST"
+_VISION_ADJACENT_BOOST_FACTOR = 0.5
+
 
 def _strip_vision_meta_prefix(text_head: str) -> str:
     """vision OCR 의 `[문서] ... \\n\\n` 메타 설명 제거 후 본문 head 반환.
@@ -796,6 +805,46 @@ def search(
         existing = doc_chunk_scores[doc_id].get(chunk_id)
         if existing is None or score > existing:
             doc_chunk_scores[doc_id][chunk_id] = score
+
+    # 2026-05-10 — vision 인접 chunk boost (opt-in).
+    # 같은 (doc_id, page) 의 vision-derived chunk_idx 인접 (±1) 페어 식별 →
+    # 한 chunk 의 score × FACTOR 가 인접 chunk 의 현 score 보다 크면 boost.
+    # G-A-204 ch 918 (caption, 강한 매칭) → ch 919 (data 연속, 약한 매칭) 회복.
+    _vision_adj_boost = (
+        os.environ.get(_VISION_ADJACENT_BOOST_ENV, "false").lower() == "true"
+    )
+    if _vision_adj_boost:
+        # (doc_id, page) → {chunk_idx: chunk_id} (vision-derived 만)
+        page_chunks: dict[tuple[str, int], dict[int, str]] = defaultdict(dict)
+        cid_to_doc: dict[str, str] = {}
+        for did, cid_scores in doc_chunk_scores.items():
+            for cid in cid_scores:
+                cid_to_doc[cid] = did
+                meta = cover_guard_meta.get(cid)
+                if not meta:
+                    continue
+                if not meta.get("section_title", "").startswith("(vision)"):
+                    continue
+                page = meta.get("page")
+                chunk_idx = meta.get("chunk_idx")
+                if page is None or chunk_idx is None:
+                    continue
+                page_chunks[(did, page)][int(chunk_idx)] = cid
+        for (did, _page), idx_map in page_chunks.items():
+            if len(idx_map) < 2:
+                continue
+            # 현재 score 스냅샷 — propagation 중 갱신값이 다음 boost 에 영향 안 받게.
+            snapshot = {idx: doc_chunk_scores[did].get(cid, 0.0) for idx, cid in idx_map.items()}
+            for idx, cid in idx_map.items():
+                for adj in (idx - 1, idx + 1):
+                    adj_cid = idx_map.get(adj)
+                    if adj_cid is None:
+                        continue
+                    boosted = snapshot.get(adj, 0.0) * _VISION_ADJACENT_BOOST_FACTOR
+                    current = doc_chunk_scores[did].get(cid, 0.0)
+                    if boosted > current:
+                        doc_chunk_scores[did][cid] = boosted
+                        doc_score[did] = max(doc_score.get(did, 0.0), boosted)
 
     candidate_doc_ids = list(doc_score.keys())
 

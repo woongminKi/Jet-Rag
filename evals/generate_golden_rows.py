@@ -198,10 +198,17 @@ _SYSTEM_PROMPT = """당신은 한국어 RAG 골든셋 큐레이터입니다.
 - query (string): 신규 사용자 query (한국어)
 - doc_id (string): 기존 example 중 하나의 doc_id (재사용)
 - expected_doc_title (string): doc_id 와 정합한 title
-- expected_answer_summary (string): 답변 요약 1-2 문장 (한국어)
+- expected_answer_summary (string): 답변 요약 1-2 문장 (한국어).
+  ⚠ 반드시 "주제 — 핵심 내용" 또는 "주제: 핵심 내용" 같은 의미 요약 형식.
+  ⚠ chunk 본문 그대로 복사 금지 (예: "이 내규는 2022년 7월 1일부터 시행한다..." X).
+  ⚠ 원문 발췌가 아닌 답변 의도 요약 (예: "한마음 운영 내규 시행일 — 2022년 7월 1일부터" O).
 - must_include (string): 답변에 포함되어야 하는 키워드 (세미콜론 구분, 1~3개)
 - doc_type (string): 기존 example 의 doc_type (pdf/hwpx/docx/hwp/pptx)
 - caption_dependent (string): "true" 또는 "false" — vision_diagram 은 보통 "true"
+
+expected_answer_summary 작성 가이드 (Bad → Good 예시):
+  Bad : "⑨재산관리내규 중 다음과 같이 개정한다. 제6조 제1항 중 ..."  (원문 chunk text)
+  Good: "재산관리내규 개정 사항 — 경영본부장이 경영전략처장으로 직제 변경 등."
 
 응답은 JSON array 만 반환 (markdown fence 금지, 설명 텍스트 금지).
 """
