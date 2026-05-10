@@ -215,6 +215,65 @@ class DeriveThresholdsTest(unittest.TestCase):
             self.assertIsNone(guards[metric].statistical_floor)
 
 
+class QtypeFloorOverrideTest(unittest.TestCase):
+    """`_QTYPE_FLOOR_OVERRIDES` + `derive_thresholds(qtype=...)` + `derive_qtype_thresholds`."""
+
+    def test_overall_uses_global_floor(self) -> None:
+        from run_ragas_regression import _INDUSTRY_FLOOR, aggregate, derive_thresholds
+
+        records = [_mk_record(f"A{i}", "exact_fact", faithfulness=0.5) for i in range(5)]
+        agg = aggregate(records)
+        guards = derive_thresholds(agg)  # qtype 미지정 → 기본 industry
+        self.assertEqual(
+            guards["faithfulness"].industry_floor, _INDUSTRY_FLOOR["faithfulness"]
+        )
+
+    def test_vision_diagram_uses_override_floor(self) -> None:
+        from run_ragas_regression import (
+            _QTYPE_FLOOR_OVERRIDES,
+            aggregate,
+            derive_thresholds,
+        )
+
+        records = [
+            _mk_record(f"V{i}", "vision_diagram", faithfulness=0.5) for i in range(2)
+        ]
+        agg = aggregate(records)
+        guards = derive_thresholds(agg, qtype="vision_diagram")
+        self.assertEqual(
+            guards["faithfulness"].industry_floor,
+            _QTYPE_FLOOR_OVERRIDES["vision_diagram"]["faithfulness"],
+        )
+        # answer_relevancy 는 override 없음 → 기본 0.80 유지
+        self.assertEqual(guards["answer_relevancy"].industry_floor, 0.80)
+
+    def test_unknown_qtype_falls_back_to_global(self) -> None:
+        from run_ragas_regression import _INDUSTRY_FLOOR, aggregate, derive_thresholds
+
+        records = [_mk_record("X1", "rare_qt", faithfulness=0.9)]
+        agg = aggregate(records)
+        guards = derive_thresholds(agg, qtype="rare_qt")
+        self.assertEqual(
+            guards["faithfulness"].industry_floor, _INDUSTRY_FLOOR["faithfulness"]
+        )
+
+    def test_derive_qtype_thresholds_iterates_all(self) -> None:
+        from run_ragas_regression import by_qtype, derive_qtype_thresholds
+
+        records = [
+            _mk_record("A1", "exact_fact", faithfulness=0.95),
+            _mk_record("V1", "vision_diagram", faithfulness=0.5),
+            _mk_record("V2", "vision_diagram", faithfulness=0.5),
+        ]
+        breakdown = by_qtype(records)
+        qt_guards = derive_qtype_thresholds(breakdown)
+        self.assertEqual(set(qt_guards.keys()), {"exact_fact", "vision_diagram"})
+        # vision_diagram 의 faithfulness floor = 0.50 (override)
+        self.assertEqual(qt_guards["vision_diagram"]["faithfulness"].industry_floor, 0.50)
+        # exact_fact 의 faithfulness floor = 0.85 (default)
+        self.assertEqual(qt_guards["exact_fact"]["faithfulness"].industry_floor, 0.85)
+
+
 class CompareBaselineTest(unittest.TestCase):
     def test_alert_when_below_threshold(self) -> None:
         from run_ragas_regression import aggregate, compare_against_baseline
@@ -259,6 +318,49 @@ class CompareBaselineTest(unittest.TestCase):
             Path(tempfile.gettempdir()) / "definitely-not-here-9999.json",
         )
         self.assertTrue(any("baseline JSON 없음" in a for a in alerts))
+
+    def test_qtype_threshold_guard_in_baseline(self) -> None:
+        """baseline JSON 에 qtype_threshold_guard 가 있고 current 에 qtype_breakdown 전달 시 alert."""
+        from run_ragas_regression import (
+            aggregate,
+            by_qtype,
+            compare_against_baseline,
+        )
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as f:
+            json.dump(
+                {
+                    "threshold_guard": {
+                        "faithfulness": {"recommended": 0.85},
+                        "answer_relevancy": {"recommended": 0.80},
+                        "context_precision": {"recommended": 0.70},
+                    },
+                    "qtype_threshold_guard": {
+                        "vision_diagram": {
+                            "faithfulness": {"recommended": 0.50},
+                        }
+                    },
+                },
+                f,
+            )
+            baseline_path = Path(f.name)
+
+        # 현재 vision_diagram faithfulness=0.45 → qtype 임계 0.50 미만
+        records = [
+            _mk_record("V1", "vision_diagram", faithfulness=0.4),
+            _mk_record("V2", "vision_diagram", faithfulness=0.5),
+        ]
+        agg = aggregate(records)
+        breakdown = by_qtype(records)
+        alerts = compare_against_baseline(
+            agg, baseline_path, current_qtype_breakdown=breakdown
+        )
+        joined = "\n".join(alerts)
+        # vision_diagram.faithfulness 회귀 alert 있어야 함 (mean=0.45 < 0.50)
+        self.assertIn("vision_diagram.faithfulness", joined)
+        self.assertIn("❌", joined)
 
 
 if __name__ == "__main__":

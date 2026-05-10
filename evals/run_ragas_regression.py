@@ -99,6 +99,16 @@ _INDUSTRY_FLOOR: dict[str, float] = {
     "context_precision": 0.70,
 }
 
+# qtype 별 floor override — LLM judge 의 qtype 한계 반영.
+# vision_diagram: Faithfulness judge 가 diagram/도표 기반 답변을 text 로만 검증
+#   → claim verify 불가 → 일관 0.5 수준. 임계 낮춤 (RAGAS n=30 결과 §2.2 검증).
+_QTYPE_FLOOR_OVERRIDES: dict[str, dict[str, float]] = {
+    "vision_diagram": {
+        "faithfulness": 0.50,  # LLM judge 한계 — diagram 기반 claim verify 불가
+        # answer_relevancy / context_precision: 기본 industry floor 유지
+    },
+}
+
 logger = logging.getLogger(__name__)
 
 
@@ -428,18 +438,30 @@ def by_qtype(records: list[RowMeasurement]) -> dict[str, dict[str, AggregateStat
     return {qt: aggregate(rs) for qt, rs in grouped.items()}
 
 
+def _floor_for(metric: str, qtype: str | None) -> float:
+    """qtype 별 industry floor — `_QTYPE_FLOOR_OVERRIDES` 가 있으면 그것 우선."""
+    if qtype:
+        override = _QTYPE_FLOOR_OVERRIDES.get(qtype, {}).get(metric)
+        if override is not None:
+            return override
+    return _INDUSTRY_FLOOR[metric]
+
+
 def derive_thresholds(
     aggregates: dict[str, AggregateStats],
+    *,
+    qtype: str | None = None,
 ) -> dict[str, ThresholdGuard]:
     """베이스라인 → 회귀 임계 가드.
 
     임계 = max(statistical_floor, industry_floor).
     statistical_floor = mean - 2σ (n≥2 일 때만).
+    qtype 가 지정되면 `_QTYPE_FLOOR_OVERRIDES` 의 floor 가 industry 대신 사용됨.
     """
     out: dict[str, ThresholdGuard] = {}
     for metric in _METRICS:
         stats = aggregates.get(metric)
-        industry = _INDUSTRY_FLOOR[metric]
+        industry = _floor_for(metric, qtype)
         if stats is None or stats.mean is None:
             out[metric] = ThresholdGuard(
                 metric=metric,
@@ -473,6 +495,16 @@ def derive_thresholds(
     return out
 
 
+def derive_qtype_thresholds(
+    qtype_breakdown: dict[str, dict[str, AggregateStats]],
+) -> dict[str, dict[str, ThresholdGuard]]:
+    """qtype 별 임계 가드. `_QTYPE_FLOOR_OVERRIDES` 가 있는 qtype 만 다른 floor."""
+    return {
+        qtype: derive_thresholds(agg, qtype=qtype)
+        for qtype, agg in qtype_breakdown.items()
+    }
+
+
 # ---------------------------------------------------------------------------
 # Markdown / JSON rendering
 # ---------------------------------------------------------------------------
@@ -484,6 +516,7 @@ def render_markdown(
     aggregates: dict[str, AggregateStats],
     qtype_breakdown: dict[str, dict[str, AggregateStats]],
     thresholds: dict[str, ThresholdGuard],
+    qtype_thresholds: dict[str, dict[str, ThresholdGuard]] | None = None,
     sample_n: int,
     seed: int,
     elapsed_s: float,
@@ -546,6 +579,34 @@ def render_markdown(
         g = thresholds[metric]
         lines.append(f"- **{metric}** 임계 근거: {g.rationale}")
     lines.append("")
+
+    # qtype 별 임계 (override 가 있는 qtype 만 표기)
+    if qtype_thresholds:
+        override_qtypes = sorted(_QTYPE_FLOOR_OVERRIDES.keys())
+        present_overrides = [
+            qt for qt in override_qtypes if qt in qtype_thresholds
+        ]
+        if present_overrides:
+            lines.append("### qtype 별 임계 override")
+            lines.append("")
+            lines.append(
+                "LLM judge 의 qtype 한계 반영. override 가 없는 qtype 은 위 overall 임계 적용."
+            )
+            lines.append("")
+            lines.append(
+                "| qtype | metric | override industry_floor | recommended |"
+            )
+            lines.append("|---|---|---:|---:|")
+            for qt in present_overrides:
+                qt_thresh = qtype_thresholds[qt]
+                for metric, override in _QTYPE_FLOOR_OVERRIDES[qt].items():
+                    g = qt_thresh.get(metric)
+                    rec_str = f"{g.recommended:.3f}" if g else "—"
+                    lines.append(
+                        f"| {qt} | {metric} | {override:.2f} | **{rec_str}** |"
+                    )
+            lines.append("")
+
     lines.append("## Per-row")
     lines.append("")
     lines.append(
@@ -576,11 +637,12 @@ def render_json(
     aggregates: dict[str, AggregateStats],
     qtype_breakdown: dict[str, dict[str, AggregateStats]],
     thresholds: dict[str, ThresholdGuard],
+    qtype_thresholds: dict[str, dict[str, ThresholdGuard]] | None = None,
     sample_n: int,
     seed: int,
     elapsed_s: float,
 ) -> dict[str, Any]:
-    return {
+    out: dict[str, Any] = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "sample_n": sample_n,
         "seed": seed,
@@ -593,13 +655,25 @@ def render_json(
         "threshold_guard": {m: asdict(thresholds[m]) for m in _METRICS},
         "rows": [asdict(r) for r in records],
     }
+    if qtype_thresholds:
+        out["qtype_threshold_guard"] = {
+            qt: {m: asdict(g[m]) for m in _METRICS}
+            for qt, g in qtype_thresholds.items()
+        }
+    return out
 
 
 def compare_against_baseline(
     current_aggregates: dict[str, AggregateStats],
     baseline_path: Path,
+    *,
+    current_qtype_breakdown: dict[str, dict[str, AggregateStats]] | None = None,
 ) -> list[str]:
-    """직전 baseline 의 threshold_guard 와 현재 mean 비교 → 회귀 alert lines."""
+    """직전 baseline 의 threshold_guard 와 현재 mean 비교 → 회귀 alert lines.
+
+    `current_qtype_breakdown` 전달 시 baseline 의 `qtype_threshold_guard` 가
+    있으면 qtype 별 비교도 추가 (override 가 있는 qtype 만).
+    """
     if not baseline_path.exists():
         return [f"⚠ baseline JSON 없음: {baseline_path}"]
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
@@ -619,6 +693,31 @@ def compare_against_baseline(
             alerts.append(
                 f"✅ {metric} 통과 — 현재 mean={cur.mean:.3f} ≥ 임계 {recommended:.3f}"
             )
+    # qtype 별 비교 (override 가 있는 qtype 만)
+    qtype_guards = baseline.get("qtype_threshold_guard", {})
+    if qtype_guards and current_qtype_breakdown:
+        for qtype, qt_guard in qtype_guards.items():
+            cur_qt_agg = current_qtype_breakdown.get(qtype)
+            if not cur_qt_agg:
+                continue
+            for metric in _METRICS:
+                # override 가 있는 metric 만 (자체 qtype guard 가 overall 과 다른 경우만)
+                override = _QTYPE_FLOOR_OVERRIDES.get(qtype, {}).get(metric)
+                if override is None:
+                    continue
+                guard = qt_guard.get(metric)
+                cur_stat = cur_qt_agg.get(metric)
+                if not guard or cur_stat is None or cur_stat.mean is None:
+                    continue
+                recommended = float(guard.get("recommended", 0))
+                if cur_stat.mean < recommended:
+                    alerts.append(
+                        f"❌ {qtype}.{metric} 회귀 — mean={cur_stat.mean:.3f} < 임계 {recommended:.3f}"
+                    )
+                else:
+                    alerts.append(
+                        f"✅ {qtype}.{metric} 통과 — mean={cur_stat.mean:.3f} ≥ 임계 {recommended:.3f}"
+                    )
     return alerts
 
 
@@ -734,12 +833,14 @@ def main(argv: list[str] | None = None) -> int:
     aggregates = aggregate(records)
     qtype_breakdown = by_qtype(records)
     thresholds = derive_thresholds(aggregates)
+    qtype_thresholds = derive_qtype_thresholds(qtype_breakdown)
 
     md = render_markdown(
         records=records,
         aggregates=aggregates,
         qtype_breakdown=qtype_breakdown,
         thresholds=thresholds,
+        qtype_thresholds=qtype_thresholds,
         sample_n=len(sample),
         seed=args.seed,
         elapsed_s=elapsed,
@@ -749,6 +850,7 @@ def main(argv: list[str] | None = None) -> int:
         aggregates=aggregates,
         qtype_breakdown=qtype_breakdown,
         thresholds=thresholds,
+        qtype_thresholds=qtype_thresholds,
         sample_n=len(sample),
         seed=args.seed,
         elapsed_s=elapsed,
@@ -762,7 +864,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.baseline_json is not None:
         print("[compare] 직전 baseline 대비 회귀 비교", file=sys.stderr)
-        for line in compare_against_baseline(aggregates, args.baseline_json):
+        for line in compare_against_baseline(
+            aggregates, args.baseline_json, current_qtype_breakdown=qtype_breakdown
+        ):
             print(f"  {line}", file=sys.stderr)
 
     return 0
