@@ -414,6 +414,29 @@ export interface AnswerSource {
   snippet: string;
 }
 
+/** S5 PoC — backend meta schema (`api/app/routers/answer.py` line 120, 462~479).
+ *
+ *  S3 D2 intent_router + D3 query_decomposer 결과를 frontend 가 받아
+ *  low_confidence / cross_doc 시 UX 분기 (CTA 강조 등) 에 활용한다.
+ *  필드 모두 optional — 백엔드 ENV 미적용 / 룰 미실행 환경 graceful.
+ */
+export interface AnswerMeta {
+  /** intent_router 룰 confidence < 임계 시 true */
+  low_confidence?: boolean;
+  /** intent_router 가 발견한 signal 목록 (cross_doc / temporal / ambiguous 등) */
+  router_signals?: string[];
+  /** intent_router confidence score (0~1) */
+  router_confidence?: number;
+  /** S3 D3 query_decomposer 결과 — paid LLM 으로 분해한 sub-query (default OFF) */
+  decomposed_subqueries?: string[];
+  /** decomposition 호출 비용 (USD) — 0 = cache hit */
+  decomposition_cost_usd?: number;
+  /** decomposition cache hit 여부 */
+  decomposition_cached?: boolean;
+  /** 백엔드 신규 키 graceful 통과 */
+  [key: string]: unknown;
+}
+
 export interface AnswerResponse {
   query: string;
   answer: string;
@@ -423,4 +446,6 @@ export interface AnswerResponse {
   model: string;
   took_ms: number;
   query_parsed: QueryParsedInfo;
+  /** S5 PoC — intent_router / query_decomposer 진단 정보 (frontend UX 분기용) */
+  meta?: AnswerMeta | null;
 }

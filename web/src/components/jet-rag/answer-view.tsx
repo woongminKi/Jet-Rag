@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   CheckCircle2,
@@ -70,6 +70,15 @@ const CONFIDENCE_META: Record<
 export function AnswerView({ query, response, docId }: AnswerViewProps) {
   const confidence = useMemo(() => classifyConfidence(response), [response]);
   const meta = CONFIDENCE_META[confidence];
+
+  // S5 PoC (2026-05-10) — backend `meta` (intent_router + query_decomposer 진단)
+  // 데이터가 frontend 까지 도달하는지 dev 환경에서 console verify.
+  // S5-A 진입 시 본 useEffect 는 RouterSignalsBadge 등 UI 분기로 대체 (제거 예정).
+  useEffect(() => {
+    if (process.env.NODE_ENV !== 'production' && response.meta) {
+      console.log('[AnswerView] backend meta:', response.meta);
+    }
+  }, [response.meta]);
 
   // 출처 highlight — [N] 클릭 시
   const sourceRefs = useRef<Map<number, HTMLLIElement | null>>(new Map());
