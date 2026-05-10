@@ -97,6 +97,7 @@ _INDUSTRY_FLOOR: dict[str, float] = {
     "faithfulness": 0.85,
     "answer_relevancy": 0.80,
     "context_precision": 0.70,
+    "visual_grounding": 0.50,  # 2026-05-10 — caption-text BGE-M3 cosine, 0.5 = 약한 매칭
 }
 
 # qtype 별 floor override — LLM judge 의 qtype 한계 반영.
@@ -141,6 +142,7 @@ class RowMeasurement:
     faithfulness: float | None = None
     answer_relevancy: float | None = None
     context_precision: float | None = None
+    visual_grounding: float | None = None  # 2026-05-10 신규
     error: str | None = None
     eval_took_ms: int = 0
 
@@ -351,10 +353,42 @@ def _evaluate_llm_only(
     }
 
 
-def measure_row(g: GoldenRow, *, skip_context_precision: bool = False) -> RowMeasurement:
+def _compute_visual_grounding_safe(
+    *, answer: str, contexts: list[str]
+) -> float | None:
+    """visual_grounding metric 계산 (BGE-M3 cosine).
+
+    vision OCR caption (`[문서]` / `[표]`) 가 contexts 에 0 건이면 None.
+    BGE-M3 호출 실패 시 None (graceful).
+    """
+    from _visual_grounding import compute_visual_grounding
+
+    try:
+        from app.adapters.impl.bgem3_hf_embedding import get_bgem3_provider
+    except ImportError:
+        return None
+    try:
+        provider = get_bgem3_provider()
+    except Exception:  # noqa: BLE001
+        return None
+    result = compute_visual_grounding(
+        answer=answer,
+        contexts=contexts,
+        embed_fn=provider.embed_query,
+    )
+    return result.score
+
+
+def measure_row(
+    g: GoldenRow,
+    *,
+    skip_context_precision: bool = False,
+    with_visual_grounding: bool = False,
+) -> RowMeasurement:
     """1 row 측정 — search + answer + RAGAS evaluate.
 
     `skip_context_precision=True` 시 BGE-M3 호출 우회 (LLM-only 평가).
+    `with_visual_grounding=True` 시 BGE-M3 caption-text grounding score 계산.
     """
     rec = RowMeasurement(
         golden_id=g.id,
@@ -401,6 +435,17 @@ def measure_row(g: GoldenRow, *, skip_context_precision: bool = False) -> RowMea
         rec.faithfulness = m.faithfulness
         rec.answer_relevancy = m.answer_relevancy
         rec.context_precision = m.context_precision
+
+    # 2026-05-10 — visual_grounding 보조 metric (opt-in)
+    if with_visual_grounding:
+        try:
+            rec.visual_grounding = _compute_visual_grounding_safe(
+                answer=answer, contexts=contexts
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("visual_grounding 계산 실패 (graceful): %s", exc)
+            rec.visual_grounding = None
+
     rec.eval_took_ms = int((time.monotonic() - t0) * 1000)
     return rec
 
@@ -410,7 +455,7 @@ def measure_row(g: GoldenRow, *, skip_context_precision: bool = False) -> RowMea
 # ---------------------------------------------------------------------------
 
 
-_METRICS = ("faithfulness", "answer_relevancy", "context_precision")
+_METRICS = ("faithfulness", "answer_relevancy", "context_precision", "visual_grounding")
 
 
 def aggregate(records: list[RowMeasurement]) -> dict[str, AggregateStats]:
@@ -529,6 +574,7 @@ def render_markdown(
     lines.append(f"- 총 소요: {elapsed_s:.1f}s")
     lines.append(f"- LLM judge: gemini-2.5-flash (faithfulness, answer_relevancy)")
     lines.append("- context_precision: BGE-M3 cosine (휴리스틱)")
+    lines.append("- visual_grounding: BGE-M3 cosine (vision caption ↔ answer, opt-in)")
     lines.append("")
     lines.append("## Overall")
     lines.append("")
@@ -546,8 +592,8 @@ def render_markdown(
     lines.append("")
     lines.append("## qtype 별 breakdown (mean)")
     lines.append("")
-    lines.append("| qtype | n | faithfulness | answer_relevancy | context_precision |")
-    lines.append("|---|---:|---:|---:|---:|")
+    lines.append("| qtype | n | faithfulness | answer_relevancy | context_precision | visual_grounding |")
+    lines.append("|---|---:|---:|---:|---:|---:|")
     for qt in sorted(qtype_breakdown):
         agg = qtype_breakdown[qt]
         cells: list[str] = [qt]
@@ -611,9 +657,9 @@ def render_markdown(
     lines.append("")
     lines.append(
         "| # | id | qtype | n_ctx | faithfulness | answer_relevancy | "
-        "context_precision | eval_ms | error |"
+        "context_precision | visual_grounding | eval_ms | error |"
     )
-    lines.append("|---|---|---|---:|---:|---:|---:|---:|---|")
+    lines.append("|---|---|---|---:|---:|---:|---:|---:|---:|---|")
     for i, r in enumerate(records, start=1):
         cells = [
             str(i),
@@ -623,6 +669,7 @@ def render_markdown(
             "—" if r.faithfulness is None else f"{r.faithfulness:.2f}",
             "—" if r.answer_relevancy is None else f"{r.answer_relevancy:.2f}",
             "—" if r.context_precision is None else f"{r.context_precision:.2f}",
+            "—" if r.visual_grounding is None else f"{r.visual_grounding:.2f}",
             str(r.eval_took_ms),
             r.error or "",
         ]
@@ -765,6 +812,15 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--with-visual-grounding",
+        action="store_true",
+        help=(
+            "vision_grounding metric 추가 측정 (BGE-M3 cosine, vision OCR caption "
+            "기반). vision_diagram qtype 의 보조 지표. cost 0 (BGE-M3 free) 단 "
+            "latency ↑ — 한계 #3/#8/#12 영향 가능."
+        ),
+    )
+    parser.add_argument(
         "--cost-cap-usd",
         type=float,
         default=None,
@@ -856,7 +912,11 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
             flush=True,
         )
-        rec = measure_row(r, skip_context_precision=args.skip_context_precision)
+        rec = measure_row(
+            r,
+            skip_context_precision=args.skip_context_precision,
+            with_visual_grounding=args.with_visual_grounding,
+        )
         records.append(rec)
         # 측정 직후 cost 누적 (실측 cost API 부재 → 추정값 사용)
         if not rec.error:

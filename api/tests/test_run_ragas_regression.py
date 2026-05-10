@@ -45,6 +45,7 @@ def _mk_record(qid: str, qtype: str, **scores):
         answer="",
         n_contexts=5,
     )
+    # visual_grounding 은 dataclass 에 추가됐으나 setattr 로 안전 설정
     for k, v in scores.items():
         setattr(rec, k, v)
     return rec
@@ -272,6 +273,51 @@ class QtypeFloorOverrideTest(unittest.TestCase):
         self.assertEqual(qt_guards["vision_diagram"]["faithfulness"].industry_floor, 0.50)
         # exact_fact 의 faithfulness floor = 0.85 (default)
         self.assertEqual(qt_guards["exact_fact"]["faithfulness"].industry_floor, 0.85)
+
+
+class VisualGroundingIntegrationTest(unittest.TestCase):
+    """2026-05-10 — visual_grounding metric 이 _METRICS 와 _INDUSTRY_FLOOR 에 통합."""
+
+    def test_visual_grounding_in_metrics(self) -> None:
+        from run_ragas_regression import _METRICS
+
+        self.assertIn("visual_grounding", _METRICS)
+
+    def test_visual_grounding_industry_floor(self) -> None:
+        from run_ragas_regression import _INDUSTRY_FLOOR
+
+        self.assertIn("visual_grounding", _INDUSTRY_FLOOR)
+        # 0.5 = 약한 매칭 임계 (caption-text BGE-M3 cosine)
+        self.assertEqual(_INDUSTRY_FLOOR["visual_grounding"], 0.5)
+
+    def test_aggregate_handles_visual_grounding(self) -> None:
+        from run_ragas_regression import aggregate
+
+        records = [
+            _mk_record("V1", "vision_diagram", visual_grounding=0.8),
+            _mk_record("V2", "vision_diagram", visual_grounding=0.6),
+            _mk_record("E1", "exact_fact", visual_grounding=None),  # vision caption 없음
+        ]
+        agg = aggregate(records)
+        self.assertEqual(agg["visual_grounding"].n, 2)
+        self.assertAlmostEqual(agg["visual_grounding"].mean, 0.7)
+
+    def test_row_measurement_has_visual_grounding_field(self) -> None:
+        from run_ragas_regression import RowMeasurement
+
+        rec = RowMeasurement(
+            golden_id="X1",
+            query_type="vision_diagram",
+            doc_id="d",
+            query="q",
+            answer="a",
+            n_contexts=1,
+        )
+        # default None
+        self.assertIsNone(rec.visual_grounding)
+        # assign-able
+        rec.visual_grounding = 0.85
+        self.assertEqual(rec.visual_grounding, 0.85)
 
 
 class CompareBaselineTest(unittest.TestCase):
