@@ -82,8 +82,8 @@ class GoldenV2SchemaTests(unittest.TestCase):
         from run_s4_a_d4_compose_off import validate_golden_v2_schema
 
         meta = validate_golden_v2_schema(self.golden_v2_path)
-        # Phase 3 (cross_doc n=4→8) + origin/main 추가 보강으로 178 row
-        self.assertEqual(meta["n_rows"], 178, "golden_v2 는 178 row (origin/main 누적 보강)")
+        # Phase 3 (cross_doc n=4→8) + origin/main 누적 보강 + safety branch G-A-124~128 append → 183 row
+        self.assertEqual(meta["n_rows"], 183, "golden_v2 는 183 row (origin 178 + safety cross_doc 5)")
         expected = {
             "id",
             "query",
@@ -117,13 +117,13 @@ class GoldenV2SchemaTests(unittest.TestCase):
         known = {"pdf", "hwpx", "hwp", "pptx", "docx", "(empty)"}
         self.assertTrue(set(dt).issubset(known), f"예상 외 doc_type: {set(dt) - known}")
 
-    def test_caption_dependent_31_true_147_false(self):
-        """caption_dependent — true 31 / false 147 (origin/main 누적 보강 후)."""
+    def test_caption_dependent_31_true_152_false(self):
+        """caption_dependent — true 31 / false 152 (origin 누적 + safety cross_doc 5 caption=false)."""
         from run_s4_a_d4_compose_off import validate_golden_v2_schema
 
         meta = validate_golden_v2_schema(self.golden_v2_path)
         self.assertEqual(meta["caption_counts"].get("true", 0), 31)
-        self.assertEqual(meta["caption_counts"].get("false", 0), 147)
+        self.assertEqual(meta["caption_counts"].get("false", 0), 152)
 
     def test_qtype_9_categories_present(self):
         """query_type 9종 모두 존재 — exact_fact / cross_doc / vision_diagram /
@@ -143,12 +143,12 @@ class GoldenV2SchemaTests(unittest.TestCase):
         from run_s4_a_d4_compose_off import load_golden_rows
 
         rows = load_golden_rows(self.golden_v2_path)
-        # Phase 3 (cross_doc n=4→8) + origin/main 누적 보강으로 178 row
-        self.assertEqual(len(rows), 178)
+        # Phase 3 + origin/main 누적 + safety cross_doc 5 append → 183 row
+        self.assertEqual(len(rows), 183)
         n_caption_true = sum(1 for r in rows if r.caption_dependent)
         n_caption_false = sum(1 for r in rows if not r.caption_dependent)
         self.assertEqual(n_caption_true, 31)
-        self.assertEqual(n_caption_false, 147)
+        self.assertEqual(n_caption_false, 152)
 
     def test_load_golden_rows_preserves_nfc(self):
         """한국어 query 가 NFC 형식 유지 (BOM 제거 utf-8-sig)."""
