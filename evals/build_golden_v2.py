@@ -39,6 +39,14 @@ flow:
         --output golden_v2.csv \\
         --cosine-threshold 0.7
 
+⚠ 주의 — acceptable_chunks 는 LLM-judge 로 별도 보완됨 (2026-05-11~)
+--------------------------------------------------------------
+`evals/run_acceptable_chunks_judge.py` 가 `golden_v2.csv` 의 empty
+`acceptable_chunks` row 를 Gemini judge 로 채운다 (BGE-M3 cosine 휴리스틱보다
+정확). **본 스크립트를 `golden_v2.csv` 에 재실행하면 LLM 보완분이 소실된다** —
+재실행 필요 시 보완분 백업 (`.bak.YYYYMMDD`) 또는 judge 재실행 필요.
+(향후 `--preserve-acceptable` 옵션 추가 검토 중 — 미구현.)
+
 CLAUDE.md 정합
 --------------
 - 의존성 추가 0 — auto_goldenset 의 `_parse_pgvector` / `_cosine` 재사용

@@ -104,6 +104,9 @@ _VALID_SOURCE_TYPES: frozenset[str] = frozenset(
         # 2026-05-11 — multimodal LLM judge (evals/_multimodal_judge.make_llm_caller).
         # vision_diagram qtype faithfulness 한계 우회용 — cost 모니터링은 동일 테이블 재사용.
         "multimodal_judge",
+        # 2026-05-11 — acceptable_chunks LLM-judge (evals/_acceptable_judge.make_acceptable_judge_caller).
+        # golden_v2.csv empty acceptable_chunks 자동 보완용 — cost 모니터링 동일 테이블 재사용.
+        "acceptable_judge",
     }
 )
 
