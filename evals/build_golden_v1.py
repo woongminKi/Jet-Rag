@@ -6,6 +6,9 @@ flow:
 3. user CSV 의 7 컬럼을 12 컬럼으로 padding (id, doc_id, relevant_chunks, acceptable_chunks, source_chunk_text 빈 값)
 4. 중복 query 검출 — 정규화 비교 (NFC + 공백 정리), user 우선 (must_include 등 채워짐)
 5. 합산 → `evals/golden_v1.csv` (12 컬럼, utf-8-sig)
+6. (옵션) ``--validate-doc-ids`` 또는 ``JETRAG_GOLDEN_VALIDATE_DOC_IDS=1`` 일 때
+   merged rows 의 모든 doc_id 가 Supabase ``documents`` 테이블에 존재하는지 검증.
+   미존재 doc_id 발견 시 ``exit 1`` 로 종료 (CI 가드).
 
 산출:
 - `evals/golden_v1.csv` (148 row 예상, 12 컬럼)
@@ -17,6 +20,11 @@ stdout: 통합 결과 요약 (auto N건, user M건, 중복 K건, 최종 N+M-K건
     # 또는
     uv run python build_golden_v1.py --auto golden_v0.7_auto.csv --user golden_v0.6_user.csv --output golden_v1.csv
 
+    # Phase 2 — doc_id 무결성 검증 (default OFF)
+    uv run python build_golden_v1.py --validate-doc-ids
+    # 또는 환경변수
+    JETRAG_GOLDEN_VALIDATE_DOC_IDS=1 uv run python build_golden_v1.py
+
 CLAUDE.md 정합:
 - 의존성 추가 0 (stdlib csv + unicodedata 만)
 - 사용자 자료 노출 방지 — auto CSV 의 비식별화 정책 유지 (user CSV 는 사용자 직접 작성이라 raw 노출 X)
@@ -26,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
 import unicodedata
 from pathlib import Path
@@ -37,6 +46,9 @@ from auto_goldenset import _V07_FIELDNAMES  # noqa: E402
 _DEFAULT_AUTO = Path(__file__).parent / "golden_v0.7_auto.csv"
 _DEFAULT_USER = Path(__file__).parent / "golden_v0.6_user.csv"
 _DEFAULT_OUTPUT = Path(__file__).parent / "golden_v1.csv"
+
+# Phase 2 — doc_id 무결성 검증 trigger 환경 변수.
+_VALIDATE_ENV_VAR = "JETRAG_GOLDEN_VALIDATE_DOC_IDS"
 
 
 def _normalize_query(q: str) -> str:
@@ -115,7 +127,85 @@ def merge_golden(
     return merged, stats
 
 
-def main() -> int:
+def validate_doc_ids(
+    rows: list[dict],
+    *,
+    fetch_valid_ids_fn,
+) -> tuple[list[str], list[str]]:
+    """Phase 2 — merged rows 의 doc_id 가 Supabase ``documents`` 에 존재하는지 검증.
+
+    cross_doc row (doc_id 빈 칸) 와 negative row 는 검증 대상 외 — 빈 doc_id 통과.
+
+    Args:
+        rows: merge_golden 결과 list[dict].
+        fetch_valid_ids_fn: 의존성 주입 — () -> set[str] (Supabase
+            documents.id 전체 셋). 테스트 mock 가능. 실제 호출부에서는
+            Supabase client 로 한 번에 fetch.
+
+    Returns:
+        (checked_ids, missing_ids) — 검사된 unique id 들, 미존재 id 들.
+    """
+    target_ids: set[str] = set()
+    for r in rows:
+        did = (r.get("doc_id") or "").strip()
+        if did:
+            target_ids.add(did)
+    if not target_ids:
+        return [], []
+    valid_ids = fetch_valid_ids_fn()
+    missing = sorted(target_ids - valid_ids)
+    return sorted(target_ids), missing
+
+
+def _fetch_valid_doc_ids_from_supabase() -> set[str]:
+    """Supabase ``documents`` 테이블에서 모든 id fetch.
+
+    실패 시 빈 set — 호출 측에서 미존재 판정 → exit 1 발생.
+    """
+    try:
+        # api/ 를 import path 에 추가
+        api_path = Path(__file__).resolve().parents[1] / "api"
+        if (api_path / "app").exists() and str(api_path) not in sys.path:
+            sys.path.insert(0, str(api_path))
+        from app.config import get_settings  # noqa: E402
+        from app.db import get_supabase_client  # noqa: E402
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[WARN] Supabase client import 실패: {exc} — 검증 skip",
+            file=sys.stderr,
+        )
+        return set()
+    try:
+        client = get_supabase_client()
+        settings = get_settings()
+        # user_id 필터 + soft-delete 제외 — 골든셋 build 시점과 동일 조건
+        resp = (
+            client.table("documents")
+            .select("id")
+            .eq("user_id", settings.default_user_id)
+            .is_("deleted_at", "null")
+            .limit(10000)
+            .execute()
+        )
+        rows = resp.data or []
+        return {r["id"] for r in rows if r.get("id")}
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[WARN] Supabase documents fetch 실패: {exc} — 검증 skip",
+            file=sys.stderr,
+        )
+        return set()
+
+
+def _should_validate(cli_flag: bool) -> bool:
+    """CLI 플래그 OR 환경 변수 — 둘 중 하나라도 truthy 면 검증 ON."""
+    if cli_flag:
+        return True
+    env_val = (os.environ.get(_VALIDATE_ENV_VAR) or "").strip().lower()
+    return env_val in {"1", "true", "yes", "on"}
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="v0.7 auto + v0.6 user → golden_v1.csv 통합"
     )
@@ -125,7 +215,15 @@ def main() -> int:
                         help=f"user CSV 경로 (default {_DEFAULT_USER.name})")
     parser.add_argument("--output", type=Path, default=_DEFAULT_OUTPUT,
                         help=f"출력 CSV 경로 (default {_DEFAULT_OUTPUT.name})")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--validate-doc-ids", action="store_true",
+        help=(
+            "Phase 2 — merged 결과의 모든 doc_id 가 Supabase documents 테이블에 "
+            "존재하는지 검증. 미존재 발견 시 exit 1. 환경변수 "
+            f"{_VALIDATE_ENV_VAR}=1 로도 활성 가능."
+        ),
+    )
+    args = parser.parse_args(argv)
 
     auto_rows = _load_csv_rows(args.auto)
     user_rows = _load_csv_rows(args.user)
@@ -152,6 +250,37 @@ def main() -> int:
         f"= merged={stats['merged_total']} → {args.output}",
         file=sys.stderr,
     )
+
+    # Phase 2 — doc_id 무결성 검증 (default OFF, CLI flag 또는 env var 로 ON)
+    if _should_validate(args.validate_doc_ids):
+        checked, missing = validate_doc_ids(
+            merged, fetch_valid_ids_fn=_fetch_valid_doc_ids_from_supabase
+        )
+        print(
+            f"[VALIDATE] doc_id 검사: 검사 {len(checked)}건 / "
+            f"미존재 {len(missing)}건",
+            file=sys.stderr,
+        )
+        if missing:
+            preview = missing[:10]
+            print(
+                f"[ERROR] Supabase documents 에 미존재하는 doc_id "
+                f"{len(missing)}건 검출:",
+                file=sys.stderr,
+            )
+            for did in preview:
+                print(f"  - {did}", file=sys.stderr)
+            if len(missing) > len(preview):
+                print(
+                    f"  ... 추가 {len(missing) - len(preview)}건",
+                    file=sys.stderr,
+                )
+            print(
+                "  → 골든셋 rebuild 또는 stale doc_id 수동 정정 필요",
+                file=sys.stderr,
+            )
+            return 1
+
     return 0
 
 
