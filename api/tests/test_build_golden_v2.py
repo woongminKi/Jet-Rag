@@ -355,5 +355,124 @@ class CaptionDependentMarkingTest(unittest.TestCase):
         self.assertEqual(v2_row["caption_dependent"], "true")
 
 
+class StaleDocIdHookTest(unittest.TestCase):
+    """Phase 2 — stale doc_id 재발 방지 hook.
+
+    CSV 에 doc_id 가 있는데 docs_index 에 미존재 (= 이전 인스턴스의 stale id) 인
+    경우의 동작:
+    1. 경고 + ``stale_doc_id_count`` 카운트
+    2. title fallback 으로 auto-fix 시도 → 성공 시 row.doc_id 교체 +
+       ``stale_doc_id_fixed`` 카운트
+    3. 실패 시 stale id 보존 + ``stale_doc_id_kept`` 에 row id append
+    """
+
+    def test_stale_doc_id_auto_fix_via_title_fallback(self) -> None:
+        """stale id + 유효한 title → title 매칭으로 auto-fix + row.doc_id 정정."""
+        from build_golden_v2 import build_v2_row, BuildStats
+
+        docs_index = {
+            _make_doc("doc-NEW", "보건의료_빅데이터_플랫폼").title_norm: _make_doc(
+                "doc-NEW", "보건의료_빅데이터_플랫폼"
+            ),
+        }
+        v1_row = {
+            "id": "G-A-104",
+            "query": "보건의료 빅데이터 데이터 종류",
+            "query_type": "exact_fact",
+            # stale id — 이전 인스턴스에서 부여된 사라진 id
+            "doc_id": "629332ab-673d-49b7-a956-4857e3e9a5ee",
+            "expected_doc_title": "보건의료_빅데이터_플랫폼",
+            "relevant_chunks": "1",
+            "acceptable_chunks": "",
+            "must_include": "",
+            "negative": "false",
+        }
+        stats = BuildStats()
+        v2_row = build_v2_row(
+            v1_row,
+            docs_index=docs_index,
+            fetch_chunks_fn=lambda _doc_id: [],
+            embed_query_fn=lambda _q: [],
+            threshold=0.7,
+            stats=stats,
+        )
+        # auto-fix 결과 row.doc_id 가 새 id 로 정정되어야 함
+        self.assertEqual(v2_row["doc_id"], "doc-NEW")
+        self.assertEqual(stats.stale_doc_id_count, 1)
+        self.assertEqual(stats.stale_doc_id_fixed, 1)
+        self.assertEqual(stats.stale_doc_id_kept, [])
+
+    def test_stale_doc_id_kept_when_title_fallback_fails(self) -> None:
+        """stale id + 매칭 안 되는 title → stale id 보존 + kept 카운트."""
+        from build_golden_v2 import build_v2_row, BuildStats
+
+        docs_index = {
+            _make_doc("doc-A", "전혀 다른 자료").title_norm: _make_doc(
+                "doc-A", "전혀 다른 자료"
+            ),
+        }
+        v1_row = {
+            "id": "G-A-NONE",
+            "query": "임의 query",
+            "query_type": "exact_fact",
+            "doc_id": "deadbeef-0000-0000-0000-000000000000",
+            # title 도 docs_index 에 없음 → fallback 실패
+            "expected_doc_title": "존재하지 않는 자료",
+            "relevant_chunks": "1",
+            "acceptable_chunks": "",
+            "must_include": "",
+            "negative": "false",
+        }
+        stats = BuildStats()
+        v2_row = build_v2_row(
+            v1_row,
+            docs_index=docs_index,
+            fetch_chunks_fn=lambda _doc_id: [],
+            embed_query_fn=lambda _q: [],
+            threshold=0.7,
+            stats=stats,
+        )
+        # stale id 보존
+        self.assertEqual(v2_row["doc_id"], "deadbeef-0000-0000-0000-000000000000")
+        self.assertEqual(stats.stale_doc_id_count, 1)
+        self.assertEqual(stats.stale_doc_id_fixed, 0)
+        self.assertEqual(stats.stale_doc_id_kept, ["G-A-NONE"])
+
+    def test_valid_doc_id_does_not_trigger_hook(self) -> None:
+        """docs_index 에 존재하는 doc_id 는 hook 미발동 (회귀 보호)."""
+        from build_golden_v2 import build_v2_row, BuildStats
+
+        docs_index = {
+            _make_doc("doc-VALID", "유효 자료").title_norm: _make_doc(
+                "doc-VALID", "유효 자료"
+            ),
+        }
+        v1_row = {
+            "id": "G-A-VALID",
+            "query": "유효 query",
+            "query_type": "exact_fact",
+            "doc_id": "doc-VALID",  # docs_index 에 존재
+            "expected_doc_title": "유효 자료",
+            "relevant_chunks": "1",
+            "acceptable_chunks": "",
+            "must_include": "",
+            "negative": "false",
+        }
+        stats = BuildStats()
+        v2_row = build_v2_row(
+            v1_row,
+            docs_index=docs_index,
+            fetch_chunks_fn=lambda _doc_id: [],
+            embed_query_fn=lambda _q: [],
+            threshold=0.7,
+            stats=stats,
+        )
+        # 회귀 보호 — 정상 row 는 stale 카운터 0
+        self.assertEqual(v2_row["doc_id"], "doc-VALID")
+        self.assertEqual(stats.stale_doc_id_count, 0)
+        self.assertEqual(stats.stale_doc_id_fixed, 0)
+        self.assertEqual(stats.stale_doc_id_kept, [])
+
+
 if __name__ == "__main__":
     unittest.main()

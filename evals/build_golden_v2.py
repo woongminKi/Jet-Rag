@@ -430,6 +430,10 @@ class BuildStats:
     acceptable_filled: int = 0
     cross_doc_processed: int = 0
     caption_dependent_count: int = 0
+    # Phase 2 — stale doc_id 추적 (CSV 에 이미 doc_id 가 있는데 docs_index 에 미존재).
+    stale_doc_id_count: int = 0
+    stale_doc_id_fixed: int = 0  # title fallback 으로 auto-fix 된 건수
+    stale_doc_id_kept: list[str] = None  # 복구 실패해 보존된 row id 리스트
     query_type_dist: Counter = None
     doc_type_dist: Counter = None
     acceptable_samples: list[str] = None  # row id, query, acceptable_chunks
@@ -437,6 +441,8 @@ class BuildStats:
     def __post_init__(self) -> None:
         if self.doc_match_failed is None:
             self.doc_match_failed = []
+        if self.stale_doc_id_kept is None:
+            self.stale_doc_id_kept = []
         if self.query_type_dist is None:
             self.query_type_dist = Counter()
         if self.doc_type_dist is None:
@@ -503,8 +509,31 @@ def build_v2_row(
                     matched_docs = [rec]
                     break
             if not matched_docs:
-                # docs_index 에 없으면 — 최소한 doc_id 는 보존
-                pass
+                # Phase 2 — stale doc_id (docs_index 미존재) 차단.
+                # 이전엔 pass 로 통과시켜 stale id 가 그대로 propagate 됐음.
+                # 이제: 경고 + 카운트 + title fallback 으로 auto-fix 시도.
+                logger.warning(
+                    "[%s] stale doc_id 검출: %s (title=%r) — title fallback 시도",
+                    qid, existing_doc_id, title_raw,
+                )
+                stats.stale_doc_id_count += 1
+                recovered = match_doc_id(title_raw, docs_index) if title_raw else None
+                if recovered is not None:
+                    logger.info(
+                        "[%s]  → title 매칭 auto-fix: %s → %s",
+                        qid, existing_doc_id, recovered.doc_id,
+                    )
+                    matched_docs = [recovered]
+                    stats.stale_doc_id_fixed += 1
+                    # row 의 stale doc_id 도 정정 — 후속 chunk fetch 가 새 id 로
+                    # 향해야 acceptable/relevant 추출이 정상 진행.
+                    row["doc_id"] = recovered.doc_id
+                else:
+                    logger.warning(
+                        "[%s]  → title fallback 실패 — stale id 보존 (수동 정정 필요)",
+                        qid,
+                    )
+                    stats.stale_doc_id_kept.append(qid)
         if not matched_docs:
             rec = match_doc_id(title_raw, docs_index)
             if rec is not None:
@@ -729,6 +758,21 @@ def print_summary(stats: BuildStats) -> None:
         file=sys.stderr,
     )
     print(f"  cross_doc 처리: {stats.cross_doc_processed}건", file=sys.stderr)
+    # Phase 2 — stale doc_id 통계 (hook 발동 시에만 노출).
+    if stats.stale_doc_id_count > 0 or stats.stale_doc_id_kept:
+        print(
+            f"  [stale doc_id] 검출 {stats.stale_doc_id_count}건 / "
+            f"title fallback auto-fix {stats.stale_doc_id_fixed}건 / "
+            f"보존 {len(stats.stale_doc_id_kept)}건",
+            file=sys.stderr,
+        )
+        if stats.stale_doc_id_kept:
+            print(
+                f"  [WARN] 복구 실패 row id (수동 정정 필요): "
+                f"{stats.stale_doc_id_kept[:20]}"
+                f"{'...' if len(stats.stale_doc_id_kept) > 20 else ''}",
+                file=sys.stderr,
+            )
 
     print("\n[query_type 분포]", file=sys.stderr)
     for label, n in stats.query_type_dist.most_common():
