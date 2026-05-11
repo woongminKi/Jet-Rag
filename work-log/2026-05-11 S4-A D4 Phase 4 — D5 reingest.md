@@ -108,7 +108,7 @@ PDF vision enrich skip — budget cap (scope=doc, used=$0.6268, cap=$0.1500) doc
 
 ## 5. Step 5 회귀 측정 결과
 
-도구: `evals/run_s4_a_d4_breakdown.py --goldenset v2`
+도구: `evals/run_s4_a_d4_compose_off.py --goldenset v2`
 산출물: `evals/results/s4_a_d4_post_d5.md` / `evals/results/s4_a_d4_post_d5.json`
 
 | metric | Phase 3 baseline | post-D5 | delta | 회귀 |

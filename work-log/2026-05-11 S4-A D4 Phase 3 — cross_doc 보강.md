@@ -29,7 +29,7 @@ Phase 0~2 ship 후 §4.5 deferred caveat G3 ("n ≤ 4 qtype 신뢰도 — cross_
 | # | 파일 | 변경 |
 |---|---|---|
 | 1 | `evals/golden_v2.csv` | cross_doc 신규 5건 추가 (G-A-124~G-A-128) + G-A-075 query_type cross_doc → exact_fact 정정 |
-| 2 | `api/tests/test_run_s4_a_d4_breakdown.py` | n_rows 157 → 162, caption_false 139 → 144 (3 테스트 hardcoded 정수 갱신) |
+| 2 | `api/tests/test_run_s4_a_d4_compose_off.py` | n_rows 157 → 162, caption_false 139 → 144 (3 테스트 hardcoded 정수 갱신) |
 | 3 | `evals/_phase3_chunks_probe.py` | **일회용** — 후보 doc 의 chunks dump 도구 (재실행 보존, 다음 phase 재사용) |
 | 4 | `evals/_phase3_append_rows.py` | **일회용** — golden_v2.csv 끝에 row 5건 안전 append (CRLF / BOM 유지) |
 | 5 | `evals/_phase3_validate_v2.py` | **일회용** — v2.csv 의 doc_id 무결성 1회 검증 |
@@ -103,7 +103,7 @@ cd api && uv run python -m unittest discover -s tests -p "test_*.py" -t .
 - 변경: `test_load_golden_rows_parses_caption_bool` len 157 → 162, caption_false 139 → 144
 - **회귀 0** — 다른 테스트 영향 없음.
 
-### 3.3 재측정 — `run_s4_a_d4_breakdown.py --goldenset v2`
+### 3.3 재측정 — `run_s4_a_d4_compose_off.py --goldenset v2`
 
 (측정 결과는 §4 참조)
 
@@ -111,9 +111,9 @@ cd api && uv run python -m unittest discover -s tests -p "test_*.py" -t .
 
 ## 4. 재측정 결과
 
-측정 도구: `evals/run_s4_a_d4_breakdown.py --goldenset v2`
+측정 도구: `evals/run_s4_a_d4_compose_off.py --goldenset v2`
 측정 시간: 167.3s (1.03s/row 평균, 162 row)
-실행: `uv run --project api python evals/run_s4_a_d4_breakdown.py ...`
+실행: `uv run --project api python evals/run_s4_a_d4_compose_off.py ...`
 
 | metric | 정정 전 (n=157, cross_doc=4) | Phase 3 후 (n=162, cross_doc=8) | Δ |
 |---|---:|---:|---:|
@@ -151,7 +151,7 @@ cd api && uv run python -m unittest discover -s tests -p "test_*.py" -t .
 - **cross_doc R@10 0.0625 의 절대값 낮음**: hybrid + reranker 만으로는 한계. 본 phase 는 표본 신뢰도 회복까지로 한정 — 검색 path 개선은 S4-B (decomposition / multi-hop) 별도 phase.
 - **vision_diagram (n=3) / synonym_mismatch (n=4) 표본 부족 잔존**: §4.5 deferred caveat 에서 cross_doc 만 제외, 나머지 2 qtype 은 잔존. 표본 확장은 우선순위 낮음 (caption 합성 측정 등 후속에서 자연 합류).
 - **prompt v2 라벨 0건 (v1) 유지**: D5 reingest 가 본 차원 데이터 갱신 필수 (Phase 4 진입 시).
-- **measurement framework 유지**: `run_s4_a_d4_breakdown.py` 의 RRF + reranker default — Phase 4 D5 reingest 도 동일 도구로 일관성 보존.
+- **measurement framework 유지**: `run_s4_a_d4_compose_off.py` 의 RRF + reranker default — Phase 4 D5 reingest 도 동일 도구로 일관성 보존.
 
 ---
 
@@ -173,7 +173,7 @@ evals/golden_v2.csv                                    +5 -0 (row 추가)
 evals/_phase3_chunks_probe.py                          신규 (도구 — 일회용 보존)
 evals/_phase3_append_rows.py                           신규 (도구 — 일회용 보존)
 evals/_phase3_validate_v2.py                           신규 (도구 — 일회용 보존)
-api/tests/test_run_s4_a_d4_breakdown.py                3 테스트 hardcoded 정수 갱신
+api/tests/test_run_s4_a_d4_compose_off.py                3 테스트 hardcoded 정수 갱신
 evals/results/s4_a_d4_results.md                       §0 / §1 / §4.5 갱신
 work-log/2026-05-11 ... Phase 3 cross_doc 보강.md     본 문서
 ```
