@@ -143,6 +143,12 @@ class RowMeasurement:
     answer_relevancy: float | None = None
     context_precision: float | None = None
     visual_grounding: float | None = None  # 2026-05-10 신규
+    # 2026-05-11 — multimodal LLM judge (vision_diagram qtype 한계 우회).
+    # `--with-multimodal-judge` flag ON 시 vision_diagram row 에만 채워짐. 그 외는 None.
+    # 본 컬럼은 RAGAS text-only faithfulness 와 별개 metric — 비교용.
+    faithfulness_multimodal: float | None = None
+    multimodal_judge_page: int | None = None  # 사용된 page (debug)
+    multimodal_judge_reason: str | None = None  # judge reasoning / 실패 사유
     error: str | None = None
     eval_took_ms: int = 0
 
@@ -286,6 +292,28 @@ def _call_answer(query: str, doc_id: str) -> str:
     return (data.get("answer") or "").strip()
 
 
+def _call_answer_with_sources(query: str, doc_id: str) -> tuple[str, list[dict[str, Any]]]:
+    """`/answer` 호출 → (answer, sources). sources 는 page 정보 포함."""
+    qs = urllib.parse.urlencode(
+        {"q": query, "top_k": str(_ANSWER_TOP_K), "doc_id": doc_id}
+    )
+    data = _http_get_json(f"{_SEARCH_BASE}/answer?{qs}", timeout=120)
+    return (data.get("answer") or "").strip(), list(data.get("sources") or [])
+
+
+def _pick_judge_page(sources: list[dict[str, Any]]) -> int | None:
+    """multimodal judge 에 사용할 page 결정 — sources 중 page 가 있는 첫 source.
+
+    /answer 응답의 sources 는 score 내림차순 — 점수 가장 높은 source 의 page 가
+    답변 근거로 가장 적합. page null 인 source 는 skip (URL 문서 등).
+    """
+    for s in sources:
+        page = s.get("page")
+        if isinstance(page, int) and page > 0:
+            return page
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Per-row measurement
 # ---------------------------------------------------------------------------
@@ -379,16 +407,50 @@ def _compute_visual_grounding_safe(
     return result.score
 
 
+def _run_multimodal_judge(
+    *,
+    g: GoldenRow,
+    answer: str,
+    page: int | None,
+    image_fetch_fn,
+    llm_call_fn,
+) -> tuple[float | None, int | None, str]:
+    """multimodal judge 1 row — (score, page_used, reason).
+
+    page 결정 실패 시 (sources 에 page 없음) → score=None, reason="no_page".
+    그 외 실패는 evaluate_multimodal 의 graceful 처리.
+    """
+    if page is None:
+        return None, None, "no_page"
+    # lazy import — flag OFF 시 module 의존 0 유지
+    from _multimodal_judge import evaluate_multimodal
+
+    result = evaluate_multimodal(
+        query=g.query,
+        answer=answer,
+        doc_id=g.doc_id,
+        page=page,
+        image_fetch_fn=image_fetch_fn,
+        llm_call_fn=llm_call_fn,
+    )
+    return result.score, page, result.reasoning
+
+
 def measure_row(
     g: GoldenRow,
     *,
     skip_context_precision: bool = False,
     with_visual_grounding: bool = False,
+    multimodal_judge: dict[str, Any] | None = None,
 ) -> RowMeasurement:
     """1 row 측정 — search + answer + RAGAS evaluate.
 
     `skip_context_precision=True` 시 BGE-M3 호출 우회 (LLM-only 평가).
     `with_visual_grounding=True` 시 BGE-M3 caption-text grounding score 계산.
+    `multimodal_judge` (2026-05-11) dict 가 전달되고 row.query_type 이 화이트리스트에
+        포함되면 multimodal judge 실행. dict 키:
+        - `image_fetch_fn` / `llm_call_fn` (필수)
+        - `qtypes` (set[str], 기본 {"vision_diagram"})
     """
     rec = RowMeasurement(
         golden_id=g.id,
@@ -398,9 +460,10 @@ def measure_row(
         answer="",
         n_contexts=0,
     )
+    sources: list[dict[str, Any]] = []
     try:
         contexts = _call_search(g.query, g.doc_id)
-        answer = _call_answer(g.query, g.doc_id)
+        answer, sources = _call_answer_with_sources(g.query, g.doc_id)
         rec.answer = answer
         rec.n_contexts = len(contexts)
     except Exception as exc:  # noqa: BLE001
@@ -445,6 +508,27 @@ def measure_row(
         except Exception as exc:  # noqa: BLE001
             logger.warning("visual_grounding 계산 실패 (graceful): %s", exc)
             rec.visual_grounding = None
+
+    # 2026-05-11 — multimodal LLM judge (opt-in, qtype 화이트리스트)
+    if multimodal_judge is not None:
+        target_qtypes: set[str] = multimodal_judge.get("qtypes") or {"vision_diagram"}
+        if g.query_type in target_qtypes:
+            page = _pick_judge_page(sources)
+            try:
+                score, page_used, reason = _run_multimodal_judge(
+                    g=g,
+                    answer=answer,
+                    page=page,
+                    image_fetch_fn=multimodal_judge["image_fetch_fn"],
+                    llm_call_fn=multimodal_judge["llm_call_fn"],
+                )
+                rec.faithfulness_multimodal = score
+                rec.multimodal_judge_page = page_used
+                rec.multimodal_judge_reason = reason
+            except Exception as exc:  # noqa: BLE001 — judge 자체 실패는 graceful
+                logger.warning("multimodal_judge 실패 (graceful): %s", exc)
+                rec.faithfulness_multimodal = None
+                rec.multimodal_judge_reason = f"unexpected_error: {exc!r}"
 
     rec.eval_took_ms = int((time.monotonic() - t0) * 1000)
     return rec
@@ -653,6 +737,48 @@ def render_markdown(
                     )
             lines.append("")
 
+    # 2026-05-11 — multimodal LLM judge breakdown (faithfulness_multimodal 있는 row 만).
+    multimodal_rows = [r for r in records if r.faithfulness_multimodal is not None]
+    if multimodal_rows:
+        mm_scores = [r.faithfulness_multimodal for r in multimodal_rows]
+        mm_mean = sum(mm_scores) / len(mm_scores)
+        text_scores = [
+            r.faithfulness for r in multimodal_rows if r.faithfulness is not None
+        ]
+        text_mean = (
+            sum(text_scores) / len(text_scores) if text_scores else None
+        )
+        lines.append("## Multimodal LLM judge (vision_diagram 한계 우회)")
+        lines.append("")
+        lines.append(
+            f"- 측정 row: {len(multimodal_rows)} / 전체 vision_diagram qtype 중 "
+            "page 식별 성공 + judge 호출 성공"
+        )
+        lines.append(f"- faithfulness_multimodal mean: **{mm_mean:.3f}**")
+        if text_mean is not None:
+            delta = mm_mean - text_mean
+            sign = "+" if delta >= 0 else ""
+            lines.append(
+                f"- 같은 row 의 text-only faithfulness mean: {text_mean:.3f} "
+                f"→ multimodal 회복 폭 **{sign}{delta:.3f}**"
+            )
+        lines.append("")
+        lines.append("| id | qtype | page | faithfulness (text) | faithfulness (multimodal) | reason |")
+        lines.append("|---|---|---:|---:|---:|---|")
+        for r in multimodal_rows:
+            text_f = "—" if r.faithfulness is None else f"{r.faithfulness:.2f}"
+            mm_f = (
+                "—"
+                if r.faithfulness_multimodal is None
+                else f"{r.faithfulness_multimodal:.2f}"
+            )
+            page_s = "—" if r.multimodal_judge_page is None else str(r.multimodal_judge_page)
+            reason = (r.multimodal_judge_reason or "")[:80]
+            lines.append(
+                f"| {r.golden_id} | {r.query_type} | {page_s} | {text_f} | {mm_f} | {reason} |"
+            )
+        lines.append("")
+
     lines.append("## Per-row")
     lines.append("")
     lines.append(
@@ -821,6 +947,39 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--with-multimodal-judge",
+        action="store_true",
+        help=(
+            "2026-05-11 — multimodal LLM judge 추가 측정 (Gemini 2.5 Flash + page "
+            "이미지). vision_diagram qtype 의 RAGAS text-only faithfulness 한계 우회. "
+            "default OFF — ON 시 vision_diagram row 만 추가 LLM call (cost ~$0.0002/row, "
+            "10 row 기준 ~$0.002). page 는 /answer sources[].page 중 최상위. "
+            "ENV `JETRAG_RAGAS_MULTIMODAL_JUDGE=1` 도 동일."
+        ),
+    )
+    parser.add_argument(
+        "--multimodal-judge-qtypes",
+        default="vision_diagram",
+        help=(
+            "multimodal judge 를 적용할 qtype 화이트리스트 (콤마 구분). "
+            "default 'vision_diagram'. 안전 가드 — 임의 qtype 자동 진입 금지."
+        ),
+    )
+    parser.add_argument(
+        "--multimodal-judge-model",
+        default=os.environ.get("JETRAG_MULTIMODAL_JUDGE_MODEL", "gemini-2.5-flash"),
+        help="multimodal judge 모델 (default gemini-2.5-flash).",
+    )
+    parser.add_argument(
+        "--only-qtype",
+        default=None,
+        help=(
+            "2026-05-11 — sample 을 단일 qtype 으로 강제 (예: vision_diagram). "
+            "stratified sample 우회 — 해당 qtype 의 모든 row 사용. "
+            "multimodal_judge 회복 측정 등 단일 qtype 집중 측정용."
+        ),
+    )
+    parser.add_argument(
         "--cost-cap-usd",
         type=float,
         default=None,
@@ -852,12 +1011,22 @@ def main(argv: list[str] | None = None) -> int:
 
     rows = _load_golden_v2(_GOLDEN_V2_CSV)
     print(f"[load] golden v2 {len(rows)} rows", file=sys.stderr)
-    sample = stratified_sample(
-        rows,
-        n=args.max_rows,
-        seed=args.seed,
-        skip_cross_doc=not args.include_cross_doc,
-    )
+    if args.only_qtype:
+        # qtype 단일 측정 — stratified 우회. 안전 가드: max-rows 만 cap 적용.
+        target = args.only_qtype.strip()
+        eligible = [r for r in rows if r.query_type == target and r.doc_id]
+        sample = eligible[: args.max_rows]
+        print(
+            f"[only-qtype] '{target}' filter → {len(sample)} rows (max={args.max_rows})",
+            file=sys.stderr,
+        )
+    else:
+        sample = stratified_sample(
+            rows,
+            n=args.max_rows,
+            seed=args.seed,
+            skip_cross_doc=not args.include_cross_doc,
+        )
     qtype_dist: dict[str, int] = defaultdict(int)
     for r in sample:
         qtype_dist[r.query_type] += 1
@@ -876,6 +1045,36 @@ def main(argv: list[str] | None = None) -> int:
     if not os.environ.get("GEMINI_API_KEY"):
         print("[FAIL] GEMINI_API_KEY 환경변수 미설정", file=sys.stderr)
         return 1
+
+    # 2026-05-11 — multimodal judge 사전 셋업 (flag 또는 ENV 가 ON 일 때만).
+    multimodal_judge_cfg: dict[str, Any] | None = None
+    if args.with_multimodal_judge or os.environ.get(
+        "JETRAG_RAGAS_MULTIMODAL_JUDGE", "0"
+    ) == "1":
+        try:
+            from _multimodal_judge import make_image_fetcher, make_llm_caller
+
+            qtypes = {
+                qt.strip()
+                for qt in (args.multimodal_judge_qtypes or "").split(",")
+                if qt.strip()
+            } or {"vision_diagram"}
+            multimodal_judge_cfg = {
+                "image_fetch_fn": make_image_fetcher(),
+                "llm_call_fn": make_llm_caller(model=args.multimodal_judge_model),
+                "qtypes": qtypes,
+            }
+            print(
+                f"[multimodal-judge] ON — model={args.multimodal_judge_model} "
+                f"qtypes={sorted(qtypes)}",
+                file=sys.stderr,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[FAIL] multimodal_judge 셋업 실패 — 비활성으로 계속: {exc!r}",
+                file=sys.stderr,
+            )
+            multimodal_judge_cfg = None
 
     t0 = time.monotonic()
     records: list[RowMeasurement] = []
@@ -916,6 +1115,7 @@ def main(argv: list[str] | None = None) -> int:
             r,
             skip_context_precision=args.skip_context_precision,
             with_visual_grounding=args.with_visual_grounding,
+            multimodal_judge=multimodal_judge_cfg,
         )
         records.append(rec)
         # 측정 직후 cost 누적 (실측 cost API 부재 → 추정값 사용)

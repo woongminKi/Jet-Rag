@@ -95,7 +95,16 @@ _first_persist_warn_logged: bool = False
 # W16 Day 4 한계 #90 — source_type enum 강제. 잘못된 값은 None 으로 fallback.
 # 005 schema 의 source_type 컬럼은 자유 TEXT 이나, DB row 의미 일관성 유지 위해 모듈 레벨 검증.
 _VALID_SOURCE_TYPES: frozenset[str] = frozenset(
-    {"image", "pdf_scan", "pptx_rerouting", "pptx_augment", "pdf_vision_enrich"}
+    {
+        "image",
+        "pdf_scan",
+        "pptx_rerouting",
+        "pptx_augment",
+        "pdf_vision_enrich",
+        # 2026-05-11 — multimodal LLM judge (evals/_multimodal_judge.make_llm_caller).
+        # vision_diagram qtype faithfulness 한계 우회용 — cost 모니터링은 동일 테이블 재사용.
+        "multimodal_judge",
+    }
 )
 
 

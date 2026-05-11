@@ -409,5 +409,152 @@ class CompareBaselineTest(unittest.TestCase):
         self.assertIn("❌", joined)
 
 
+class PickJudgePageTest(unittest.TestCase):
+    """`_pick_judge_page` — /answer sources 중 page 있는 첫 source 선택."""
+
+    def test_returns_first_page(self) -> None:
+        from run_ragas_regression import _pick_judge_page
+
+        sources = [
+            {"chunk_id": "a", "page": 14},
+            {"chunk_id": "b", "page": 3},
+        ]
+        self.assertEqual(_pick_judge_page(sources), 14)
+
+    def test_skips_null_page(self) -> None:
+        from run_ragas_regression import _pick_judge_page
+
+        sources = [
+            {"chunk_id": "a", "page": None},
+            {"chunk_id": "b", "page": 5},
+        ]
+        self.assertEqual(_pick_judge_page(sources), 5)
+
+    def test_returns_none_when_all_null(self) -> None:
+        from run_ragas_regression import _pick_judge_page
+
+        sources = [{"page": None}, {"page": 0}, {}]
+        self.assertIsNone(_pick_judge_page(sources))
+
+
+class RunMultimodalJudgeTest(unittest.TestCase):
+    """`_run_multimodal_judge` — page None → no_page / 정상 → score."""
+
+    def test_returns_none_when_page_missing(self) -> None:
+        from run_ragas_regression import _run_multimodal_judge
+
+        g = _mk_row("V1", "vision_diagram")
+        score, page_used, reason = _run_multimodal_judge(
+            g=g,
+            answer="some answer",
+            page=None,
+            image_fetch_fn=lambda d, p: b"\x89PNG",
+            llm_call_fn=lambda i, s, u: '{"n_claims": 1, "n_verified": 1}',
+        )
+        self.assertIsNone(score)
+        self.assertIsNone(page_used)
+        self.assertEqual(reason, "no_page")
+
+    def test_runs_judge_when_page_present(self) -> None:
+        from run_ragas_regression import _run_multimodal_judge
+
+        g = _mk_row("V2", "vision_diagram")
+        score, page_used, reason = _run_multimodal_judge(
+            g=g,
+            answer="some answer",
+            page=7,
+            image_fetch_fn=lambda d, p: b"\x89PNG",
+            llm_call_fn=lambda i, s, u: '{"n_claims": 4, "n_verified": 3, "reasoning": "ok"}',
+        )
+        self.assertAlmostEqual(score, 0.75)
+        self.assertEqual(page_used, 7)
+        self.assertIn("ok", reason)
+
+
+class RowMeasurementMultimodalFieldsTest(unittest.TestCase):
+    """RowMeasurement 가 multimodal 필드 (faithfulness_multimodal, page, reason) 보유."""
+
+    def test_default_none_for_multimodal_fields(self) -> None:
+        rec = _mk_record("X1", "vision_diagram")
+        self.assertIsNone(rec.faithfulness_multimodal)
+        self.assertIsNone(rec.multimodal_judge_page)
+        self.assertIsNone(rec.multimodal_judge_reason)
+
+    def test_set_via_kwargs(self) -> None:
+        rec = _mk_record(
+            "X2",
+            "vision_diagram",
+            faithfulness_multimodal=0.75,
+            multimodal_judge_page=14,
+            multimodal_judge_reason="ok",
+        )
+        self.assertEqual(rec.faithfulness_multimodal, 0.75)
+        self.assertEqual(rec.multimodal_judge_page, 14)
+        self.assertEqual(rec.multimodal_judge_reason, "ok")
+
+
+class RenderMultimodalBreakdownTest(unittest.TestCase):
+    """`render_markdown` 가 multimodal 측정 row 가 있으면 별도 섹션 출력."""
+
+    def test_renders_multimodal_section_when_present(self) -> None:
+        from run_ragas_regression import (
+            aggregate,
+            by_qtype,
+            derive_qtype_thresholds,
+            derive_thresholds,
+            render_markdown,
+        )
+
+        records = [
+            _mk_record(
+                "V1",
+                "vision_diagram",
+                faithfulness=0.0,
+                faithfulness_multimodal=0.75,
+                multimodal_judge_page=14,
+                multimodal_judge_reason="diagram verified",
+            )
+        ]
+        agg = aggregate(records)
+        breakdown = by_qtype(records)
+        md = render_markdown(
+            records=records,
+            aggregates=agg,
+            qtype_breakdown=breakdown,
+            thresholds=derive_thresholds(agg),
+            qtype_thresholds=derive_qtype_thresholds(breakdown),
+            sample_n=1,
+            seed=1,
+            elapsed_s=0.1,
+        )
+        self.assertIn("Multimodal LLM judge", md)
+        self.assertIn("V1", md)
+        self.assertIn("0.75", md)
+
+    def test_no_multimodal_section_when_absent(self) -> None:
+        from run_ragas_regression import (
+            aggregate,
+            by_qtype,
+            derive_qtype_thresholds,
+            derive_thresholds,
+            render_markdown,
+        )
+
+        records = [_mk_record("A1", "exact_fact", faithfulness=0.9)]
+        agg = aggregate(records)
+        breakdown = by_qtype(records)
+        md = render_markdown(
+            records=records,
+            aggregates=agg,
+            qtype_breakdown=breakdown,
+            thresholds=derive_thresholds(agg),
+            qtype_thresholds=derive_qtype_thresholds(breakdown),
+            sample_n=1,
+            seed=1,
+            elapsed_s=0.1,
+        )
+        self.assertNotIn("Multimodal LLM judge", md)
+
+
 if __name__ == "__main__":
     unittest.main()

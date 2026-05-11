@@ -143,5 +143,228 @@ class EvaluateMultimodalTest(unittest.TestCase):
         self.assertEqual(result.n_verified, 4)
 
 
+class MakeImageFetcherTest(unittest.TestCase):
+    """`make_image_fetcher` — Supabase storage + PyMuPDF page render 통합.
+
+    SDK 직접 호출은 mock — storage.get / fitz.open / page.get_pixmap 패치.
+    """
+
+    def _make_minimal_pdf(self) -> bytes:
+        """단위 테스트용 1-page PDF (fitz 로 생성)."""
+        import fitz
+
+        d = fitz.open()
+        page = d.new_page()
+        page.insert_text((72, 72), "judge test page")
+        out = d.tobytes()
+        d.close()
+        return out
+
+    def test_renders_png_from_storage_pdf(self) -> None:
+        """storage.get → fitz.open → get_pixmap → tobytes('png') 의 통합 동작."""
+        from unittest import mock
+
+        pdf_bytes = self._make_minimal_pdf()
+
+        # supabase client / storage / settings 모두 mock — 외부 의존 0.
+        fake_settings = mock.Mock(supabase_storage_bucket="documents")
+        fake_storage = mock.Mock()
+        fake_storage.get.return_value = pdf_bytes
+        fake_client = mock.Mock()
+        fake_client.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {"storage_path": "abc.pdf"}
+        ]
+
+        with mock.patch(
+            "app.adapters.impl.supabase_storage.SupabaseBlobStorage",
+            return_value=fake_storage,
+        ), mock.patch(
+            "app.config.get_settings", return_value=fake_settings
+        ), mock.patch(
+            "app.db.get_supabase_client", return_value=fake_client
+        ):
+            from _multimodal_judge import make_image_fetcher
+
+            fetch = make_image_fetcher(dpi=72)  # 빠른 render
+            png = fetch("doc-1", 1)
+
+        self.assertIsInstance(png, bytes)
+        self.assertTrue(png.startswith(b"\x89PNG"))
+        fake_storage.get.assert_called_once_with("abc.pdf")
+
+    def test_raises_on_null_storage_path(self) -> None:
+        from unittest import mock
+
+        fake_settings = mock.Mock(supabase_storage_bucket="documents")
+        fake_storage = mock.Mock()
+        fake_client = mock.Mock()
+        fake_client.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {"storage_path": None}
+        ]
+
+        with mock.patch(
+            "app.adapters.impl.supabase_storage.SupabaseBlobStorage",
+            return_value=fake_storage,
+        ), mock.patch(
+            "app.config.get_settings", return_value=fake_settings
+        ), mock.patch(
+            "app.db.get_supabase_client", return_value=fake_client
+        ):
+            from _multimodal_judge import make_image_fetcher
+
+            fetch = make_image_fetcher()
+            with self.assertRaisesRegex(RuntimeError, "storage_path is NULL"):
+                fetch("doc-null", 1)
+
+    def test_raises_on_doc_not_found(self) -> None:
+        from unittest import mock
+
+        fake_settings = mock.Mock(supabase_storage_bucket="documents")
+        fake_storage = mock.Mock()
+        fake_client = mock.Mock()
+        fake_client.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+
+        with mock.patch(
+            "app.adapters.impl.supabase_storage.SupabaseBlobStorage",
+            return_value=fake_storage,
+        ), mock.patch(
+            "app.config.get_settings", return_value=fake_settings
+        ), mock.patch(
+            "app.db.get_supabase_client", return_value=fake_client
+        ):
+            from _multimodal_judge import make_image_fetcher
+
+            fetch = make_image_fetcher()
+            with self.assertRaisesRegex(RuntimeError, "documents row not found"):
+                fetch("doc-ghost", 1)
+
+    def test_raises_on_page_out_of_range(self) -> None:
+        from unittest import mock
+
+        pdf_bytes = self._make_minimal_pdf()
+        fake_settings = mock.Mock(supabase_storage_bucket="documents")
+        fake_storage = mock.Mock()
+        fake_storage.get.return_value = pdf_bytes
+        fake_client = mock.Mock()
+        fake_client.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {"storage_path": "abc.pdf"}
+        ]
+
+        with mock.patch(
+            "app.adapters.impl.supabase_storage.SupabaseBlobStorage",
+            return_value=fake_storage,
+        ), mock.patch(
+            "app.config.get_settings", return_value=fake_settings
+        ), mock.patch(
+            "app.db.get_supabase_client", return_value=fake_client
+        ):
+            from _multimodal_judge import make_image_fetcher
+
+            fetch = make_image_fetcher(dpi=72)
+            with self.assertRaisesRegex(RuntimeError, "page out of range"):
+                fetch("doc-1", 999)
+
+
+class MakeLlmCallerTest(unittest.TestCase):
+    """`make_llm_caller` — Gemini multimodal API 호출 통합.
+
+    Gemini client mock — generate_content 응답 text 만 검증. vision_usage_log
+    record_call 도 mock 으로 호출 횟수만 확인.
+    """
+
+    def test_returns_text_and_records_usage(self) -> None:
+        from unittest import mock
+
+        fake_response = mock.Mock()
+        fake_response.text = json.dumps(
+            {"n_claims": 2, "n_verified": 2, "reasoning": "ok"}
+        )
+        # usage_metadata mock
+        fake_response.usage_metadata = mock.Mock(
+            prompt_token_count=1500,
+            candidates_token_count=50,
+            thoughts_token_count=0,
+            prompt_tokens_details=[],
+        )
+
+        fake_client = mock.Mock()
+        fake_client.models.generate_content.return_value = fake_response
+
+        with mock.patch(
+            "app.adapters.impl._gemini_common.get_client", return_value=fake_client
+        ), mock.patch(
+            "app.services.vision_metrics.record_call"
+        ) as record_mock:
+            from _multimodal_judge import make_llm_caller
+
+            call = make_llm_caller(model="gemini-2.5-flash")
+            out = call(b"\x89PNG_data", "sys prompt", "usr prompt")
+
+        self.assertIn("n_claims", out)
+        # generate_content 호출 contents 인자에 system / image / user 3개 part 가 포함되어야 함.
+        kwargs = fake_client.models.generate_content.call_args.kwargs
+        self.assertEqual(kwargs["model"], "gemini-2.5-flash")
+        # record_call 1회 호출 (success=True, source_type="multimodal_judge")
+        record_mock.assert_called_once()
+        rc_kwargs = record_mock.call_args.kwargs
+        self.assertTrue(rc_kwargs.get("success"))
+        self.assertEqual(rc_kwargs.get("source_type"), "multimodal_judge")
+
+    def test_raises_on_empty_response_text(self) -> None:
+        from unittest import mock
+
+        fake_response = mock.Mock()
+        fake_response.text = ""
+
+        fake_client = mock.Mock()
+        fake_client.models.generate_content.return_value = fake_response
+
+        with mock.patch(
+            "app.adapters.impl._gemini_common.get_client", return_value=fake_client
+        ):
+            from _multimodal_judge import make_llm_caller
+
+            call = make_llm_caller()
+            with self.assertRaises(RuntimeError):
+                call(b"\x89PNG", "s", "u")
+
+    def test_record_usage_failure_is_graceful(self) -> None:
+        """vision_metrics.record_call 실패해도 judge text 는 정상 반환."""
+        from unittest import mock
+
+        fake_response = mock.Mock()
+        fake_response.text = json.dumps({"n_claims": 1, "n_verified": 1})
+        fake_response.usage_metadata = mock.Mock(
+            prompt_token_count=100,
+            candidates_token_count=10,
+            thoughts_token_count=0,
+            prompt_tokens_details=[],
+        )
+        fake_client = mock.Mock()
+        fake_client.models.generate_content.return_value = fake_response
+
+        with mock.patch(
+            "app.adapters.impl._gemini_common.get_client", return_value=fake_client
+        ), mock.patch(
+            "app.services.vision_metrics.record_call",
+            side_effect=RuntimeError("DB down"),
+        ):
+            from _multimodal_judge import make_llm_caller
+
+            call = make_llm_caller()
+            out = call(b"\x89PNG", "s", "u")  # 예외 무시되어야 함
+
+        self.assertIn("n_claims", out)
+
+
+class MultimodalJudgeSourceTypeTest(unittest.TestCase):
+    """vision_metrics._VALID_SOURCE_TYPES 에 `multimodal_judge` 가 포함되었는지 확인."""
+
+    def test_multimodal_judge_in_valid_source_types(self) -> None:
+        from app.services.vision_metrics import _VALID_SOURCE_TYPES
+
+        self.assertIn("multimodal_judge", _VALID_SOURCE_TYPES)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -14,9 +14,14 @@ multimodal LLM (Gemini 2.5 Flash with image) 으로 페이지 이미지 + 답변
 
 scope
 ----
-- 본 module: helper + parsing
-- 실 image fetch (storage.get + PyMuPDF page render): 별도 sprint
-- run_ragas_regression 통합 (--with-multimodal-judge flag): 별도 sprint
+- 본 module: helper + parsing + 실 image_fetch_fn / llm_call_fn 구현 (2026-05-11 ship)
+- run_ragas_regression 통합 (--with-multimodal-judge flag): 본 sprint 동일 ship
+
+2026-05-11 — 실 storage 통합 (work-log 2026-05-11 참고)
+- `make_image_fetcher(*, bucket, dpi=150)` — Supabase storage.get + PyMuPDF page
+  render. doc_id → storage_path 조회는 supabase client 로. (doc_id, page) LRU 캐시.
+- `make_llm_caller(*, model="gemini-2.5-flash")` — Gemini multimodal API. JSON mode.
+  vision_usage_log 자동 기록 (source_type="multimodal_judge").
 """
 
 from __future__ import annotations
@@ -25,6 +30,8 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from functools import lru_cache
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -145,3 +152,162 @@ def evaluate_multimodal(
         return MultimodalJudgmentResult(
             score=None, reasoning=f"parse_failed: {exc!r}", n_claims=0, n_verified=0
         )
+
+
+# ---------------------------------------------------------------------------
+# 실 구현 — image_fetch_fn / llm_call_fn (2026-05-11 ship)
+# ---------------------------------------------------------------------------
+#
+# 두 함수는 `make_image_fetcher()` / `make_llm_caller()` 팩토리로 생성한다.
+# 팩토리 패턴 이유:
+# 1) Supabase client / Gemini client 는 첫 호출 시점 lazy init (테스트가 import
+#    만 해도 외부 의존이 발동하지 않도록) — 기존 helper API 가 stdlib only 인
+#    invariant 를 유지.
+# 2) LRU 캐시 scope 가 팩토리 인스턴스 단위 — 한 회귀 측정 run 동안 같은 (doc_id,
+#    page) 재호출 시 storage / fitz 비용 절감.
+
+_DEFAULT_RENDER_DPI = 150  # extract.py `_SCAN_RENDER_DPI` 와 동일 (일관성)
+_DEFAULT_MULTIMODAL_MODEL = "gemini-2.5-flash"
+
+
+def make_image_fetcher(
+    *,
+    bucket: str | None = None,
+    dpi: int = _DEFAULT_RENDER_DPI,
+) -> Callable[[str, int], bytes]:
+    """Supabase storage + PyMuPDF 기반 image_fetch_fn 팩토리.
+
+    반환 함수: `(doc_id, page) -> PNG bytes`. page 는 1-indexed (golden v2 / chunks
+    .page 컬럼 규약과 동일).
+
+    캐싱 전략 (한 측정 run 의 cost 절감):
+    - PDF bytes per doc_id: `lru_cache(maxsize=16)` — 같은 doc 의 여러 vision_diagram
+      row 가 동일 storage round-trip 을 피함.
+    - PNG bytes per (doc_id, page): `lru_cache(maxsize=64)` — 같은 row 가 retry 될
+      때 render 비용 0.
+
+    실패 시 RuntimeError raise — `evaluate_multimodal` 의 try/except 가 score=None
+    graceful 처리.
+    """
+    # lazy import — 단위 테스트에서 외부 의존 없이 module import 가능하도록.
+    from app.adapters.impl.supabase_storage import SupabaseBlobStorage
+    from app.config import get_settings
+    from app.db import get_supabase_client
+
+    settings = get_settings()
+    storage_bucket = bucket or settings.supabase_storage_bucket
+    storage = SupabaseBlobStorage(bucket=storage_bucket)
+    client = get_supabase_client()
+
+    @lru_cache(maxsize=16)
+    def _fetch_pdf_bytes(doc_id: str) -> bytes:
+        """documents.storage_path 조회 → storage.get → PDF bytes."""
+        rows = (
+            client.table("documents")
+            .select("storage_path")
+            .eq("id", doc_id)
+            .limit(1)
+            .execute()
+            .data
+        )
+        if not rows:
+            raise RuntimeError(f"documents row not found: doc_id={doc_id}")
+        storage_path = rows[0].get("storage_path")
+        if not storage_path:
+            raise RuntimeError(f"storage_path is NULL: doc_id={doc_id}")
+        return storage.get(storage_path)
+
+    @lru_cache(maxsize=64)
+    def _fetch_page_png(doc_id: str, page: int) -> bytes:
+        """PDF bytes → PyMuPDF page render → PNG bytes. page 는 1-indexed."""
+        # fitz 는 import cost 가 있어 호출 시점에 import.
+        import fitz  # PyMuPDF
+
+        pdf_data = _fetch_pdf_bytes(doc_id)
+        with fitz.open(stream=pdf_data, filetype="pdf") as fdoc:
+            total_pages = len(fdoc)
+            if page < 1 or page > total_pages:
+                raise RuntimeError(
+                    f"page out of range: doc_id={doc_id} page={page} total={total_pages}"
+                )
+            pix = fdoc[page - 1].get_pixmap(dpi=dpi)
+            return pix.tobytes("png")
+
+    def image_fetch_fn(doc_id: str, page: int) -> bytes:
+        return _fetch_page_png(doc_id, page)
+
+    return image_fetch_fn
+
+
+def make_llm_caller(
+    *,
+    model: str = _DEFAULT_MULTIMODAL_MODEL,
+    record_usage: bool = True,
+) -> Callable[[bytes, str, str], str]:
+    """Gemini multimodal API 기반 llm_call_fn 팩토리.
+
+    반환 함수: `(image_bytes, system_prompt, user_prompt) -> raw JSON str`.
+    내부적으로 `gemini_vision.py` 와 동일한 client / retry 패턴을 재사용.
+
+    `record_usage=True` (default) 시 호출 1건마다 vision_usage_log 에
+    `source_type="multimodal_judge"` row 기록 — cost 누적 추적용. 단위 테스트는
+    `record_usage=False` 로 우회 가능.
+
+    실패 시 RuntimeError raise — evaluate_multimodal 의 try/except 가 score=None
+    처리. doc_id / page 정보가 필요한 vision_usage_log row 는 caller (즉
+    evaluate_multimodal 외부) 에서 별도 wrap 필요 — 본 함수는 generic.
+    """
+    from google.genai import types
+
+    from app.adapters.impl._gemini_common import get_client, with_retry
+    from app.adapters.impl.gemini_vision import _parse_usage_metadata
+
+    client = get_client()
+
+    def llm_call_fn(image_bytes: bytes, system_prompt: str, user_prompt: str) -> str:
+        # system prompt 는 user content 앞에 텍스트 part 로 붙여 단일 turn 으로 처리.
+        # response_mime_type=application/json 으로 LLM 이 JSON 만 반환.
+        contents = [
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_text(text=system_prompt),
+                    types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+                    types.Part.from_text(text=user_prompt),
+                ],
+            ),
+        ]
+        config = types.GenerateContentConfig(
+            temperature=0.0,  # judge → deterministic
+            response_mime_type="application/json",
+        )
+
+        def call() -> object:
+            response = client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=config,
+            )
+            text = response.text
+            if text is None or not text.strip():
+                raise RuntimeError(f"Gemini multimodal judge 응답이 비어있습니다: {response}")
+            return response
+
+        response = with_retry(call, label="multimodal_judge")
+
+        if record_usage:
+            try:
+                from app.services import vision_metrics
+
+                usage = _parse_usage_metadata(response, model=model)
+                vision_metrics.record_call(
+                    success=True,
+                    source_type="multimodal_judge",
+                    usage=usage,
+                )
+            except Exception as exc:  # noqa: BLE001 — usage 기록 실패는 graceful
+                logger.debug("multimodal_judge usage 기록 실패 (graceful): %s", exc)
+
+        return response.text
+
+    return llm_call_fn
