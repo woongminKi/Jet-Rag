@@ -137,12 +137,14 @@
 
 ## 7. 다음 스코프
 
-- ~~eval 전면 재측정~~ ✅ §5.4. ~~embed-cache 검증~~ ✅ §5.4 (183 row, churn 0).
-1. **(진행 예정 — 1순위) cross_doc 약점 진단** — golden_v2 qtype=cross_doc 10 row R@10 **0.3333** / top-1 0.30, dense 복구로도 불변 = retrieval 측 최대 레버. 후보: ① query decomposition(`JETRAG_PAID_DECOMPOSITION_ENABLED` ON 검증) ② multi-doc fusion(doc_embedding RRF 가중) ③ 골든셋 cross_doc 라벨(`|` 멀티-doc + chunk_idx-only 스키마) 재점검 — 어디가 병목인지 판별하는 진단 sprint 먼저($0). row 별: R@10 1.0×1 / 0.66×2 / 0.5×1 / 0.33×1 / 0.16×1 / 0.0×4.
-2. **doc-match-fail 3 row 처리** (§6 P1) — G-U-018/G-U-027 라벨 정정 또는 eval 도구에서 R@10=0 분모 포함.
-3. **acceptable judge 2차 라운드** (~$0.05, paid 승인 필요) — 복구로 sample-report 후보 정상화 → 의미 있어짐. candidate top-K 15→30+ 또는 `/search` 기반 후보 + threshold 0.5→0.6. **cross_doc 진단보다 후순위** (R@10 분자 보정일 뿐 근본 약점 미해결).
-4. **chunk augment** (handoff 3순위, 5~7일) — sample-report 잔존 약점 row(G-A-021/023/204/214 등 표·도식 split) + 데이터센터 p.40 single-line table.
-5. **handoff/D5 worklog 수치 정정** (§6 P0).
+- ~~eval 전면 재측정~~ ✅ §5.4. ~~embed-cache 검증~~ ✅ §5.4. ~~cross_doc 약점 진단~~ ✅ §9.
+1. **(1순위, $0) cross_doc 골든셋 라벨 스키마 정정** (§9 P0) — `relevant_chunks` 가 doc-바인딩 없는 bare chunk_idx 평탄 연결 → false positive + 의도 미표현. doc-bound 형식(`docid:idx` 또는 별도 컬럼)으로 + cross_doc 10 row 인간 재검수. **선행 — 안 하면 4 row 0.0 가 라벨 결함인지 검색 손실인지 분리 불가, 이후 모든 cross_doc 측정의 전제.** + `build_golden_v2.py` 의 cross_doc `top_k=1`(sub-doc당 정답 1개) 재검토. → 영향: `build_golden_v2.py` + `eval_retrieval_metrics.py` + `run_s4_a_d4_breakdown_eval.py` + golden_v2.csv. **golden 변경 = "중요 변경" → 스키마 결정은 사용자 확인 후.**
+2. **(2순위, $0) list 모드 cross_doc chunk cap + intent_router 커버리지** (§9 P1) — `_MAX_MATCHED_CHUNKS_PER_DOC=3` 이 cross_doc 응답에서 정답 chunk 탈락(ablation 단순 3→50 은 0.33→0.51 이나 일부 row 하락 → doc별 라운드로빈 quota 필요). + intent_router `_T2_COMPARE_KEYWORDS`/`_T1_CROSS_DOC` 에 "다른/다릅/상이" + "고유명사N + 와/과 + …에서" 패턴 추가(현재 cross_doc 10 query 중 `needs_decomposition=True` 3건뿐). UX 회귀 없게 cross_doc 판정 시에만.
+3. **(3순위) query decomposition 실측** (§9 P2) — 현재 `/answer` 전용 → golden eval(`/search`) 미반영. (a) $0: title 토큰 기반 기계 분해 → per-doc 검색 union (시뮬상 0.33→0.43) 먼저 / (b) paid ~$0.05/eval: decomposition 을 `/search` 옵션 노출 + LLM 분해. **P0·P1 선행 필요.**
+4. **doc-match-fail 3 row 처리** (§6 P1) — G-U-018/G-U-027 라벨 정정 또는 eval 도구 R@10=0 분모 포함.
+5. **acceptable judge 2차 라운드** (~$0.05, paid 승인) — 복구로 sample-report 후보 정상화 → 의미 있어짐. cross_doc 작업보다 후순위(분자 보정일 뿐 근본 약점 미해결).
+6. **chunk augment** (handoff 3순위, 5~7일) / **handoff·D5·Phase11 worklog 수치·오기 정정** (§6 P0).
+7. **(인지) RPC 후보 풀 `_RPC_TOP_K=50` sweep** — cross_doc 정답 chunk 절반 이상이 50 풀 밖. 100/150 sweep + p95 ≤ 3s SLO 점검 (효과 제한적 예상, P0/P1 후순위).
 
 ---
 
@@ -151,4 +153,22 @@
 - DB 조회/변경: `mcp__supabase-jetrag__execute_sql` (읽기 전용 — 스키마/분포/sample-report 진단/NFC 실측/복구 후 재확인/`embed_query_cache` row 수) + `evals/_repair_sample_report_dense_vec.py --apply` (`chunks.dense_vec` 1000 row UPDATE + `ingest_jobs` 1 row status='failed') + eval 1차 실행이 `embed_query_cache` 183 row insert. row 추가/삭제/text 변경 0 (`embed_query_cache` 는 캐시 테이블).
 - 운영 코드 변경: 0. 신규 파일: `evals/_repair_sample_report_dense_vec.py` (일회용 복구 도구), `evals/results/s4_a_d4_post_sample_report_repair_run{1,2}.{md,json}` (eval 산출물).
 - 단위 테스트: 997 pass / 50 subtests / 회귀 0 (운영 코드 미변경 — senior-developer 가 `uvx pytest -q` 로 확인).
-- 관련 문서: senior-qa 감사 리포트 + eval 재측정 리포트(세션 내), `work-log/2026-05-11 D5 chunks 회귀 복구 ship.md`, `work-log/2026-05-11 S4-A D4 Phase 4 — D5 reingest.md`, `work-log/2026-05-11 acceptable_chunks LLM-judge 자동 보완 ship.md`, `work-log/2026-05-12 종합 마감 + 2026-05-13 진입 핸드오프.md`.
+- 관련 문서: senior-qa 감사 리포트 + eval 재측정 리포트 + cross_doc 진단 리포트(세션 내), `work-log/2026-05-11 D5 chunks 회귀 복구 ship.md`, `work-log/2026-05-11 S4-A D4 Phase 4 — D5 reingest.md`, `work-log/2026-05-11 acceptable_chunks LLM-judge 자동 보완 ship.md`, `work-log/2026-05-12 종합 마감 + 2026-05-13 진입 핸드오프.md`.
+
+---
+
+## 9. cross_doc 약점 진단 (2026-05-12, senior-qa — $0 분석 + RRF-only ablation)
+
+DoD 미달의 최대 약점 = golden_v2 `qtype=cross_doc` 10 row R@10 **0.3333** / top-1 0.30 (dense 복구·entity_boost 둘 다 무관, 불변). 진단 결과 **3중 복합 원인**:
+
+| # | 병목 | 판정 | ROI / 비용 |
+|---|---|---|---|
+| **A** | **골든셋 라벨 스키마 결함** — cross_doc `relevant_chunks` 가 doc-바인딩 없는 bare chunk_idx 평탄 연결(`A_idx,B_idx`), eval `recall_at_k` 는 bare set 비교 → ① false positive(다른 doc 의 같은 chunk_idx 도 카운트, 예 G-A-124 운영내규#22=정답 ↔ 직제규정#22=메타noise) ② `0,0`→`set={0}` dedup 부작용 ③ cross_doc 만 sub-doc당 BGE cosine top-1 1개만 "relevant"(인간 검수 0) → 라벨 noise(예 G-A-128 law2#13=무관 사실관계가 정답으로) | **주범 (측정 노이즈)** — cross_doc 10 중 ≥4 row(G-A-124/126/128, G-U-015)의 0.0 은 "검색 실패"보다 라벨 결함. 0.33 자체가 하향 추정치 | $0 (라벨 재검수 + 스키마) |
+| **B** | **list 모드 per-doc chunk cap** `_MAX_MATCHED_CHUNKS_PER_DOC=3` (`search.py` L56) — non-doc-scope 응답에서 doc당 RRF top-3 만 `matched_chunks` 에 → 정답이 RPC top-50 풀엔 있어도 그 doc 의 top-3 밖이면 `predicted_top10` 에서 탈락. 응답 길이 실측 3·5·6 (10칸 절반도 안 참) | **부분 주범 (실제 검색 손실)** — cap 3→50 monkeypatch ablation: R@10 0.33→**0.51**, 단 일부 row 하락(G-U-032 0.33→0.22 등 — 첫 doc 독식) → doc별 라운드로빈 quota 필요 | $0 (상수/파라미터, UX 회귀 주의) |
+| **C** | **단일 query 로 여러 doc 의 정답 chunk 동시 회수 불가** — RPC `_RPC_TOP_K=50` 글로벌 풀에 cross_doc 라벨 chunk 절반 이상 미포함(예 G-A-126 기웅민#7·#11 = 50 밖 / G-A-128 law2#13 = 50 밖). generic query 라 풀 확대만으론 한계 | **근본 한계** — per-doc 검색 union $0 시뮬: 0.33→**0.43** (단 G-A-124/125/126/128 4 row 여전히 0 — 라벨 결함). query decomposition(LLM) 또는 기계 분해 필요 | decomposition LLM = paid ~$0.05/eval / 기계 분해·per-doc union = $0 |
+
+**무관 확정** (재확인): ① meta_filter / intent_router 가 단일 doc 으로 좁히는 경로 — cross_doc 10 query 전부 메타 fast path 미발동, doc-scope 강제 없음 ② doc_embedding RRF 가중(`JETRAG_DOC_EMBEDDING_RRF`) — 켜도 cross_doc R@10 불변(doc 페이지 순서만 바꿀 뿐 chunk 후보 풀 미변경) ③ S4-B entity_boost ④ sample-report dense 결손(target doc 에 없음).
+
+**부수 발견**: `query_decomposer.decompose` 는 `/answer` 전용(`answer.py` L229~), `/search`(=golden eval) 미배선. 게이트 `JETRAG_PAID_DECOMPOSITION_ENABLED=true` AND `intent_router.route(q).needs_decomposition=True` — cross_doc 10 중 `needs_decomposition=True` 3건뿐(intent_router 가 "다른가요" 어미·"내규와 규정에서" 패턴 미발화).
+
+**권고 실행 순서**: P0 라벨 정정($0, 전제) → 재측정으로 "라벨 noise분" vs "진짜 retrieval 손실분" 분리 → P1 chunk cap 라운드로빈 + intent_router 커버리지($0) → 재측정 → 부족하면 P2 decomposition($0 기계 분해 먼저, 효과 보고 paid LLM 판단) → P2 RPC 풀 sweep(latency 여유 시). **§7 의 1~3·7 항목이 이에 대응.** paid 필요한 건 P2-(b) decomposition LLM(~$0.05/eval) 뿐.
