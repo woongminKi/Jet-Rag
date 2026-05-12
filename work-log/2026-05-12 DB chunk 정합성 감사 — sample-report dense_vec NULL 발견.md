@@ -137,9 +137,8 @@
 
 ## 7. 다음 스코프
 
-- ~~eval 전면 재측정~~ ✅ §5.4. ~~embed-cache 검증~~ ✅ §5.4. ~~cross_doc 약점 진단~~ ✅ §9. ~~cross_doc 골든셋 라벨 정정(P0)~~ ✅ §10 (commit `09df535`, 새 baseline cross_doc R@10 0.2856).
-1. **(1순위, $0) list 모드 cross_doc chunk cap 라운드로빈 + intent_router 커버리지** (§9 P1) — `_MAX_MATCHED_CHUNKS_PER_DOC=3` 이 cross_doc 응답에서 정답 chunk 탈락(옛 ablation 3→50 은 일부 row 하락 — doc별 라운드로빈 quota 필요). + intent_router `_T2_COMPARE_KEYWORDS`/`_T1_CROSS_DOC` 에 "다른/다릅/상이" + "고유명사N + 와/과 + …에서" 패턴 추가. UX 회귀 없게 cross_doc 판정 시에만. → §10.3 baseline(R@10 0.2856) 대비 재측정.
-2. **(2순위) query decomposition 실측** (§9 P2) — 현재 `/answer` 전용 → golden eval(`/search`) 미반영. (a) $0: title 토큰 기반 기계 분해 → per-doc 검색 union 먼저 / (b) paid ~$0.05/eval: decomposition 을 `/search` 옵션 노출 + LLM 분해. **P1 선행 후.**
+- ~~eval 전면 재측정~~ ✅ §5.4. ~~embed-cache 검증~~ ✅ §5.4. ~~cross_doc 약점 진단~~ ✅ §9. ~~cross_doc 골든셋 라벨 정정(P0)~~ ✅ §10. ~~cross_doc chunk cap + eval 라운드로빈 + intent_router 커버리지(P1)~~ ✅ §11 (commit `8f16f32`, cross_doc R@10 0.2856→0.4424 +55%).
+1. **(1순위) query decomposition 실측** (§9 P2) — 현재 `/answer` 전용 → golden eval(`/search`) 미반영. (a) $0: title 토큰 기반 기계 분해 → per-doc 검색 union 먼저 / (b) paid ~$0.05/eval: decomposition 을 `/search` 옵션 노출 + LLM 분해 (intent_router 발화 9/9 로 게이트 통과 준비됨). → §11.2 baseline(cross_doc R@10 0.4424) 대비.
 3. **doc-match-fail 3 row 처리** (§6 P1) — G-U-018/G-U-027(qtype=cross_doc 아님 — fuzzy_memory/exact_fact) 의 `|` 멀티-doc 라벨 정정 또는 eval 도구 R@10=0 분모 포함.
 4. **acceptable judge 2차 라운드** (~$0.05, paid 승인) — 복구로 sample-report 후보 정상화 → 의미 있어짐. cross_doc 작업보다 후순위(분자 보정일 뿐 근본 약점 미해결).
 5. **chunk augment** (handoff 3순위, 5~7일) / **handoff·D5·Phase11 worklog 수치·오기 정정** (§6 P0).
@@ -151,8 +150,8 @@
 
 - DB 조회/변경: `mcp__supabase-jetrag__execute_sql` (읽기 전용 — 스키마/분포/sample-report 진단/NFC 실측/복구 후 재확인/`embed_query_cache` row 수/cross_doc chunk 텍스트 검증) + `evals/_repair_sample_report_dense_vec.py --apply` (`chunks.dense_vec` 1000 row UPDATE + `ingest_jobs` 1 row status='failed') + eval 실행이 `embed_query_cache` 183 row insert. `chunks`/`documents` row 추가/삭제/text 변경 0.
 - 운영 코드 변경: `api/app/services/retrieval_metrics.py` set 원소 타입 generic 화(로직 불변). 신규: `evals/_repair_sample_report_dense_vec.py`(복구 도구), `evals/cross_doc_alias_map.json`(alias 매핑), `evals/results/s4_a_d4_post_sample_report_repair_run{1,2}.*`·`s4_a_d4_cross_doc_relabel_run{1,2}.*`(eval 산출, .gitignore). 정정: `evals/golden_v2.csv`(cross_doc 10 row)·`evals/run_s4_a_d4_breakdown_eval.py`·`evals/build_golden_v2.py`.
-- 단위 테스트: 997 → **1002** pass / 50 subtests / 회귀 0 (`.venv/bin/python -m unittest` — `uvx pytest` 는 격리환경이라 PIL 등 미설치 collection error, baseline 동일).
-- 커밋: `c2e0f06`(sample-report 복구 + 감사) / `da9f958`(eval 재측정 §5.4) / `82424d2`(cross_doc 진단 §9) / `09df535`(cross_doc 라벨 정정 §10). main HEAD `09df535`.
+- 단위 테스트: 997 → **1022** pass / 50 subtests / 회귀 0 (`.venv/bin/python -m unittest` — `uvx pytest` 는 격리환경이라 PIL 등 미설치 collection error / full-discover 시 test_embed_cache LRU 4건 flaky 는 pre-existing 테스트-격리 이슈, 격리 실행 시 pass).
+- 커밋: `c2e0f06`(sample-report 복구 + 감사) / `da9f958`(eval 재측정 §5.4) / `82424d2`(cross_doc 진단 §9) / `09df535`+`037a596`(cross_doc 라벨 정정 P0 §10) / `8f16f32`(cross_doc cap+라운드로빈+intent_router P1 §11). main HEAD = 본 work-log 커밋.
 - 관련 문서: senior-qa 감사·eval 재측정·cross_doc 진단 리포트 + senior-planner 스키마 설계 리포트(세션 내), `work-log/2026-05-11 D5 chunks 회귀 복구 ship.md`, `work-log/2026-05-11 S4-A D4 Phase 4 — D5 reingest.md`, `work-log/2026-05-11 acceptable_chunks LLM-judge 자동 보완 ship.md`, `work-log/2026-05-12 종합 마감 + 2026-05-13 진입 핸드오프.md`.
 
 ---
@@ -213,4 +212,33 @@ DoD 미달의 최대 약점 = golden_v2 `qtype=cross_doc` 10 row R@10 **0.3333**
 ### 10.4 알려진 사소 이슈 (scope 밖)
 - `run_s4_a_d4_breakdown_eval.py` `_format_markdown` §1 제목이 "157 row baseline" 하드코딩 — 실제 183 row. 코스메틱(측정값 영향 0). 다음에 정리.
 
-### 10.5 다음 (§7 갱신 반영) — P1 chunk cap 라운드로빈 + intent_router 커버리지($0) → 재측정 → P2 decomposition. 새 baseline = 10.3.
+### 10.5 다음 — P1 ✅ §11. 그 다음 = P2 decomposition. 새 baseline = §11.2(P1 이후 — §10.3 은 P0 직후 중간 baseline).
+
+---
+
+## 11. cross_doc P1 — chunk cap 8 + eval 라운드로빈 + intent_router 커버리지 (2026-05-12, commit `8f16f32`)
+
+§9 진단의 병목 B(`_MAX_MATCHED_CHUNKS_PER_DOC=3` 가 cross_doc 응답에서 정답 chunk 탈락) + intent_router cross_doc/compare 신호 부족 해소. cross_doc-class query 한정 변경 — non-cross_doc 회귀 0.
+
+### 11.1 변경 (6 파일, 단위 테스트 1002→**1022** / 회귀 0)
+- **`api/app/services/intent_router.py`** — T1 보조 regex 3종 추가(기존 `_T1_CROSS_DOC` 와 OR): `_T1_CROSS_DOC_PAIR`("NP1 (와|과|랑) NP2 …0~15자… 문서류명사" — 예 "law sample2와 law sample3 두 판결", "기웅민 이력서와 이한주 포트폴리오"), `_T1_CROSS_DOC_PAIR2`("문서류명사 (와|과|랑) NP2" — 예 "승인글 템플릿1과 템플릿3", "운영내규랑 직제규정"), `_T1_CROSS_DOC_PLURAL`("문서류명사들 (에서|에|중…)" — 예 "법률 자료들에서 …사례들"). `_DOC_NOUN` 화이트리스트(자료/문서/보고서/안내서/규정/내규/이력서/포트폴리오/포폴/템플릿/판결/계획/사업/매뉴얼/카탈로그/논문). T2: `_T2_COMPARE_STEM = re.compile(r"다르[게지]|다른[가지]|다릅|상이")` 추가("다른 사람"(공백) 제외 — FP 최소화), 매칭 시 `matched_keywords` 기록.
+- **`api/app/routers/search.py`** — `_MAX_MATCHED_CHUNKS_PER_DOC_CROSS_DOC=8`·`_CROSS_DOC_CLASS_SIGNALS=frozenset({"T1_cross_doc","T2_compare","T7_multi_target"})` 신규 + `_is_cross_doc_class_query(query)` 헬퍼(`intent_router.route().triggered_signals ∩ 신호`, graceful). 응답 조립부: `is_cross_doc_resp = (not is_doc_scope) and _is_cross_doc_class_query(clean_q)` → `chunk_cap` 3분기(doc-scope 200 / cross_doc-resp 8 / else 3), cross_doc-resp 면 `matched_chunks` RRF desc 정렬. **non-cross_doc list 모드(idx asc, cap 3)·doc-scope 무변경.** schema/필드 추가 없음.
+- **`evals/run_s4_a_d4_breakdown_eval.py`** — cross_doc cell re-merge 를 "전체 merged chunk RRF desc 정렬" → `_round_robin_cross_doc_chunks(target_items)`(doc 순서 alias 사전순 고정·결정적, 각 doc 내 RRF desc, rank0부터 인터리브, alias_map 미등록 doc skip) 로 교체. cap 8 만으론 RRF desc 시 첫 doc 가 top-10 독식 가능(옛 ablation "일부 row 하락" 증상) → 라운드로빈으로 doc 균형. single-doc cell 무변경.
+- **tests**: `test_intent_router.py` P1 패턴 11건 + `test_search_cross_doc_chunk_cap.py` 신규 4건 + `test_run_s4_a_d4_breakdown_crossdoc_roundrobin.py` 신규 6건. (`.venv/bin/python -m unittest` — full-discover 시 `test_embed_cache` LRU 4건 flaky 는 P1 무관 pre-existing 테스트-격리 이슈, 격리 실행 시 9/9 pass.)
+
+### 11.2 재측정 — **새 baseline** (`JETRAG_EMBED_QUERY_CACHE=1`, RRF-only, `evals/results/s4_a_d4_p1_crossdoc_cap_run{1,2}.*` — run1==run2 churn 0)
+- **cross_doc 9 row**: R@10 **0.2856→0.4424** (+0.157, +55% rel) / nDCG **0.2371→0.3213** / MRR **0.2981→0.3472** / top-1 0.3333→0.3333(G-A-126 F→T ↔ G-A-125 T→F net 0 — 후자는 라벨 비대칭(데이터센터 약라벨) 한계, R@10 불변) / **doc-match-fail 0**. row 별 R@10: G-U-015 0.0→0.667 ✓(직제규정:58/59 가 cap 8+RRF desc 로 노출) / G-U-017 0.714→1.0 ✓(라운드로빈으로 law3 chunk top-10 진입) / G-U-032 0.25→0.375 ✓ / G-A-126 0.167→0.5 ✓ / 나머지 5 row 불변.
+- **overall 183 row**: R@10 0.6839→**0.6920**(+0.008) / top1_rate **0.8046 동일** / doc-match-fail 3 동일 / error 0. p95 latency ~229→287ms(cold-state 노이즈, intent_router 룰 기반 0ms — SLO 무관).
+- **단일-doc 174 row 회귀 0**: non-cross_doc 중 변동 = G-U-028(out_of_scope) 1건 — `predicted_top10` 만 미세 변동, recall/top1 None→None(정답 chunks 없는 latency-only row) → metric 영향 0. 원인 = 이 query 가 `_T1_CROSS_DOC_PLURAL`("자료들에") 로 cross_doc-class 오판정(검색 카드에 chunk 8개 노출 — UX 만, 정확도 0). 다른 173 row predicted bit-identical.
+- ⚠️ §11.2 = P1 이후 새 baseline. §10.3(P0 직후) 은 중간 baseline. 이후 P2 등은 §11.2 기준 비교.
+
+### 11.3 intent_router 발화율 / FP
+- cross_doc 9 query `needs_decomposition` 발화: before **2/9** → after **9/9** (전부 — P2 decomposition 게이트 통과 준비). (이전 핸드오프 "3/9" 는 부정확 — 실측 2/9.)
+- golden_v2 단일-doc 174 query FP(분해 불필요인데 `needs_decomposition=True`): before 9/174(5.2%) → after **11/174(6.3%)** — <10% 임계 내. 신규 FP 2건: "이 자료들에 환경 인증 절차 나와있어?"(out_of_scope, PLURAL) / "체육관 이용 시 금지 행위와 행사 규정은?"(exact_fact, PAIR — "행위와 행사…규정"). regex 미축소(수용). 더 좁히려면 `_T1_CROSS_DOC_PAIR` 한글 토큰 최소 길이 3+ 또는 PLURAL 제거 검토 가능.
+
+### 11.4 알려진 한계 (scope 밖)
+- G-A-125 top-1 T→F (R@10 불변) — 데이터센터 측 라벨 비대칭(약라벨) 한계, P1 결함 아님.
+- `_is_cross_doc_class_query` 가 응답 경로에서 query 당 `intent_router.route()` 1회 호출(룰 기반 0ms) — MMR 분기 `_is_cross_doc_query`(T1 전용)와 중복이나 통합 안 함(의도 분리: MMR=T1, chunk cap=T1/T2/T7).
+- `run_s4_a_d4_breakdown_eval.py` `_format_markdown` "157 row" 하드코딩(§10.4) 여전 — 다음에.
+
+### 11.5 다음 = §7-1 (P2 query decomposition — $0 기계 분해 먼저 → paid LLM ~$0.05/eval). 새 baseline = §11.2.
