@@ -1,5 +1,7 @@
 """Jet-Rag FastAPI 앱 진입점.
 
+- 모듈 로드 시 `app` 로거 콘솔 핸들러 부트스트랩 (routers import 전 — import 중 발생하는
+  로그도 잡히게). uvicorn 기본 dictConfig 가 `app.*` INFO 를 드롭하는 문제 회피.
 - router include + CORS.
 - lifespan 에서 BGE-M3 임베딩 모델 cold-start warmup 을 fire-and-forget 으로 trigger
   (§10.11 SLO — 검색 첫 호출 시 HF cold start 5~20s 가 사용자에게 노출되는 것 회피).
@@ -17,7 +19,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
-from app.routers import (
+from app.logging_setup import configure_app_logging
+
+configure_app_logging()
+
+from app.routers import (  # noqa: E402 — logger 부트스트랩 후 import (import 중 로그 캡처).
     admin_router,
     answer_router,
     documents_router,
@@ -45,6 +51,7 @@ async def _warmup_bgem3() -> None:
             logger.info("BGE-M3 warmup skip — HF_API_TOKEN 미설정")
             return
 
+        logger.info("BGE-M3 warmup 시작 — HF cold-start 대기 (수 초~수십 초 소요 가능)")
         provider = get_bgem3_provider()
         await asyncio.to_thread(provider.embed_query, "warmup")
         logger.info("BGE-M3 warmup 완료 — HF Inference 모델 준비됨")
