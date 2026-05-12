@@ -138,7 +138,8 @@
 ## 7. 다음 스코프
 
 - ~~eval 전면 재측정~~ ✅ §5.4. ~~embed-cache 검증~~ ✅ §5.4. ~~cross_doc 약점 진단~~ ✅ §9. ~~cross_doc 골든셋 라벨 정정(P0)~~ ✅ §10. ~~cross_doc chunk cap + eval 라운드로빈 + intent_router 커버리지(P1)~~ ✅ §11 (commit `8f16f32`, cross_doc R@10 0.2856→0.4424 +55%).
-1. **(1순위) query decomposition 실측** (§9 P2) — 현재 `/answer` 전용 → golden eval(`/search`) 미반영. (a) $0: title 토큰 기반 기계 분해 → per-doc 검색 union 먼저 / (b) paid ~$0.05/eval: decomposition 을 `/search` 옵션 노출 + LLM 분해 (intent_router 발화 9/9 로 게이트 통과 준비됨). → §11.2 baseline(cross_doc R@10 0.4424) 대비.
+- ~~P2 $0 기계 분해~~ ❌ §12 (net-negative — cross_doc R@10 0.4424→0.3610, 코드 미머지).
+1. **(보류 — paid 승인 필요) P2-(b) paid LLM query decomposition** (§9 P2 / §12 — $0 기계 분해 실패의 진짜 대안) — `query_decomposer`(현 `/answer` 전용)를 `/search` 옵션 노출 + LLM 분해. ~$0.05/eval. intent_router 발화 9/9 로 게이트 준비됨. **또는** doc-scoped RPC 마이그(doc 내 RRF 계산하는 새 함수 — $0 이나 마이그·중규모). 둘 다 §11.2 baseline(cross_doc R@10 0.4424) 대비.
 3. **doc-match-fail 3 row 처리** (§6 P1) — G-U-018/G-U-027(qtype=cross_doc 아님 — fuzzy_memory/exact_fact) 의 `|` 멀티-doc 라벨 정정 또는 eval 도구 R@10=0 분모 포함.
 4. **acceptable judge 2차 라운드** (~$0.05, paid 승인) — 복구로 sample-report 후보 정상화 → 의미 있어짐. cross_doc 작업보다 후순위(분자 보정일 뿐 근본 약점 미해결).
 5. **chunk augment** (handoff 3순위, 5~7일) / **handoff·D5·Phase11 worklog 수치·오기 정정** (§6 P0).
@@ -151,7 +152,7 @@
 - DB 조회/변경: `mcp__supabase-jetrag__execute_sql` (읽기 전용 — 스키마/분포/sample-report 진단/NFC 실측/복구 후 재확인/`embed_query_cache` row 수/cross_doc chunk 텍스트 검증) + `evals/_repair_sample_report_dense_vec.py --apply` (`chunks.dense_vec` 1000 row UPDATE + `ingest_jobs` 1 row status='failed') + eval 실행이 `embed_query_cache` 183 row insert. `chunks`/`documents` row 추가/삭제/text 변경 0.
 - 운영 코드 변경: `api/app/services/retrieval_metrics.py` set 원소 타입 generic 화(로직 불변). 신규: `evals/_repair_sample_report_dense_vec.py`(복구 도구), `evals/cross_doc_alias_map.json`(alias 매핑), `evals/results/s4_a_d4_post_sample_report_repair_run{1,2}.*`·`s4_a_d4_cross_doc_relabel_run{1,2}.*`(eval 산출, .gitignore). 정정: `evals/golden_v2.csv`(cross_doc 10 row)·`evals/run_s4_a_d4_breakdown_eval.py`·`evals/build_golden_v2.py`.
 - 단위 테스트: 997 → **1022** pass / 50 subtests / 회귀 0 (`.venv/bin/python -m unittest` — `uvx pytest` 는 격리환경이라 PIL 등 미설치 collection error / full-discover 시 test_embed_cache LRU 4건 flaky 는 pre-existing 테스트-격리 이슈, 격리 실행 시 pass).
-- 커밋: `c2e0f06`(sample-report 복구 + 감사) / `da9f958`(eval 재측정 §5.4) / `82424d2`(cross_doc 진단 §9) / `09df535`+`037a596`(cross_doc 라벨 정정 P0 §10) / `8f16f32`(cross_doc cap+라운드로빈+intent_router P1 §11). main HEAD = 본 work-log 커밋.
+- 커밋: `c2e0f06`(sample-report 복구 + 감사) / `da9f958`(eval 재측정 §5.4) / `82424d2`(cross_doc 진단 §9) / `09df535`+`037a596`(cross_doc 라벨 정정 P0 §10) / `8f16f32`+`95bba0c`(cross_doc cap+라운드로빈+intent_router P1 §11). P2(§12) 는 net-negative 라 미머지(코드 폐기) — 테스트 1022 유지. main HEAD = 본 work-log 커밋.
 - 관련 문서: senior-qa 감사·eval 재측정·cross_doc 진단 리포트 + senior-planner 스키마 설계 리포트(세션 내), `work-log/2026-05-11 D5 chunks 회귀 복구 ship.md`, `work-log/2026-05-11 S4-A D4 Phase 4 — D5 reingest.md`, `work-log/2026-05-11 acceptable_chunks LLM-judge 자동 보완 ship.md`, `work-log/2026-05-12 종합 마감 + 2026-05-13 진입 핸드오프.md`.
 
 ---
@@ -241,4 +242,23 @@ DoD 미달의 최대 약점 = golden_v2 `qtype=cross_doc` 10 row R@10 **0.3333**
 - `_is_cross_doc_class_query` 가 응답 경로에서 query 당 `intent_router.route()` 1회 호출(룰 기반 0ms) — MMR 분기 `_is_cross_doc_query`(T1 전용)와 중복이나 통합 안 함(의도 분리: MMR=T1, chunk cap=T1/T2/T7).
 - `run_s4_a_d4_breakdown_eval.py` `_format_markdown` "157 row" 하드코딩(§10.4) 여전 — 다음에.
 
-### 11.5 다음 = §7-1 (P2 query decomposition — $0 기계 분해 먼저 → paid LLM ~$0.05/eval). 새 baseline = §11.2.
+### 11.5 다음 = §12 (P2 $0 기계 분해 — 시도했으나 net-negative). 새 baseline 유지 = §11.2.
+
+---
+
+## 12. cross_doc P2 — $0 기계 분해 시도 → **net-negative, 미머지** (2026-05-12)
+
+§9 진단의 병목 C(단일 query 로 여러 doc 정답 chunk 동시 회수 불가) 에 대한 $0 시도(LLM 없이 doc-제목 토큰 검출 → per-doc scoped 검색 → union). senior-developer 가 `search.py` 에 ENV 게이트(`JETRAG_CROSS_DOC_DECOMP`, default OFF) 뒤로 구현·재측정 → **net-negative 확정 → 코드 미머지**(net-negative 인 ~242줄 dormant 코드는 `간결하게` 원칙상 보존 안 함, 진단만 본 절에 기록).
+
+### 12.1 측정 결과 (decomp ON, §11.2 baseline 대비)
+- **cross_doc 9 row: R@10 0.4424→0.3610 (−0.0815) / nDCG 0.3213→0.2507 / MRR 0.3472→0.2620 / top-1 0.3333→0.2222.** doc-match-fail 0 유지. overall R@10 0.6920→0.6878 (하락분 전부 cross_doc 에서 유입, 단일-doc 174 row 회귀 0). 9 row 중 7개 분해 발동(한↔영 미지원으로 G-U-017 0 검출 / G-U-031 1 검출 미발동). doc 검출 정밀도 100%(단일-doc 174 중 분해 FP 0).
+- 회귀 row: G-A-124 0.4→0.0, G-A-126 0.5→0.167, G-A-127 top-1 T→F. 개선 row: 없음(G-A-128 nDCG 미세↑, R@10 불변). latency: cross_doc query ~2배(추가 RPC 2개), overall p95 무동요(cross_doc ≈5%).
+
+### 12.2 근본 원인 (왜 net-negative)
+- **doc-scoped 검색 경로는 "doc 내 RRF" 가 아님.** `search_hybrid_rrf` RPC 는 `doc_id` 인자가 없음 → doc-scoped = 글로벌 dense/sparse top-200 RPC + 사후 `doc_id` 필터. 더 깊은 200-pool 에서는 dense+sparse 양쪽 hit chunk 가 RRF 합산 boost 를 받아 ranking 이 재배치됨 → 얕은 50-pool 에서 상위였던 정답 chunk(예 G-A-124 운영내규#22)가 200-pool 재배치로 밀려남. 즉 per-doc "scoped" 검색이 오히려 정답 회수율을 낮춤.
+- ⇒ **진짜 fix 후보**: (a) **paid LLM query decomposition** — `/answer` 의 `query_decomposer` 를 `/search` 옵션 노출 + LLM 분해(query 를 의미 단위 sub-query 로, doc-제목 토큰 아님). ~$0.05/eval. intent_router 발화 9/9 로 게이트 준비. (b) **doc-scoped RPC 마이그** — `search_hybrid_rrf` 에 `doc_id` 인자 추가해 doc 내에서 dense/sparse top-K + RRF 계산하는 새 함수($0 이나 마이그+RPC 변경=중규모, search.py doc-scope 경로 전체 영향). 둘 다 P2 1차 scope 밖 → 사용자 판단(특히 (a)는 paid 승인 필요).
+
+### 12.3 산출/코드 처리
+- 코드: `search.py` 의 P2 변경 + `test_search_cross_doc_decomp.py` 19 케이스 → **`git checkout`/`rm` 으로 폐기**(커밋 안 됨). 단위 테스트는 P1 시점 1022 로 복귀.
+- eval 산출물 `evals/results/s4_a_d4_p2_decomp*.*` → 로컬 삭제(.gitignore 였음).
+- 교훈: cross_doc 의 doc-간 정답 분산 문제는 "per-doc 검색"으로 안 풀림(doc-scoped 가 진짜 doc-RRF 가 아니라서). 다음 시도는 (a) 또는 (b).
