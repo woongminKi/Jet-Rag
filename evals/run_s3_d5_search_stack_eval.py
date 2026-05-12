@@ -590,13 +590,14 @@ def _format_markdown(
     n_golden: int,
     mock_reranker: bool,
     cells_by_combo: dict[str, list[CellResult]],
+    golden_csv_name: str,
 ) -> str:
     lines: list[str] = []
     lines.append("# S3 D5 — 검색 스택 정량 측정 결과")
     lines.append("")
     lines.append(
-        f"- 골든셋 v1: **{n_golden} row** "
-        f"(`evals/golden_v1.csv`)"
+        f"- 골든셋: **{n_golden} row** "
+        f"(`evals/{golden_csv_name}`)"
     )
     lines.append(
         f"- 측정 모드: {'mock-reranker' if mock_reranker else '실 BGE-reranker'} "
@@ -886,7 +887,10 @@ def main(argv: list[str] | None = None) -> int:
             f"[WARN] --limit-rows={args.limit_rows} 적용 — production 측정 아님",
             file=sys.stderr,
         )
-    print(f"[INFO] 골든셋 v1 row 수: {len(rows)}", file=sys.stderr)
+    print(
+        f"[INFO] 골든셋 ({golden_path.name}) row 수: {len(rows)}",
+        file=sys.stderr,
+    )
 
     combos = ["a", "b", "c"] if args.combo == "all" else [args.combo]
 
@@ -920,6 +924,7 @@ def main(argv: list[str] | None = None) -> int:
         n_golden=len(rows),
         mock_reranker=args.mock_reranker,
         cells_by_combo=cells_by_combo,
+        golden_csv_name=golden_path.name,
     )
 
     out_md = Path(args.out)

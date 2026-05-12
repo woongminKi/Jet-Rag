@@ -299,11 +299,12 @@ def _format_markdown(
     per_query_on: list[dict] | None,
     agg_on: dict | None,
     doc_id: str,
+    golden_csv_name: str,
 ) -> str:
     lines: list[str] = []
     lines.append("# Retrieval Metrics — Recall@10 / MRR / nDCG@10")
     lines.append("")
-    lines.append(f"- 골든셋: `evals/golden_v0.4_sonata.csv` (sonata catalog 10건)")
+    lines.append(f"- 골든셋: `evals/{golden_csv_name}`")
     lines.append(f"- 대상 doc_id: `{doc_id}`")
     lines.append("")
 
@@ -423,7 +424,7 @@ def main() -> int:
     agg_on: dict | None = None
 
     if args.multi_doc or args.compare_doc_embedding:
-        return _run_multi_doc(golden, doc_id, args)
+        return _run_multi_doc(golden, doc_id, args, golden_path.name)
 
     if args.compare_reranker:
         # ENV 토글 — 단일 process 에서 두 번 측정.
@@ -445,7 +446,9 @@ def main() -> int:
         else:
             per_query_off, agg_off = per_query, agg
 
-    md = _format_markdown(per_query_off, agg_off, per_query_on, agg_on, doc_id)
+    md = _format_markdown(
+        per_query_off, agg_off, per_query_on, agg_on, doc_id, golden_path.name
+    )
     if args.output:
         Path(args.output).write_text(md, encoding="utf-8")
         print(f"[OK] {args.output}", file=sys.stderr)
@@ -497,11 +500,12 @@ def _format_multi_doc_md(
     per_query_on: list[dict] | None,
     agg_on: dict | None,
     doc_id: str,
+    golden_csv_name: str,
 ) -> str:
     lines: list[str] = []
     lines.append("# Multi-doc Retrieval Metrics — doc-level top-1 / top-3 / MRR")
     lines.append("")
-    lines.append(f"- 골든셋: `evals/golden_v0.4_sonata.csv` (sonata 10건)")
+    lines.append(f"- 골든셋: `evals/{golden_csv_name}`")
     lines.append(f"- expected_doc_id: `{doc_id}`")
     lines.append("- 측정: doc_id 미지정 검색 → expected_doc 의 doc-level rank")
     lines.append("")
@@ -553,7 +557,9 @@ def _format_multi_doc_md(
     return "\n".join(lines)
 
 
-def _run_multi_doc(golden: list[dict], doc_id: str, args) -> int:
+def _run_multi_doc(
+    golden: list[dict], doc_id: str, args, golden_csv_name: str
+) -> int:
     if args.compare_doc_embedding:
         # D1 정정 — embedding LRU cache 가 OFF run 의 cosine 계산 결과 보존 가능. 안전하게 비움.
         from app.adapters.impl.bgem3_hf_embedding import get_bgem3_provider
@@ -580,7 +586,9 @@ def _run_multi_doc(golden: list[dict], doc_id: str, args) -> int:
             per_query_off, agg_off = per_query, agg
             per_query_on, agg_on = None, None
 
-    md = _format_multi_doc_md(per_query_off, agg_off, per_query_on, agg_on, doc_id)
+    md = _format_multi_doc_md(
+        per_query_off, agg_off, per_query_on, agg_on, doc_id, golden_csv_name
+    )
     if args.output:
         Path(args.output).write_text(md, encoding="utf-8")
         print(f"[OK] {args.output}", file=sys.stderr)

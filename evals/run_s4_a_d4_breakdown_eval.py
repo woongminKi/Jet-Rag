@@ -200,7 +200,7 @@ class CellResult:
     doc_type: str
     caption_dependent: bool
     doc_id: str
-    # chunk-level metric — relevant_chunks 비어있으면 None
+    # chunk-level metric — 정답 라벨 없으면 None / doc-match-fail(라벨 有) 이면 0.0 (W-6 DECISION-6)
     recall_at_10: float | None = None
     ndcg_at_10: float | None = None
     mrr: float | None = None
@@ -211,6 +211,10 @@ class CellResult:
     note: str = ""
     # single-doc = list[int] / cross_doc = list[(alias, chunk_idx)] (B 결정).
     predicted_top10: list = field(default_factory=list)
+    # W-6 DECISION-6 — doc-match-fail 인데 정답 라벨이 있던 row (R@10=0 으로 분모 포함됨).
+    doc_match_fail_zeroed: bool = False
+    # W-6 — relevant/acceptable 라벨이 아예 비어있는 row (recall 정의 불가 → 분모 제외, 별도 카운트).
+    no_ground_truth: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -295,13 +299,29 @@ def _measure_one_cell(g: GoldenV2Row) -> CellResult:
         recall_at_k,
     )
 
+    has_ground_truth = bool(g.relevant_chunks or g.acceptable_chunks)
     cell = CellResult(
         golden_id=g.id,
         query_type=g.query_type,
         doc_type=g.doc_type,
         caption_dependent=g.caption_dependent,
         doc_id=g.doc_id,
+        no_ground_truth=not has_ground_truth,
     )
+
+    def _zero_doc_match_fail() -> CellResult:
+        """W-6 DECISION-6 — doc-match-fail 인데 정답 라벨이 있던 row → R@10 등 0.0 으로 분모 포함.
+
+        정답 라벨이 비어있는 row (no_ground_truth) 는 zeroing 대상 아님 (recall 정의 불가).
+        """
+        cell.note = "doc 매칭 fail"
+        if has_ground_truth:
+            cell.recall_at_10 = 0.0
+            cell.ndcg_at_10 = 0.0
+            cell.mrr = 0.0
+            cell.top1_hit = False
+            cell.doc_match_fail_zeroed = True
+        return cell
 
     if not g.query:
         cell.note = "query 비어있음"
@@ -337,8 +357,7 @@ def _measure_one_cell(g: GoldenV2Row) -> CellResult:
         # 각 chunk 에 `(alias, chunk_idx)` 부여 (title prefix 미사용).
         target_items = _pick_cross_doc_items(items, g)
         if not target_items:
-            cell.note = "doc 매칭 fail"
-            return cell
+            return _zero_doc_match_fail()
         # S4-A P1 — doc-balanced 라운드로빈 re-merge. 옛 "전체 RRF desc 정렬" 은 한 doc 가
         # top-10 을 독식할 수 있어 (검색 path 의 doc 당 chunk cap 8 만으로도) 일부 row 가
         # 하락했다. target doc 들의 matched_chunks 를 각 doc 내 RRF desc 로 정렬한 뒤,
@@ -347,8 +366,7 @@ def _measure_one_cell(g: GoldenV2Row) -> CellResult:
     else:
         target_items = _pick_target_items(items, g)
         if not target_items:
-            cell.note = "doc 매칭 fail"
-            return cell
+            return _zero_doc_match_fail()
         # Phase 2-A — multi-doc U-row 한정 다중 item matched_chunks 합산.
         # Single-doc / single-item 일 때는 기존 path 와 동치 (하위 호환).
         merged: list[dict[str, Any]] = []
@@ -575,10 +593,19 @@ class GroupSummary:
     avg_latency_ms: float
     doc_match_fail: int
     error_count: int
+    # W-6 DECISION-6 — doc-match-fail 인데 정답 라벨이 있어 R@10=0 으로 분모 포함된 row 수.
+    n_doc_match_fail_zeroed: int = 0
+    # W-6 — relevant/acceptable 라벨이 아예 비어있어 분모에서 제외된 row 수.
+    n_no_ground_truth: int = 0
 
 
 def _aggregate_group(label: str, cells: list[CellResult]) -> GroupSummary:
-    """1 그룹의 cells → GroupSummary."""
+    """1 그룹의 cells → GroupSummary.
+
+    W-6 DECISION-6: doc-match-fail 인데 정답 라벨이 있던 row 는 ``recall_at_10`` 등이
+    0.0 으로 채워져 있어 ``chunk_evals`` (분모) 에 자연히 포함된다. 라벨이 아예 없는
+    row (``no_ground_truth``) 만 ``recall_at_10 is None`` → 분모 제외 + 별도 카운트.
+    """
     n = len(cells)
     chunk_evals = [c for c in cells if c.recall_at_10 is not None]
     n_eval = len(chunk_evals)
@@ -602,6 +629,8 @@ def _aggregate_group(label: str, cells: list[CellResult]) -> GroupSummary:
 
     err = sum(1 for c in cells if c.note.startswith("ERROR"))
     doc_fail = sum(1 for c in cells if c.note == "doc 매칭 fail")
+    n_zeroed = sum(1 for c in cells if c.doc_match_fail_zeroed)
+    n_no_gt = sum(1 for c in cells if c.no_ground_truth)
 
     return GroupSummary(
         label=label,
@@ -615,6 +644,8 @@ def _aggregate_group(label: str, cells: list[CellResult]) -> GroupSummary:
         avg_latency_ms=avg_lat,
         doc_match_fail=doc_fail,
         error_count=err,
+        n_doc_match_fail_zeroed=n_zeroed,
+        n_no_ground_truth=n_no_gt,
     )
 
 
@@ -654,7 +685,18 @@ def _format_markdown(
     by_caption: list[GroupSummary],
     by_qtype_caption: list[GroupSummary],
     n_golden: int,
+    doc_match_fail_zeroed_ids: list[str] | None = None,
+    no_ground_truth_ids: list[str] | None = None,
 ) -> str:
+    doc_match_fail_zeroed_ids = doc_match_fail_zeroed_ids or []
+    no_ground_truth_ids = no_ground_truth_ids or []
+    # W-6 DECISION-6 — zeroed row 를 분모에서 제외했을 때의 R@10 (직전 inflate 기준).
+    # zeroed row 는 sum 에 0.0 기여 → sum 불변, 분모만 줄여서 환산.
+    n_zeroed = overall.n_doc_match_fail_zeroed
+    sum_recall = overall.avg_recall_at_10 * overall.n_chunk_evaluable
+    n_excl = overall.n_chunk_evaluable - n_zeroed
+    r10_excl_zeroed = (sum_recall / n_excl) if n_excl > 0 else 0.0
+
     lines: list[str] = []
     lines.append("# S4-A D4 — 골든셋 v2 R@10 3축 breakdown 측정")
     lines.append("")
@@ -666,6 +708,18 @@ def _format_markdown(
     )
     lines.append("- 외부 API 호출 0 (vision/Gemini/HF reranker 비활성)")
     lines.append("- 운영 코드 변경 0 — ENV 토글 + 측정 도구만")
+    lines.append(
+        "- **doc-match-fail "
+        f"{overall.n_doc_match_fail_zeroed} row (R@10=0 처리, DECISION-6"
+        f"{': ' + ', '.join(doc_match_fail_zeroed_ids) if doc_match_fail_zeroed_ids else ''})"
+        f" / ground-truth 없음 {overall.n_no_ground_truth} row (분모 제외, 별도 버킷"
+        f"{': ' + ', '.join(no_ground_truth_ids) if no_ground_truth_ids else ''})**"
+    )
+    lines.append(
+        f"- **이 정책으로 overall R@10 = {overall.avg_recall_at_10:.4f} "
+        f"(직전 분모-제외 기준 {r10_excl_zeroed:.4f}) — 회귀 아님, "
+        "정직성 정정 (PRD DECISION-6)**"
+    )
     lines.append("")
     lines.append("## §0 D4 시점 한계 (정직히 명시)")
     lines.append("")
@@ -683,7 +737,7 @@ def _format_markdown(
     lines.append("")
 
     # §1 — overall
-    lines.append("## §1 Overall (157 row baseline)")
+    lines.append(f"## §1 Overall ({n_golden} row baseline)")
     lines.append("")
     lines.append(
         "| n / n_eval | R@10 | nDCG@10 | MRR | top-1 | "
@@ -697,6 +751,21 @@ def _format_markdown(
         f"{overall.p95_latency_ms:.1f} | {overall.doc_match_fail} | "
         f"{overall.error_count} |"
     )
+    lines.append("")
+    lines.append(
+        f"- n_eval 분모 = {overall.n_chunk_evaluable} = "
+        f"정상 측정 row + doc-match-fail zeroed {overall.n_doc_match_fail_zeroed} row "
+        f"(R@10=0, DECISION-6). ground-truth 없음 {overall.n_no_ground_truth} row 는 "
+        "분모에서 제외 (recall 정의 `|relevant|=0` 불성립)."
+    )
+    if doc_match_fail_zeroed_ids:
+        lines.append(
+            f"  - doc-match-fail zeroed: {', '.join(doc_match_fail_zeroed_ids)}"
+        )
+    if no_ground_truth_ids:
+        lines.append(
+            f"  - ground-truth 없음 (분모 제외): {', '.join(no_ground_truth_ids)}"
+        )
     lines.append("")
 
     # §2 — qtype breakdown
@@ -803,7 +872,27 @@ def _format_markdown(
     lines.append("## §7 자동 추출 이슈")
     lines.append("")
     issues: list[str] = []
-    if overall.doc_match_fail > 0:
+    if overall.n_doc_match_fail_zeroed > 0:
+        issues.append(
+            f"- doc-match-fail **{overall.n_doc_match_fail_zeroed} row** "
+            f"({', '.join(doc_match_fail_zeroed_ids)}) — 정답 라벨이 있으나 search 응답에서 "
+            "target doc 가 안 잡힘 → R@10=0 으로 분모 포함 (DECISION-6). golden v2 의 "
+            "`expected_doc_title` 정정 또는 `|` 라벨 단일-doc 분할 검토 (M0-b)."
+        )
+    if overall.n_no_ground_truth > 0:
+        issues.append(
+            f"- ground-truth 없음 **{overall.n_no_ground_truth} row** "
+            f"({', '.join(no_ground_truth_ids)}) — relevant/acceptable 라벨이 비어 "
+            "recall 정의 불성립 → 분모 제외. negative/out_of_scope 류는 정상, "
+            "non-negative 인데 라벨 없는 row 는 M0-b 에서 라벨 보강 검토."
+        )
+    # 위 두 버킷(zeroed / no_ground_truth)이 이미 분류해 출력했으면 레거시 "doc 매칭 fail N건"
+    # 줄은 생략 — 합산 혼란 방지 (note 카운트 overall.doc_match_fail 은 raw json 에만 유지).
+    if (
+        overall.doc_match_fail > 0
+        and overall.n_doc_match_fail_zeroed == 0
+        and overall.n_no_ground_truth == 0
+    ):
         issues.append(
             f"- doc 매칭 fail **{overall.doc_match_fail}건** — "
             "expected_doc_title partial match 실패 (golden v2 title 정정 또는 search 응답 추적)."
@@ -854,6 +943,8 @@ def _serialize_cells(cells: list[CellResult]) -> list[dict[str, Any]]:
                 "reranker_path": c.reranker_path,
                 "predicted_top10": c.predicted_top10,
                 "note": c.note,
+                "doc_match_fail_zeroed": c.doc_match_fail_zeroed,
+                "no_ground_truth": c.no_ground_truth,
             }
         )
     return out
@@ -872,7 +963,103 @@ def _summary_to_dict(s: GroupSummary) -> dict[str, Any]:
         "avg_latency_ms": s.avg_latency_ms,
         "doc_match_fail": s.doc_match_fail,
         "error_count": s.error_count,
+        "n_doc_match_fail_zeroed": s.n_doc_match_fail_zeroed,
+        "n_no_ground_truth": s.n_no_ground_truth,
     }
+
+
+# ---------------------------------------------------------------------------
+# W-6 (B) — dense_vec NULL preflight WARN
+# ---------------------------------------------------------------------------
+
+# chunks 한 페이지 조회 단위 — 2469건 규모면 1~2 페이지면 충분하나 안전하게 페이지네이션.
+_DENSE_NULL_PAGE_SIZE = 1000
+
+
+def _warn_stale_dense_vec(*, strict: bool) -> int:
+    """측정 시작 직전 1회 — `chunks` 의 `dense_vec IS NULL` row 점검.
+
+    - 0 건: ``[INFO] dense_vec NULL chunk 0건 — OK`` 출력, 0 반환.
+    - >0 건: ``[WARN] dense_vec NULL chunk N건 — stale data 가능 (sample-report
+      2026-05-12 사고 참조)`` + doc_id 별 카운트 목록 출력, N 반환. ``strict`` 면
+      호출 측(main)이 종료코드 2 로 측정을 중단.
+    - Supabase 접속 실패: ``[WARN] dense_vec 점검 skip — Supabase 접속 실패: <reason>``
+      만 출력, -1 반환 (eval 막지 않음). ``strict`` 여도 측정은 진행.
+
+    `evals/_repair_sample_report_dense_vec.py` 의 NULL count 쿼리 패턴 재사용.
+    """
+    try:
+        from app.db.client import get_supabase_client  # noqa: E402
+
+        client = get_supabase_client()
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[WARN] dense_vec 점검 skip — Supabase 접속 실패: "
+            f"{exc.__class__.__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return -1
+
+    try:
+        head = (
+            client.table("chunks")
+            .select("id", count="exact")
+            .is_("dense_vec", "null")
+            .limit(1)
+            .execute()
+        )
+        n_null = head.count or 0
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[WARN] dense_vec 점검 skip — count 쿼리 실패: "
+            f"{exc.__class__.__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return -1
+
+    if n_null == 0:
+        print("[INFO] dense_vec NULL chunk 0건 — OK", file=sys.stderr)
+        return 0
+
+    print(
+        f"[WARN] dense_vec NULL chunk {n_null}건 — stale data 가능 "
+        "(sample-report 2026-05-12 사고 참조)",
+        file=sys.stderr,
+    )
+    # doc_id 별 카운트 — 페이지네이션으로 dense_vec NULL chunk 의 doc_id 만 끌어옴.
+    try:
+        per_doc: dict[str, int] = defaultdict(int)
+        offset = 0
+        while True:
+            page = (
+                client.table("chunks")
+                .select("doc_id")
+                .is_("dense_vec", "null")
+                .range(offset, offset + _DENSE_NULL_PAGE_SIZE - 1)
+                .execute()
+            )
+            rows = page.data or []
+            if not rows:
+                break
+            for r in rows:
+                per_doc[r.get("doc_id") or "(none)"] += 1
+            if len(rows) < _DENSE_NULL_PAGE_SIZE:
+                break
+            offset += _DENSE_NULL_PAGE_SIZE
+        for doc_id, cnt in sorted(per_doc.items(), key=lambda kv: -kv[1]):
+            print(f"  - doc_id={doc_id}: {cnt}건", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"  (doc_id별 카운트 조회 실패 — {exc.__class__.__name__}: {exc})",
+            file=sys.stderr,
+        )
+
+    if strict:
+        print(
+            "[ERROR] --fail-on-null-dense-vec 설정 — dense_vec NULL > 0 으로 측정 중단",
+            file=sys.stderr,
+        )
+    return n_null
 
 
 # ---------------------------------------------------------------------------
@@ -954,6 +1141,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=0,
         help="측정 row 제한 (디버그용, 0=전체)",
     )
+    p.add_argument(
+        "--fail-on-null-dense-vec",
+        action="store_true",
+        help="chunks 에 dense_vec NULL row 가 있으면 측정 중단 (default: WARN 만)",
+    )
     return p.parse_args(argv)
 
 
@@ -973,11 +1165,18 @@ def main(argv: list[str] | None = None) -> int:
         )
     print(f"[INFO] 골든셋 v2 row 수: {len(rows)}", file=sys.stderr)
 
+    # W-6 (B) — 측정 전 dense_vec NULL preflight (sample-report 사고 재발 방지).
+    n_null_dense = _warn_stale_dense_vec(strict=args.fail_on_null_dense_vec)
+    if args.fail_on_null_dense_vec and n_null_dense > 0:
+        return 2
+
     t0 = time.monotonic()
     cells = _measure_all(rows)
     elapsed = time.monotonic() - t0
 
     overall, by_qt, by_dt, by_cap, by_qt_cap = aggregate_all(cells)
+    doc_match_fail_zeroed_ids = [c.golden_id for c in cells if c.doc_match_fail_zeroed]
+    no_ground_truth_ids = [c.golden_id for c in cells if c.no_ground_truth]
     print(
         f"[INFO] 측정 완료 — {elapsed:.1f}s, "
         f"R@10={overall.avg_recall_at_10:.4f}, "
@@ -993,6 +1192,8 @@ def main(argv: list[str] | None = None) -> int:
         by_caption=by_cap,
         by_qtype_caption=by_qt_cap,
         n_golden=len(rows),
+        doc_match_fail_zeroed_ids=doc_match_fail_zeroed_ids,
+        no_ground_truth_ids=no_ground_truth_ids,
     )
     out_md = Path(args.out)
     out_md.parent.mkdir(parents=True, exist_ok=True)
@@ -1005,6 +1206,9 @@ def main(argv: list[str] | None = None) -> int:
         "n_golden": len(rows),
         "elapsed_sec": round(elapsed, 2),
         "baseline_env": _BASELINE_ENV,
+        "n_null_dense_vec": n_null_dense,
+        "doc_match_fail_zeroed_ids": doc_match_fail_zeroed_ids,
+        "no_ground_truth_ids": no_ground_truth_ids,
         "overall": _summary_to_dict(overall),
         "by_qtype": [_summary_to_dict(s) for s in by_qt],
         "by_doc_type": [_summary_to_dict(s) for s in by_dt],
