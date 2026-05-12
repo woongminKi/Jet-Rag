@@ -228,58 +228,84 @@ class AcceptableChunkExtractTest(unittest.TestCase):
         self.assertEqual(v2_row["doc_type"], "hwp")
 
 
-class CrossDocSubDocTopOneTest(unittest.TestCase):
-    """cross_doc — sub_doc 별 top-1 합산."""
+class CrossDocSkipTest(unittest.TestCase):
+    """D 결정 — cross_doc row 는 인간 라벨 보존 (자동 cosine 라벨 폐기).
 
-    def test_pipe_separator_aggregates_top1_per_subdoc(self) -> None:
+    `query_type == "cross_doc"` row 는 build_v2_row 가 early return —
+    relevant/acceptable 빈 라벨 그대로, embed/chunk fetch 미호출,
+    `cross_doc_processed` 만 +1.
+    """
+
+    def test_cross_doc_keeps_empty_labels_and_counts(self) -> None:
         from build_golden_v2 import build_v2_row, BuildStats
 
-        # 두 sub_doc — `|` 분리. 각 doc 마다 top-1 chunk 채택.
         doc_a = _make_doc("doc-A", "law sample2", "hwp")
         doc_b = _make_doc("doc-B", "law sample3", "pdf")
-        docs_index = {
-            doc_a.title_norm: doc_a,
-            doc_b.title_norm: doc_b,
-        }
-
-        chunks_by_doc = {
-            "doc-A": [
-                _make_chunk(10, "doc A 정답 chunk", dense_vec=[1.0, 0.0, 0.0]),
-                _make_chunk(11, "doc A 다른 chunk", dense_vec=[0.3, 0.9, 0.0]),
-            ],
-            "doc-B": [
-                _make_chunk(20, "doc B 다른 chunk", dense_vec=[0.2, 0.9, 0.3]),
-                _make_chunk(21, "doc B 정답 chunk", dense_vec=[0.95, 0.3, 0.05]),
-            ],
-        }
+        docs_index = {doc_a.title_norm: doc_a, doc_b.title_norm: doc_b}
 
         v1_row = {
-            "id": "G-U-300",
-            "query": "법률 자료 비교",
+            "id": "G-A-128",
+            "query": "두 판결에서 대법원 결정은?",
             "query_type": "cross_doc",
             "doc_id": "",
-            "expected_doc_title": "law sample2|law sample3",  # cross_doc
+            "expected_doc_title": "law sample2|law sample3",
+            # 빈 라벨 — 예전엔 자동 cosine 으로 채웠으나 이제 보존
             "relevant_chunks": "",
             "acceptable_chunks": "",
             "must_include": "",
             "negative": "false",
         }
 
+        fetch_calls: list[str] = []
+        embed_calls: list[str] = []
+
         stats = BuildStats()
         v2_row = build_v2_row(
             v1_row,
             docs_index=docs_index,
-            fetch_chunks_fn=lambda doc_id: chunks_by_doc.get(doc_id, []),
-            embed_query_fn=lambda _q: [1.0, 0.0, 0.0],
+            fetch_chunks_fn=lambda doc_id: fetch_calls.append(doc_id) or [],
+            embed_query_fn=lambda q: embed_calls.append(q) or [1.0],
             threshold=0.99,
             stats=stats,
         )
 
-        rel_idxs = set(v2_row["relevant_chunks"].split(","))
-        # 각 sub_doc 의 top-1 — doc-A: chunk 10 (cosine 1.0), doc-B: chunk 21 (cosine 0.95)
-        self.assertIn("10", rel_idxs)
-        self.assertIn("21", rel_idxs)
-        # cross_doc 카운트 +1
+        # 라벨 보존 — 빈 값 그대로
+        self.assertEqual(v2_row["relevant_chunks"], "")
+        self.assertEqual(v2_row["acceptable_chunks"], "")
+        # 자동 라벨 폐기 — embed / chunk fetch 미호출
+        self.assertEqual(fetch_calls, [])
+        self.assertEqual(embed_calls, [])
+        # cross_doc 집계만 +1
+        self.assertEqual(stats.cross_doc_processed, 1)
+        self.assertEqual(stats.relevant_filled, 0)
+        self.assertEqual(stats.acceptable_filled, 0)
+
+    def test_cross_doc_preserves_existing_human_labels(self) -> None:
+        """이미 사람이 단 `alias:idx` 라벨이 있으면 그대로 보존 (덮어쓰지 않음)."""
+        from build_golden_v2 import build_v2_row, BuildStats
+
+        v1_row = {
+            "id": "G-U-031",
+            "query": "두 자료에서 안전 관련 내용 있어?",
+            "query_type": "cross_doc",
+            "doc_id": "",
+            "expected_doc_title": "sonata|2025년 데이터센터 안내서",
+            "relevant_chunks": "쏘나타:25,데이터센터:344",
+            "acceptable_chunks": "쏘나타:11,데이터센터:346",
+            "must_include": "안전",
+            "negative": "false",
+        }
+        stats = BuildStats()
+        v2_row = build_v2_row(
+            v1_row,
+            docs_index={},
+            fetch_chunks_fn=lambda _doc_id: [],
+            embed_query_fn=lambda _q: [1.0],
+            threshold=0.7,
+            stats=stats,
+        )
+        self.assertEqual(v2_row["relevant_chunks"], "쏘나타:25,데이터센터:344")
+        self.assertEqual(v2_row["acceptable_chunks"], "쏘나타:11,데이터센터:346")
         self.assertEqual(stats.cross_doc_processed, 1)
 
 

@@ -1,0 +1,13 @@
+{
+  "운영내규":   {"doc_id": "2e083cb0-05c3-4910-8345-2658c46fb7ed", "title_prefix": "한마음생활체육관_운영_내규"},
+  "직제규정":   {"doc_id": "a5f3cfae-5059-41d4-8623-e9b6f23231c2", "title_prefix": "직제_규정"},
+  "데이터센터": {"doc_id": "b218e8a1-cb35-4540-b969-f0f4fac517fa", "title_prefix": "데이터센터 산업"},
+  "보건의료":   {"doc_id": "2303ef36-7502-407a-8a88-3c0dc63c8464", "title_prefix": "보건의료_빅데이터"},
+  "기웅민이력서": {"doc_id": "51dd2cc0-4105-43c4-9585-6026a012a9cc", "title_prefix": "기웅민 이력서"},
+  "이한주포폴": {"doc_id": "9878d7bd-4766-40fa-bebb-7da45f879768", "title_prefix": "포트폴리오_이한주"},
+  "승인1":      {"doc_id": "88920c9e-0961-4811-8f6a-02ca1bf02820", "title_prefix": "승인글 템플릿1"},
+  "승인3":      {"doc_id": "75c74e4c-aa09-4ca5-9d36-7ba9af4d5bf5", "title_prefix": "승인글 템플릿3"},
+  "law2":       {"doc_id": "80b48fa9-fe83-4fef-af31-af116494183d", "title_prefix": "law sample2"},
+  "law3":       {"doc_id": "0ed5a024-e076-4893-a766-90b5d689f372", "title_prefix": "law sample3"},
+  "쏘나타":     {"doc_id": "92c38315-659e-42f4-9043-8cec1d62823a", "title_prefix": "sonata"}
+}

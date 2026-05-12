@@ -221,6 +221,57 @@ class GradedRecallFourCaseTest(unittest.TestCase):
         self.assertEqual(result, 0.0)
 
 
+class CrossDocTupleKeyTest(unittest.TestCase):
+    """golden_v2 cross_doc relabel — chunk key 가 `(alias, chunk_idx)` 튜플인 경우.
+
+    retrieval_metrics 는 set `in` 비교만 쓰므로 hashable key 면 형태 무관.
+    int key 와 동일한 수치가 나와야 한다 (회귀 보호).
+    """
+
+    def test_recall_with_tuple_keys(self) -> None:
+        from app.services.retrieval_metrics import recall_at_k
+
+        relv = {("law2", 10), ("law3", 13)}
+        accept = {("law2", 27), ("law2", 29), ("law3", 24)}
+        predicted = [("law2", 10), ("law2", 99), ("law3", 24), ("law3", 13)]
+        # hit_score = 1.0 (law2:10) + 0 + 0.5 (law3:24) + 1.0 (law3:13) = 2.5
+        # max_score (cap k=10) = 1.0+1.0 + 0.5+0.5+0.5 = 3.5
+        result = recall_at_k(predicted, relv, k=10, acceptable_chunks=accept)
+        self.assertAlmostEqual(result, 2.5 / 3.5, places=4)
+
+    def test_mrr_with_tuple_keys_relevant_priority(self) -> None:
+        from app.services.retrieval_metrics import mrr
+
+        # ranking [law2:27(accept), law2:10(relevant)] → relevant rank 2 우선? 아니다 —
+        # mrr 는 "첫 hit" 기준. rank 1 이 acceptable hit → 0.5/1 = 0.5.
+        relv = {("law2", 10)}
+        accept = {("law2", 27)}
+        result = mrr([("law2", 27), ("law2", 10)], relv, k=10, acceptable_chunks=accept)
+        self.assertAlmostEqual(result, 0.5, places=4)
+        # relevant 가 rank 1 이면 1.0
+        result2 = mrr([("law2", 10), ("law2", 27)], relv, k=10, acceptable_chunks=accept)
+        self.assertEqual(result2, 1.0)
+
+    def test_ndcg_with_tuple_keys(self) -> None:
+        from app.services.retrieval_metrics import ndcg_at_k
+        import math
+
+        # ranking [a:1(rel), a:2(accept)] / relevant {a:1} / acceptable {a:2}
+        # DCG = 1.0/log2(2) + 0.5/log2(3) ; IDCG 동일 → 1.0
+        relv = {("a", 1)}
+        accept = {("a", 2)}
+        result = ndcg_at_k([("a", 1), ("a", 2)], relv, k=10, acceptable_chunks=accept)
+        self.assertAlmostEqual(result, 1.0, places=4)
+
+    def test_int_keys_still_work(self) -> None:
+        """generic 화 이후에도 int key 입력은 기존 동작 그대로 (하위 호환)."""
+        from app.services.retrieval_metrics import recall_at_k, mrr, ndcg_at_k
+
+        self.assertEqual(recall_at_k([1, 2, 3], {1, 2, 3}, k=10), 1.0)
+        self.assertEqual(mrr([1, 99], {1}, k=10), 1.0)
+        self.assertAlmostEqual(ndcg_at_k([1, 2, 3, 99], {1, 2, 3}, k=10), 1.0)
+
+
 class AggregateMetricsTest(unittest.TestCase):
     def test_empty_input(self) -> None:
         from app.services.retrieval_metrics import aggregate_metrics

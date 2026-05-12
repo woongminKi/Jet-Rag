@@ -73,11 +73,83 @@ if (_API_PATH / "app").exists():
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _GOLDEN_V2_CSV = _REPO_ROOT / "evals" / "golden_v2.csv"
+_CROSS_DOC_ALIAS_MAP = _REPO_ROOT / "evals" / "cross_doc_alias_map.json"
 _DEFAULT_OUT_MD = _REPO_ROOT / "evals" / "results" / "s4_a_d4_results.md"
 _DEFAULT_OUT_JSON = _REPO_ROOT / "evals" / "results" / "s4_a_d4_raw.json"
 
 # search 응답 top-K — 한 doc 에 매칭 청크 최대 50건.
 _SEARCH_LIMIT = 50
+
+# cross_doc 골든셋의 query_type 값 — 정답 라벨이 `(alias, chunk_idx)` 튜플 path 로 처리됨.
+_CROSS_DOC_QTYPE = "cross_doc"
+
+# cross_doc 라벨 토큰 separator — `alias:chunk_idx` (예: `law2:10`).
+_CROSS_DOC_LABEL_SEP = ":"
+
+
+# ---------------------------------------------------------------------------
+# cross_doc alias map — build/eval 양쪽 단일 출처
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _AliasEntry:
+    """cross_doc 자료 별칭 → ground-truth doc_id + title prefix."""
+
+    doc_id: str
+    title_prefix: str
+
+
+def _load_alias_map(path: Path = _CROSS_DOC_ALIAS_MAP) -> dict[str, _AliasEntry]:
+    """`evals/cross_doc_alias_map.json` 로드 — alias → _AliasEntry."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return {
+        alias: _AliasEntry(doc_id=v["doc_id"], title_prefix=v["title_prefix"])
+        for alias, v in raw.items()
+    }
+
+
+# 모듈 import 시 1회 로드 — alias→entry 와 doc_id→alias 역인덱스 둘 다.
+_ALIAS_MAP: dict[str, _AliasEntry] = _load_alias_map()
+_DOC_ID_TO_ALIAS: dict[str, str] = {e.doc_id: a for a, e in _ALIAS_MAP.items()}
+
+
+def _parse_chunk_label(raw: str, *, is_cross_doc: bool) -> tuple:
+    """golden_v2 의 relevant/acceptable 컬럼 파싱.
+
+    - cross_doc row: 각 토큰이 `alias:chunk_idx` (예: `law2:10`) → `(alias, int)` 튜플.
+      alias 가 alias_map 에 없으면 ValueError (라벨 오타 조기 검출).
+    - single-doc row: 각 토큰이 정수 chunk_idx → `int`.
+    빈 문자열·비숫자 토큰은 무시 (기존 동작 보존).
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return ()
+    out: list = []
+    for tok in raw.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if is_cross_doc:
+            if _CROSS_DOC_LABEL_SEP not in tok:
+                raise ValueError(
+                    f"cross_doc 라벨 토큰에 `:` 없음: {tok!r} (raw={raw!r})"
+                )
+            alias, _, idx_str = tok.partition(_CROSS_DOC_LABEL_SEP)
+            alias = alias.strip()
+            idx_str = idx_str.strip()
+            if alias not in _ALIAS_MAP:
+                raise ValueError(
+                    f"cross_doc 라벨의 미등록 alias: {alias!r} "
+                    f"(alias_map 키: {sorted(_ALIAS_MAP)})"
+                )
+            if not idx_str.lstrip("-").isdigit():
+                raise ValueError(f"cross_doc 라벨 chunk_idx 비정수: {tok!r}")
+            out.append((alias, int(idx_str)))
+        else:
+            if tok.lstrip("-").isdigit():
+                out.append(int(tok))
+    return tuple(out)
 
 # RRF-only baseline ENV — S3 D5 combo `a` 와 동일.
 _BASELINE_ENV: dict[str, str] = {
@@ -96,17 +168,27 @@ class GoldenV2Row:
     """골든셋 v2 의 측정 대상 row.
 
     v1 12 컬럼 + S4-A D3 추가 2 컬럼 (`doc_type` / `caption_dependent`).
+
+    relevant_chunks / acceptable_chunks 의 원소 타입:
+    - single-doc row: ``int`` (chunk_idx)
+    - cross_doc row (`query_type == "cross_doc"`): ``(alias, chunk_idx)`` 튜플 —
+      정답 chunk 가 여러 doc 에 흩어져 있어 doc 식별이 필요. alias 는
+      `evals/cross_doc_alias_map.json` 키.
     """
 
     id: str
     query: str
     query_type: str
-    doc_id: str  # UUID 또는 빈 문자열 (U-row, cross_doc 의도 가능)
+    doc_id: str  # UUID 또는 빈 문자열 (U-row, cross_doc 가능)
     expected_doc_title: str
-    relevant_chunks: tuple[int, ...]
-    acceptable_chunks: tuple[int, ...]
+    relevant_chunks: tuple
+    acceptable_chunks: tuple
     doc_type: str  # pdf / hwpx / hwp / pptx / docx / "" (U-row)
     caption_dependent: bool
+
+    @property
+    def is_cross_doc(self) -> bool:
+        return self.query_type == _CROSS_DOC_QTYPE
 
 
 @dataclass
@@ -127,7 +209,8 @@ class CellResult:
     latency_ms: float = 0.0
     reranker_path: str = "disabled"
     note: str = ""
-    predicted_top10: list[int] = field(default_factory=list)
+    # single-doc = list[int] / cross_doc = list[(alias, chunk_idx)] (B 결정).
+    predicted_top10: list = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +219,12 @@ class CellResult:
 
 
 def _load_golden_v2(csv_path: Path) -> list[GoldenV2Row]:
-    """골든셋 v2 전체 row 로드 — utf-8-sig 로 BOM 제거."""
+    """골든셋 v2 전체 row 로드 — utf-8-sig 로 BOM 제거.
+
+    cross_doc row (`query_type == "cross_doc"`) 의 relevant/acceptable 라벨은
+    `alias:chunk_idx` 형식 → `(alias, chunk_idx)` 튜플로 파싱. 그 외 row 는
+    정수 chunk_idx tuple (기존 동작).
+    """
     out: list[GoldenV2Row] = []
     with csv_path.open(encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
@@ -144,20 +232,18 @@ def _load_golden_v2(csv_path: Path) -> list[GoldenV2Row]:
             qid = (row.get("id") or "").strip()
             if not qid:
                 continue
-            relv_str = (row.get("relevant_chunks") or "").strip()
-            relv = tuple(
-                int(x.strip()) for x in relv_str.split(",") if x.strip().isdigit()
-            )
-            accept_str = (row.get("acceptable_chunks") or "").strip()
-            accept = tuple(
-                int(x.strip()) for x in accept_str.split(",") if x.strip().isdigit()
+            qtype = (row.get("query_type") or "").strip()
+            is_cd = qtype == _CROSS_DOC_QTYPE
+            relv = _parse_chunk_label(row.get("relevant_chunks"), is_cross_doc=is_cd)
+            accept = _parse_chunk_label(
+                row.get("acceptable_chunks"), is_cross_doc=is_cd
             )
             cap_dep_raw = (row.get("caption_dependent") or "").strip().lower()
             out.append(
                 GoldenV2Row(
                     id=qid,
                     query=(row.get("query") or "").strip(),
-                    query_type=(row.get("query_type") or "").strip(),
+                    query_type=qtype,
                     doc_id=(row.get("doc_id") or "").strip(),
                     expected_doc_title=(row.get("expected_doc_title") or "").strip(),
                     relevant_chunks=relv,
@@ -246,22 +332,41 @@ def _measure_one_cell(g: GoldenV2Row) -> CellResult:
     qp = data.get("query_parsed") or {}
     cell.reranker_path = qp.get("reranker_path") or "disabled"
 
-    target_items = _pick_target_items(items, g)
-    if not target_items:
-        cell.note = "doc 매칭 fail"
-        return cell
+    if g.is_cross_doc:
+        # A 결정 — cross_doc 은 alias_map.doc_id 로 target item 직접 선별 +
+        # 각 chunk 에 `(alias, chunk_idx)` 부여 (title prefix 미사용).
+        target_items = _pick_cross_doc_items(items, g)
+        if not target_items:
+            cell.note = "doc 매칭 fail"
+            return cell
+        merged_keyed: list[tuple[tuple, float]] = []
+        for it in target_items:
+            alias = _DOC_ID_TO_ALIAS.get(it.get("doc_id") or "")
+            if alias is None:
+                continue  # C 결정 — alias_map 미등록 doc_id item skip
+            for c in it.get("matched_chunks") or []:
+                merged_keyed.append(
+                    ((alias, c["chunk_idx"]), c.get("rrf_score") or 0.0)
+                )
+        merged_keyed.sort(key=lambda x: x[1], reverse=True)
+        chunks_top: list = [key for key, _ in merged_keyed]
+    else:
+        target_items = _pick_target_items(items, g)
+        if not target_items:
+            cell.note = "doc 매칭 fail"
+            return cell
+        # Phase 2-A — multi-doc U-row 한정 다중 item matched_chunks 합산.
+        # Single-doc / single-item 일 때는 기존 path 와 동치 (하위 호환).
+        merged: list[dict[str, Any]] = []
+        for it in target_items:
+            merged.extend(it.get("matched_chunks") or [])
+        matched = sorted(
+            merged,
+            key=lambda c: (c.get("rrf_score") or 0.0),
+            reverse=True,
+        )
+        chunks_top = [c["chunk_idx"] for c in matched]
 
-    # Phase 2-A — multi-doc cross_doc U-row 한정으로 다중 item 의 matched_chunks 합산.
-    # Single-doc / single-item 일 때는 기존 path 와 동치 (하위 호환).
-    merged: list[dict[str, Any]] = []
-    for it in target_items:
-        merged.extend(it.get("matched_chunks") or [])
-    matched = sorted(
-        merged,
-        key=lambda c: (c.get("rrf_score") or 0.0),
-        reverse=True,
-    )
-    chunks_top: list[int] = [c["chunk_idx"] for c in matched]
     cell.predicted_top10 = chunks_top[:10]
 
     if g.relevant_chunks or g.acceptable_chunks:
@@ -283,26 +388,53 @@ def _measure_one_cell(g: GoldenV2Row) -> CellResult:
     return cell
 
 
+def _cross_doc_target_doc_ids(g: GoldenV2Row) -> set[str]:
+    """cross_doc row 의 ground-truth target doc_id 집합.
+
+    relevant/acceptable 라벨에 등장한 alias 들의 doc_id (alias_map). 라벨이
+    `(alias, chunk_idx)` 튜플 형태임을 가정 (`_load_golden_v2` 가 보장).
+    """
+    aliases: set[str] = set()
+    for key in tuple(g.relevant_chunks) + tuple(g.acceptable_chunks):
+        if isinstance(key, tuple):
+            aliases.add(key[0])
+    return {_ALIAS_MAP[a].doc_id for a in aliases if a in _ALIAS_MAP}
+
+
+def _pick_cross_doc_items(
+    items: list[dict[str, Any]], g: GoldenV2Row
+) -> list[dict[str, Any]]:
+    """A 결정 — cross_doc search 응답 items 중 target doc_id 인 것만 선택.
+
+    target doc_id = 라벨에 등장한 alias 들의 alias_map.doc_id (ground truth).
+    alias_map 미등록 doc_id 가 응답에 끼면 자동 제외 (target set 에 없음).
+    target doc 중 하나도 응답에 없으면 빈 list → 호출 측에서 "doc 매칭 fail".
+    """
+    target_ids = _cross_doc_target_doc_ids(g)
+    if not target_ids:
+        return []
+    return [it for it in items if (it.get("doc_id") or "") in target_ids]
+
+
 def _pick_target_items(
     items: list[dict[str, Any]], g: GoldenV2Row
 ) -> list[dict[str, Any]]:
     """search 응답 items 중 golden row 의 expected doc 와 매칭되는 item 들 선택.
 
-    Phase 2-A 보강 — multi-doc cross_doc U-row 의 R@10 폭락 fix.
+    ⚠ cross_doc row (`g.is_cross_doc`) 는 본 함수가 아니라 ``_pick_cross_doc_items``
+    가 처리한다 (A 결정 — alias_map.doc_id 직접 선별, title prefix 미사용).
+    본 함수는 single-doc + ``|`` separator U-row (예: G-U-018 fuzzy_memory) 만 담당.
 
     매칭 규칙
     --------
     - doc_id 명시 row → ``it.doc_id == g.doc_id`` 단일 item (single-doc, 1건).
     - U-row (doc_id 비어있음) + ``|`` separator 없는 expected_doc_title →
       title 12자 prefix 매칭 1건 + RRF top-1 fallback (하위 호환, single-doc 동치).
-    - U-row + ``|`` separator 있는 expected_doc_title → 각 sub-title 12자 prefix
-      매칭 item 합산 (multi-doc, 1+ 건). cross_doc 정답 chunk 가 다중 doc 에
-      흩어진 경우 모든 doc 의 matched_chunks 를 RRF desc 합산해 R@10 측정.
+    - U-row + ``|`` separator 있는 expected_doc_title (cross_doc 아님) → 각 sub-title
+      12자 prefix 매칭 item 합산. 라벨이 정수 chunk_idx (doc 무관) 인 경우.
 
-    합산 대상 item 은 RRF score 중복 없이 search 응답 그대로. predicted_top10 의
-    chunk_idx 는 chunks 테이블이 (doc_id, chunk_idx) unique 라도 cross_doc U-row
-    가 라벨러가 chunk_idx 만 명시한 schema (relevant=`15,0` 등) 라 doc 무관 비교.
-    중복 chunk_idx 가 다른 doc 에서 등장 시 RRF score 큰 쪽이 먼저 정렬됨.
+    합산 대상 item 은 RRF score 중복 없이 search 응답 그대로. 중복 chunk_idx 가
+    다른 doc 에서 등장 시 RRF score 큰 쪽이 먼저 정렬됨.
     """
     if g.doc_id:
         for it in items:

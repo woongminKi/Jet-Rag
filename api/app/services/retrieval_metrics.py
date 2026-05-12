@@ -10,19 +10,29 @@ D1 정정 (W25 D14+1 sprint 종합):
 - acceptable_chunks: 사용자 의도에 적합하지만 narrow 정답은 아닌 chunks (weight 0.5)
                     BGE-M3 cosine ≥ 0.7 자동 라벨 가능 (auto_goldenset.py)
 
-본 모듈은 list[int] 단순 입력 받아 메트릭만 계산 — 외부 의존성 0.
+본 모듈은 list[ChunkKey] 단순 입력 받아 메트릭만 계산 — 외부 의존성 0.
+
+ChunkKey
+--------
+단일-doc 골든셋은 chunk_idx (``int``) 가 키. cross_doc 골든셋(C 결정)은 정답
+chunk 가 doc 간 흩어져 ``(alias, chunk_idx)`` 튜플이 키. 본 모듈은 두 형태를
+구분 없이 처리한다 — ``in`` / set 비교만 쓰므로 hashable 이면 무엇이든 무관.
+하위 호환 — ``int`` 입력은 기존 동작 그대로.
 """
 
 from __future__ import annotations
 
 import math
-from typing import Iterable
+from typing import Iterable, Union
+
+# 단일-doc = int chunk_idx / cross_doc = (alias, chunk_idx) 튜플.
+ChunkKey = Union[int, tuple[str, int]]
 
 
 def _relevance_score(
-    chunk_idx: int,
-    relevant_set: set[int],
-    acceptable_set: set[int] | None = None,
+    chunk_key: ChunkKey,
+    relevant_set: set[ChunkKey],
+    acceptable_set: set[ChunkKey] | None = None,
 ) -> float:
     """chunk 의 graded relevance score.
 
@@ -32,18 +42,18 @@ def _relevance_score(
 
     acceptable_set None 시 binary relevance 와 동일.
     """
-    if chunk_idx in relevant_set:
+    if chunk_key in relevant_set:
         return 1.0
-    if acceptable_set and chunk_idx in acceptable_set:
+    if acceptable_set and chunk_key in acceptable_set:
         return 0.5
     return 0.0
 
 
 def recall_at_k(
-    predicted_chunks: list[int],
-    relevant_chunks: set[int] | Iterable[int],
+    predicted_chunks: list[ChunkKey],
+    relevant_chunks: set[ChunkKey] | Iterable[ChunkKey],
     k: int = 10,
-    acceptable_chunks: set[int] | Iterable[int] | None = None,
+    acceptable_chunks: set[ChunkKey] | Iterable[ChunkKey] | None = None,
 ) -> float:
     """Recall@K — top-K 예측 중 (relevant + acceptable) 가 잡힌 비율 (graded).
 
@@ -72,10 +82,10 @@ def recall_at_k(
 
 
 def mrr(
-    predicted_chunks: list[int],
-    relevant_chunks: set[int] | Iterable[int],
+    predicted_chunks: list[ChunkKey],
+    relevant_chunks: set[ChunkKey] | Iterable[ChunkKey],
     k: int = 10,
-    acceptable_chunks: set[int] | Iterable[int] | None = None,
+    acceptable_chunks: set[ChunkKey] | Iterable[ChunkKey] | None = None,
 ) -> float:
     """Mean Reciprocal Rank — top-K 내 첫 hit 의 1/rank.
 
@@ -93,10 +103,10 @@ def mrr(
 
 
 def ndcg_at_k(
-    predicted_chunks: list[int],
-    relevant_chunks: set[int] | Iterable[int],
+    predicted_chunks: list[ChunkKey],
+    relevant_chunks: set[ChunkKey] | Iterable[ChunkKey],
     k: int = 10,
-    acceptable_chunks: set[int] | Iterable[int] | None = None,
+    acceptable_chunks: set[ChunkKey] | Iterable[ChunkKey] | None = None,
 ) -> float:
     """nDCG@K (graded relevance) — DCG / IDCG.
 

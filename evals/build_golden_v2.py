@@ -492,16 +492,25 @@ def build_v2_row(
     query = row.get("query") or ""
     title_raw = row.get("expected_doc_title") or ""
     must_include = parse_must_include(row.get("must_include") or "")
+    qtype_raw = (row.get("query_type") or "").strip()
 
     # negative row — doc_id/relevant/acceptable 모두 빈 값 유지, doc_type/caption 만 처리
     if is_negative:
         row["caption_dependent"] = (
-            "true" if (row.get("query_type") or "") in _CAPTION_QUERY_TYPES else "false"
+            "true" if qtype_raw in _CAPTION_QUERY_TYPES else "false"
         )
         row["doc_type"] = ""
         return row
 
-    # cross_doc — `|` 분리된 sub-title 다중 매칭
+    # D 결정 — cross_doc row 는 인간 라벨 보존. 자동 cosine 휴리스틱(query embed +
+    # sub-doc top-1)을 폐기한다. cross_doc 정답 라벨은 `alias:chunk_idx` 형식이고
+    # 정답 chunk 가 doc 간 비대칭 분포 → cosine top-1 추정이 실제와 어긋났음
+    # (G-U-031/032 등). embed 호출도 하지 않는다. stats 집계만 갱신.
+    if qtype_raw == "cross_doc":
+        stats.cross_doc_processed += 1
+        return row
+
+    # `|` 분리 sub-title — cross_doc 아닌 multi-title U-row (예: G-U-018 fuzzy_memory)
     sub_titles = split_cross_doc_titles(title_raw)
     is_cross_doc = len(sub_titles) >= 2
 
