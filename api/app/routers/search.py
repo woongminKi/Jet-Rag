@@ -122,11 +122,44 @@ _VISION_META_BODY_SEP = "\n\n"
 
 # 2026-05-10 — S4-B 엔티티 매칭 boost (opt-in, default OFF).
 # query 의 entities (dates/amounts/percentages/identifiers) 와 chunks.metadata.entities
-# 매칭 chunks 의 RRF score boost (factor 1.10). 새 ingest 부터 적용 가능 (기존
-# chunks 영향 0 = entities 키 없음 → boost 0).
+# 매칭 chunks 의 RRF score boost. 새 ingest 부터 적용 가능 (기존 chunks 는
+# `evals/backfill_chunk_entities.py --apply` 백필 후 적용).
 # ENV `JETRAG_ENTITY_BOOST=true` 시 활성. backfill 후 ablation 측정 권고.
+# 2026-05-12 — factor 를 `JETRAG_ENTITY_BOOST_FACTOR` ENV 화 (default 1.10, [0.5,3.0]).
+# ablation 측정용 — production default 변경은 사용자 사인오프 후.
 _ENTITY_BOOST_ENV = "JETRAG_ENTITY_BOOST"
-_ENTITY_BOOST_FACTOR = 1.10  # 작은 boost — 회귀 risk 최소화
+_ENTITY_BOOST_FACTOR_ENV = "JETRAG_ENTITY_BOOST_FACTOR"
+_ENTITY_BOOST_FACTOR_DEFAULT = 1.10  # 작은 boost — 회귀 risk 최소화
+_ENTITY_BOOST_FACTOR_MIN = 0.5
+_ENTITY_BOOST_FACTOR_MAX = 3.0
+
+
+def _parse_factor_env(
+    name: str,
+    default: float = _ENTITY_BOOST_FACTOR_DEFAULT,
+    lo: float = _ENTITY_BOOST_FACTOR_MIN,
+    hi: float = _ENTITY_BOOST_FACTOR_MAX,
+) -> float:
+    """ENV 의 float factor parse — 비숫자/음수/[lo, hi] 범위 밖이면 default fallback.
+
+    config._parse_float 와 달리 상한·하한 클램프(범위 밖 → default)를 포함 — entity_boost
+    factor 가 극단값일 때 cover/toc guard(×0.3) 와 곱해 ranking 이 깨지는 것을 모듈 import
+    시점에 차단. silent fallback (운영 graceful).
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if value < lo or value > hi:
+        return default
+    return value
+
+
+# 모듈 import 시 1회 parse — 상수처럼 사용. ENV 미설정 시 1.10 (동작 변경 0).
+_ENTITY_BOOST_FACTOR = _parse_factor_env(_ENTITY_BOOST_FACTOR_ENV)
 
 # 2026-05-10 — vision 인접 chunk boost (opt-in, default OFF).
 # G-A-204 ch 919 (요약표 데이터 part 2, 거의 숫자) 가 search top-10 밖 — query
