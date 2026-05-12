@@ -339,17 +339,11 @@ def _measure_one_cell(g: GoldenV2Row) -> CellResult:
         if not target_items:
             cell.note = "doc 매칭 fail"
             return cell
-        merged_keyed: list[tuple[tuple, float]] = []
-        for it in target_items:
-            alias = _DOC_ID_TO_ALIAS.get(it.get("doc_id") or "")
-            if alias is None:
-                continue  # C 결정 — alias_map 미등록 doc_id item skip
-            for c in it.get("matched_chunks") or []:
-                merged_keyed.append(
-                    ((alias, c["chunk_idx"]), c.get("rrf_score") or 0.0)
-                )
-        merged_keyed.sort(key=lambda x: x[1], reverse=True)
-        chunks_top: list = [key for key, _ in merged_keyed]
+        # S4-A P1 — doc-balanced 라운드로빈 re-merge. 옛 "전체 RRF desc 정렬" 은 한 doc 가
+        # top-10 을 독식할 수 있어 (검색 path 의 doc 당 chunk cap 8 만으로도) 일부 row 가
+        # 하락했다. target doc 들의 matched_chunks 를 각 doc 내 RRF desc 로 정렬한 뒤,
+        # doc 순서 (alias 사전순 — 결정적) 로 인터리브해 predicted_top10 을 채운다.
+        chunks_top: list = _round_robin_cross_doc_chunks(target_items)
     else:
         target_items = _pick_target_items(items, g)
         if not target_items:
@@ -414,6 +408,42 @@ def _pick_cross_doc_items(
     if not target_ids:
         return []
     return [it for it in items if (it.get("doc_id") or "") in target_ids]
+
+
+def _round_robin_cross_doc_chunks(
+    target_items: list[dict[str, Any]],
+) -> list[tuple[str, int]]:
+    """S4-A P1 — target doc 들의 matched_chunks 를 doc-balanced 라운드로빈으로 병합.
+
+    ① 각 target doc 의 matched_chunks 를 RRF desc 정렬 → ``(alias, chunk_idx)`` 리스트.
+    ② doc 순서를 alias 사전순으로 고정 (결정적 — run-to-run churn 0).
+    ③ rank 0 부터 라운드로빈 (doc_a.rank0, doc_b.rank0, doc_a.rank1, …) 으로 인터리브.
+
+    alias_map 미등록 doc_id item 은 skip (C 결정). 호출 측에서 ``[:10]`` 으로 자른다.
+    """
+    per_doc: dict[str, list[tuple[str, int]]] = {}
+    for it in target_items:
+        alias = _DOC_ID_TO_ALIAS.get(it.get("doc_id") or "")
+        if alias is None:
+            continue  # C 결정 — alias_map 미등록 doc_id item skip
+        chunks = sorted(
+            it.get("matched_chunks") or [],
+            key=lambda c: (c.get("rrf_score") or 0.0),
+            reverse=True,
+        )
+        per_doc[alias] = [(alias, c["chunk_idx"]) for c in chunks]
+
+    merged: list[tuple[str, int]] = []
+    if not per_doc:
+        return merged
+    ordered_aliases = sorted(per_doc)
+    max_len = max(len(v) for v in per_doc.values())
+    for rank in range(max_len):
+        for alias in ordered_aliases:
+            keys = per_doc[alias]
+            if rank < len(keys):
+                merged.append(keys[rank])
+    return merged
 
 
 def _pick_target_items(

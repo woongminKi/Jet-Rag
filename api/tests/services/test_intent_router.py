@@ -117,5 +117,74 @@ class IntentRouterTriggerTest(unittest.TestCase):
             route("   \t\n  ")
 
 
+class IntentRouterCrossDocP1PatternTest(unittest.TestCase):
+    """S4-A P1 — T1 보조 패턴 3종 (PAIR / PAIR2 / PLURAL) + T2 어간 regex."""
+
+    # -----------------------------------------------------------------
+    # T1 — PAIR: "NP1 (와|과|랑) NP2 …문서류명사"
+    # -----------------------------------------------------------------
+    def test_t1_pair_proper_noun_then_doc_noun(self) -> None:
+        decision = route("기웅민 이력서와 이한주 포트폴리오의 핵심 역량은 어떻게 다른가요?")
+        self.assertIn("T1_cross_doc", decision.triggered_signals)
+        self.assertTrue(decision.needs_decomposition)
+
+    def test_t1_pair_multiword_proper_noun(self) -> None:
+        # "law sample2와 law sample3 두 판결" — NP2 가 공백 포함 다어절 + 뒤에 "판결".
+        decision = route("law sample2와 law sample3 두 판결에서 대법원이 내린 결정은?")
+        self.assertIn("T1_cross_doc", decision.triggered_signals)
+        self.assertTrue(decision.needs_decomposition)
+
+    # -----------------------------------------------------------------
+    # T1 — PAIR2: "문서류명사 (와|과|랑) NP2"
+    # -----------------------------------------------------------------
+    def test_t1_pair2_doc_noun_then_proper_noun(self) -> None:
+        decision = route("승인글 템플릿1과 템플릿3은 어떤 주제를 다루고 있나요?")
+        self.assertIn("T1_cross_doc", decision.triggered_signals)
+        self.assertTrue(decision.needs_decomposition)
+
+    def test_t1_pair2_naegyu_rang(self) -> None:
+        decision = route("운영내규랑 직제규정에서 위원회 역할 어떻게 달라")
+        self.assertIn("T1_cross_doc", decision.triggered_signals)
+        self.assertTrue(decision.needs_decomposition)
+
+    # -----------------------------------------------------------------
+    # T1 — PLURAL: "문서류명사들 (에서|에|중...)"
+    # -----------------------------------------------------------------
+    def test_t1_plural_jaryodeul_eseo(self) -> None:
+        decision = route("법률 자료들에서 원심 파기환송 사례들 어디 있었지")
+        self.assertIn("T1_cross_doc", decision.triggered_signals)
+        self.assertTrue(decision.needs_decomposition)
+
+    # -----------------------------------------------------------------
+    # false-positive 가드
+    # -----------------------------------------------------------------
+    def test_t1_no_fp_single_doc_locative(self) -> None:
+        # 단수 "자료에" + 짝 명사 부재 → T1 비발화.
+        decision = route("이 자료에 환경 인증 절차 나와있어?")
+        self.assertNotIn("T1_cross_doc", decision.triggered_signals)
+
+    def test_t2_no_fp_dareun_saram_with_space(self) -> None:
+        # "다른 사람" — 공백 → T2 어간 regex (다른[가지]) 비매치.
+        decision = route("다른 사람 이력 보여줘")
+        self.assertNotIn("T2_compare", decision.triggered_signals)
+
+    # -----------------------------------------------------------------
+    # T2 — 어간 regex: 다르게/다르지/다른가/다른지/다릅니다/상이
+    # -----------------------------------------------------------------
+    def test_t2_stem_dareun_ga(self) -> None:
+        decision = route("개정 절차가 어떻게 다른가요")
+        self.assertIn("T2_compare", decision.triggered_signals)
+        self.assertTrue(decision.needs_decomposition)
+
+    def test_t2_stem_sangi(self) -> None:
+        decision = route("두 규정의 효력 발생 시점이 상이한지 확인")
+        self.assertIn("T2_compare", decision.triggered_signals)
+        self.assertTrue(decision.needs_decomposition)
+
+    def test_t2_stem_dareuge(self) -> None:
+        decision = route("이번에 처리 방식이 다르게 됐어")
+        self.assertIn("T2_compare", decision.triggered_signals)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

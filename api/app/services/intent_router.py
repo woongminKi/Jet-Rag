@@ -17,8 +17,8 @@
 ---------
 | # | Trigger | 룰 |
 |---|---|---|
-| T1 | cross-doc | regex `(자료|문서|보고서).{0,15}(랑|와|과|및).{0,15}(자료|문서)` |
-| T2 | 비교 | 키워드 OR — 차이 / 비교 / vs / 달라 / 대비 |
+| T1 | cross-doc | regex `(자료|문서|보고서).{0,15}(랑|와|과|및).{0,15}(자료|문서)` **OR** P1 보조 3종 — `NP1 (와|과|랑) NP2 …문서류명사` / `문서류명사 (와|과|랑) NP2` / `문서류명사들 (에서|에|중...)` |
+| T2 | 비교 | 키워드 OR — 차이 / 비교 / vs / 달라 / 대비 **OR** 어간 regex `다르[게지]|다른[가지]|다릅|상이` |
 | T3 | 인과 | 키워드 OR — 왜 / 이유 / 때문 / 원인 / 어째서 (말미 ? 가산점) |
 | T4 | 변경점 | 키워드 OR — 달라진 / 바뀐 / 변경 / 수정된 / 업데이트 |
 | T5 | 긴 query | char ≥ 40 또는 token ≥ 12 |
@@ -54,14 +54,38 @@ from dataclasses import dataclass
 # ---------------------------------------------------------------------------
 # T1 — cross-doc regex
 # ---------------------------------------------------------------------------
+# 원래 룰 — "자료/문서/보고서 …(랑|와|과|및)… 자료/문서" (양쪽 모두 문서류 명사).
 _T1_CROSS_DOC = re.compile(
     r"(자료|문서|보고서).{0,15}(랑|와|과|및).{0,15}(자료|문서)"
 )
+
+# S4-A P1 — cross_doc 커버리지 보강 (golden_v2 cross_doc 9 query 중 3/9 만 발화하던
+# 문제). "기웅민 이력서와 이한주 포트폴리오", "law sample2와 law sample3 두 판결" 처럼
+# 한쪽만 문서류 명사이거나 양쪽 다 고유명사인 경우를 잡는다. 종결/처소격 어미 제약으로
+# "다른 사람"(공백) 같은 일반 query false-positive 를 최소화한다.
+# 문서류 명사 화이트리스트 — 사용자 코퍼스 (이력서/포폴/판결/내규/안내서 등) 기반.
+_DOC_NOUN = (
+    r"자료|문서|보고서|안내서|규정|내규|이력서|포트폴리오|포폴|템플릿|판결|계획|사업|매뉴얼|카탈로그|논문"
+)
+# "NP1 (와|과|랑) NP2 …(0~15자)… 문서류명사" — NP2 가 고유명사여도 뒤에 문서류 명사가 오면 cross_doc.
+# 15자 = 원래 _T1_CROSS_DOC 윈도와 동일. "law sample2와 law sample3 두 판결" 처럼
+# NP2 가 공백 포함 다어절 고유명사인 경우까지 커버.
+_T1_CROSS_DOC_PAIR = re.compile(
+    rf"[가-힣A-Za-z0-9]+\s*(?:와|과|랑)\s*[가-힣A-Za-z0-9].{{0,15}}(?:{_DOC_NOUN})"
+)
+# "문서류명사… (와|과|랑) NP2" — 앞쪽이 문서류 명사이고 (와|과|랑) 로 다른 대상과 연결.
+_T1_CROSS_DOC_PAIR2 = re.compile(
+    rf"(?:{_DOC_NOUN})\S*\s*(?:와|과|랑)\s*[가-힣A-Za-z0-9]"
+)
+# "문서류명사들 …(에서|에|중에서|중에)" — 복수형 명시 시만 (단수+처소격은 일반 query 도 흔함).
+_T1_CROSS_DOC_PLURAL = re.compile(rf"(?:{_DOC_NOUN})들\s*(?:에서|에|중에서|중에|중)")
 
 # ---------------------------------------------------------------------------
 # T2~T6 — 키워드 사전 (OR 매칭)
 # ---------------------------------------------------------------------------
 _T2_COMPARE_KEYWORDS: tuple[str, ...] = ("차이", "비교", "vs", "달라", "대비")
+# S4-A P1 — "다르게/다르지/다른가/다른지/다릅니다/상이" 어간 — "다른 사람"(공백) 은 제외.
+_T2_COMPARE_STEM = re.compile(r"다르[게지]|다른[가지]|다릅|상이")
 _T3_CAUSAL_KEYWORDS: tuple[str, ...] = ("왜", "이유", "때문", "원인", "어째서")
 _T4_CHANGE_KEYWORDS: tuple[str, ...] = ("달라진", "바뀐", "변경", "수정된", "업데이트")
 _T6_AMBIGUOUS_KEYWORDS: tuple[str, ...] = (
@@ -148,15 +172,24 @@ def route(query: str) -> IntentRouterDecision:
     matched: list[str] = []
 
     # T1 — cross-doc regex (T7 판정에서도 참조)
-    t1_hit = _T1_CROSS_DOC.search(normalized) is not None
+    # 원래 룰 OR P1 보조 패턴 3종 (PAIR / PAIR2 / PLURAL).
+    t1_hit = (
+        _T1_CROSS_DOC.search(normalized) is not None
+        or _T1_CROSS_DOC_PAIR.search(normalized) is not None
+        or _T1_CROSS_DOC_PAIR2.search(normalized) is not None
+        or _T1_CROSS_DOC_PLURAL.search(normalized) is not None
+    )
     if t1_hit:
         signals.append(_SIGNAL_T1)
 
-    # T2 — 비교 키워드 OR
+    # T2 — 비교 키워드 OR (+ P1 어간 regex)
     t2_matches = _match_keywords(normalized, _T2_COMPARE_KEYWORDS)
-    if t2_matches:
+    t2_stem = _T2_COMPARE_STEM.search(normalized)
+    if t2_matches or t2_stem:
         signals.append(_SIGNAL_T2)
         matched.extend(t2_matches)
+        if t2_stem:
+            matched.append(t2_stem.group(0))
 
     # T3 — 인과 키워드 OR (말미 ? 는 신호 발화 자체에는 영향 없음, 가산점만 향후 활용)
     t3_matches = _match_keywords(normalized, _T3_CAUSAL_KEYWORDS)

@@ -54,9 +54,16 @@ _MAX_QUERY_LEN = 200
 # doc_id 명시 (단일 문서 스코프) 시 본 cap 을 우회 — 사용자가 그 문서의 모든 매칭 청크를 보고 싶다는 명시적 요청.
 # (W25 D5 — `+89개 더 매칭 (이 문서에서 모두 보기)` Link 의 doc 페이지 매칭 청크 섹션 데이터 공급.)
 _MAX_MATCHED_CHUNKS_PER_DOC = 3
+# S4-A P1 — cross_doc-class query (intent_router T1/T2/T7 발화) 는 doc 당 미리보기 청크를
+# 3 → 8 로 확대. 비교/대조 query 라 doc 마다 더 많은 근거 청크가 자연스럽고, eval
+# (run_s4_a_d4_breakdown) cross_doc cell 의 정답 chunk 가 doc 당 3개 cap 에 탈락하던 문제 완화.
+# 응답 schema 불변 (matched_chunks 길이만 doc 당 최대 8).
+_MAX_MATCHED_CHUNKS_PER_DOC_CROSS_DOC = 8
 # doc_id 스코프 시 응답 청크 최대 개수 — `_RPC_TOP_K_DOC_FILTER` (200) 와 동일 안전 상한.
 # 한 문서에 매칭 청크 200개 이상은 RPC 가 잘라내 우리쪽 의도 (모두 보기) 도 자연 cap.
 _MAX_MATCHED_CHUNKS_DOC_SCOPE = 200
+# cross_doc-class 판정 신호 — intent_router 의 triggered_signals 와 교집합으로 판단.
+_CROSS_DOC_CLASS_SIGNALS = frozenset({"T1_cross_doc", "T2_compare", "T7_multi_target"})
 # W25 D3 — snippet around 확장 (80 → 240).
 # 매칭 위치 ±N자 본문. 사용자 검색 결과의 정보량 부족 (B-1) 해결 — wire 증가 ~3배 trade-off.
 # 환경변수로 운영 중 조정 가능. p95 latency 측정 필요 (smoke 시 확인).
@@ -1170,11 +1177,15 @@ def search(
     # 가 shadow 됨 (기존 코드 패턴). 본 cap 결정은 함수 진입 시 파라미터 값을 의도하므로
     # `is_doc_scope` 를 본 함수 진입 시 캡처된 사실 (rpc_top_k 결정 분기) 로부터 재구성한다.
     is_doc_scope = rpc_top_k == _RPC_TOP_K_DOC_FILTER
-    chunk_cap = (
-        _MAX_MATCHED_CHUNKS_DOC_SCOPE
-        if is_doc_scope
-        else _MAX_MATCHED_CHUNKS_PER_DOC
-    )
+    # S4-A P1 — list 모드 + cross_doc-class query 면 doc 당 미리보기 청크 cap 3 → 8.
+    # doc_id 스코프는 우선순위가 더 높으므로 그대로 (모두 보기 = 200).
+    is_cross_doc_resp = (not is_doc_scope) and _is_cross_doc_class_query(clean_q)
+    if is_doc_scope:
+        chunk_cap = _MAX_MATCHED_CHUNKS_DOC_SCOPE
+    elif is_cross_doc_resp:
+        chunk_cap = _MAX_MATCHED_CHUNKS_PER_DOC_CROSS_DOC
+    else:
+        chunk_cap = _MAX_MATCHED_CHUNKS_PER_DOC
     # W25 D14+1 (S2) — chunks 본문은 2-b) 단계에서 이미 candidate top-K 전체 fetch 됨.
     # selected_chunk_ids 는 페이지 내 응답 표시용 (chunks_by_id 의 부분집합) — 추가 fetch 불필요.
     selected_chunk_ids: list[str] = []
@@ -1210,6 +1221,11 @@ def search(
         ]
         if is_doc_scope:
             # score 내림차순 (id 순서 보존) — doc 페이지가 관련도 순으로 매칭 청크 표시
+            top_chunks = [
+                chunks_by_id[cid] for cid in top_ids if cid in chunks_by_id
+            ]
+        elif is_cross_doc_resp:
+            # S4-A P1 — cross_doc-class 는 RRF 내림차순 (top_ids 가 이미 그 순서)
             top_chunks = [
                 chunks_by_id[cid] for cid in top_ids if cid in chunks_by_id
             ]
@@ -1442,6 +1458,21 @@ def _is_cross_doc_query(query: str) -> bool:
     except ValueError:
         return False
     return "T1_cross_doc" in decision.triggered_signals
+
+
+def _is_cross_doc_class_query(query: str) -> bool:
+    """S4-A P1 — cross_doc 성격 query 여부 (T1/T2/T7 중 하나라도 발화).
+
+    list 모드 응답에서 doc 당 미리보기 청크 cap 을 8 로 올릴지 결정.
+    `_is_cross_doc_query` (T1 전용, MMR 용) 보다 넓은 집합 — 비교(T2)·복수
+    대상(T7) query 도 doc 당 근거를 더 노출하는 게 자연스럽다. paid
+    decomposition 게이트와 무관 (룰 기반 신호만 본다). 빈 query graceful False.
+    """
+    try:
+        decision = intent_router.route(query)
+    except ValueError:
+        return False
+    return bool(set(decision.triggered_signals) & _CROSS_DOC_CLASS_SIGNALS)
 
 
 def _coerce_embedding(raw) -> list[float] | None:
