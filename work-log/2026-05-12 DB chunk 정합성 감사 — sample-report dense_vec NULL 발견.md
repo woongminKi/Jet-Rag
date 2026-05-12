@@ -2,7 +2,7 @@
 
 > 프로젝트: Jet-Rag
 > 작성: 2026-05-12 (handoff `be26459` 직후 세션). 트리거 = 사용자 질문 "그동안 인제스트/청킹 로직이 여러 번 바뀌었는데, DB 에 올라간 chunk 중 로직 변경 전 임베딩된 stale 데이터로 eval 돌려도 괜찮나?"
-> 성격: **감사(QA) 리포트 + 복구 실행 기록.** 운영 코드 변경 0. 복구 도구 신규 1 파일(`evals/_repair_sample_report_dense_vec.py`). **2026-05-12 — sample-report dense_vec 1000건 복구 `--apply` 완료 (NULL 1000→0, MCP 재확인), stale job `failed` 마킹. 다음 = golden_v2 eval 전면 재측정.**
+> 성격: **감사(QA) 리포트 + 복구 실행 기록 + 복구 후 eval 재측정.** 운영 코드 변경 0. 복구 도구 신규 1 파일(`evals/_repair_sample_report_dense_vec.py`). **2026-05-12 — ① sample-report dense_vec 1000건 복구 `--apply` 완료 (NULL 1000→0, MCP 재확인 — 전체 DB dense_vec NULL 0건), stale job `failed` 마킹. ② golden_v2 eval 전면 재측정 완료 (§5.4) — sample-report 24 row 회복(R@10 0.5968→0.6946, top-1 0.5833→0.8333, 0점 row 0건) + embed-cache 검증 ✅(churn 0, embed_query_cache 183 row 채움) — 그러나 overall R@10 0.6844 < 0.75 = DoD 미달 = 검색의 실제 한계 확정. 다음 = cross_doc 약점 진단.**
 
 ---
 
@@ -69,7 +69,7 @@
 |---|---|---|
 | 단위 테스트 997 | ✅ OK | DB 무관 (fixture/mock, `tests/__init__.py` 가 embed-cache OFF 강제) |
 | eval v2↔v2 회귀 판정 (reranker on/off, entity_boost ablation 등 Δ) | ⚠️ 조건부 OK | 같은 row 양쪽 동일 miss → Δ 상쇄. **S3 D6 "reranker net-negative" 결론 유지 가능.** 절대값은 무의미 |
-| 절대 R@10/top-1/nDCG/MRR (overall) | ❌ 신뢰 불가 | sample-report 24 row(183 의 13.1%)가 0 으로 강제 유입(또는 `doc 매칭 fail` 시 분모 누락 → 반대로 상향 왜곡). DoD R@10 ≥ 0.75 미달을 검색 알고리즘 한계로 단정 금지. 추정: sample-report 정상이었으면 overall R@10 이 ~0.07~0.09pp 높았을 수 — DoD 이미 충족됐을 가능성 |
+| 절대 R@10/top-1/nDCG/MRR (overall) | (복구 전 한정) ❌ 신뢰 불가 | sample-report 24 row(183 의 13.1%)가 0 으로 강제 유입(또는 `doc 매칭 fail` 시 분모 누락 → 반대로 상향 왜곡). ~~추정: sample-report 정상이면 overall R@10 ~0.07~0.09pp 상승 — DoD 충족 가능~~ **← 실측 반증 (§5.4): 복구 후 overall R@10 0.6819→0.6844 = +0.0025pp 에 그침. sample-report 가 복구 전에도 PGroonga FTS 로 부분 recall 이 있어 0 강제가 아니었고, non-target row 의 HF embed churn 이 상쇄. DoD 미달은 검색의 실제 한계로 확정.** |
 | caption_dependent=true subset R@10 ("claim B") | ❌ 신뢰 불가 | true 31 row 중 17 row(55%)가 sample-report |
 | acceptable judge 1차 (Phase 11, 7 row "[empty]") | ⚠️ 일부 무효 | G-A-200/203/205/207/209/210 [empty] 의 정답 doc = sample-report(데이터센터 443 chunk 아님 — worklog "huge doc(~1000 chunk)" 오기). cosine 후보가 dense_vec NULL 이라 안 생긴 게 진짜 원인. **acceptable judge 2차 라운드는 복구 후로 미뤄야 함** |
 | 인제스트 개선 효과 측정 (S4-A caption 합성 등) | ❌ 신뢰 불가 | 효과 최대 doc 이 dark |
@@ -113,30 +113,42 @@
 - **MCP 재확인**: `chunks` WHERE doc_id=sample-report → 1000건 / dense_vec NULL 0건. 전체 DB `chunks` dense_vec NULL **0건** (2469 chunk 전부 벡터 보유). `ingest_jobs.cd912e70….status='failed'`.
 - 추가 paid 비용 **$0** (HF 무료 티어, vision/Gemini 호출 0). doc_id 불변 → golden_v2 무영향.
 
+### 5.4 복구 후 eval 전면 재측정 (2026-05-12, senior-qa)
+
+- **스크립트**: `evals/run_s4_a_d4_breakdown_eval.py` (RRF-only — 내부에서 `JETRAG_RERANKER_ENABLED=false`+`JETRAG_MMR_DISABLE=1` 강제, paid LLM 0). `app.routers.search.search()` in-process 직접 호출(서버 미기동). `JETRAG_EMBED_QUERY_CACHE=1`. 2회 실행. 산출: `evals/results/s4_a_d4_post_sample_report_repair_run{1,2}.{md,json}`.
+- **Overall (golden_v2 183 row, n_eval 174 / doc-match-fail 3 / 정답없음 6):** R@10 **0.6844** / nDCG@10 0.6350 / MRR 0.6041 / top-1 **0.7989**. (복구 전 2026-05-11 post-recovery: R@10 0.6819 / top-1 0.7471 — row 셋 동일이나 non-target row 가 HF embed churn 으로 ±변동해 "복구 효과"만 깔끔히 분리 안 됨.)
+- **핵심 검증 — sample-report 정답 24 row subset:** R@10 0.5968→**0.6946** / top-1 0.5833→**0.8333** (14→20 row) / **R@10==0 인 row: 2건(G-U-019, G-A-214) → 0건.** predicted top-10 에 chunk_idx 9xx 대역(sample-report 영역) 정상 노출 — dense cosine 후보 복귀 확인. → **복구 효과 확정.** (단 G-A-021/023/204/214 는 여전히 R@10 ≤ 0.33 — 표/도식 split 별개 약점, dense 와 무관.)
+- **subset:** caption_dependent=true 31 row(17 이 sample-report) R@10 0.6695→0.7197 / cross_doc qtype 10 row R@10 **0.3333**(복구 전후 불변 — dense 와 무관, 최대 약점) / qtype top-1: numeric_lookup 1.00, exact_fact 0.86, table_lookup 0.83, fuzzy_memory 0.86 ↔ synonym_mismatch 0.375, cross_doc 0.30.
+- **embed-cache 검증 (handoff 0순위):** run1↔run2 predicted_top10 churn **0 row** (byte-identical 183/183) / 집계 metric 소수점까지 완전 동일 / run2 실행 41.6s = persistent `embed_query_cache` hit (HF 호출 0). **MCP 확인: `embed_query_cache` 183 row (model_id `BAAI/bge-m3`, dim 1024, 채워진 시각 2026-05-12 03:26~03:43 = run1).** → S4-B ablation 때 ~92 row churn 완전 해소, eval 재현성·cold-start 면역 확정.
+- **DoD 재판정:** R@10 0.6844 < 0.75 → **미달 (격차 −0.066)**, 검색의 실제 한계로 확정 (handoff/본 문서 §3 의 "복구하면 충족 가능" 추정 반증). top-1 0.7989 ≈ 0.80 경계.
+- **새 발견:** ① doc-match-fail 3 row(G-U-018/G-U-027 = `|` multi-doc 라벨인데 검색이 정답 doc 를 top-50 에 못 띄움 / G-N-004 = 의도적 무정답) 는 "fail"이 아니라 "검색이 못 찾음" → 분모에서 빠져 overall 을 약 +0.01pp 상향 왜곡 (174→177 분모면 ~0.673). ② out_of_scope 5 row 는 retrieval metric 산출 불가 — negative-recall 측정 메커니즘 부재(RAGAS/judge 단계 필요). ③ 복구 전↔후 non-target ~20 row 가 R@10 ±0.1~0.5 흔들림 = HF embed 비결정성 — embed_query_cache freeze 로 향후 사라짐(run1↔run2 churn 0 이 증거).
+
 ---
 
 ## 6. 남은 이슈 / 후속 정정 필요
 
-- ~~**(P0) sample-report 복구**~~ ✅ 2026-05-12 완료 (§5.3 — dense_vec NULL 1000→0, stale job failed). **남음: golden_v2 eval 전면 재측정 (§7-1)** 으로 24 row 강제 miss 해소 + DoD 재판정.
-- **(P0) handoff/work-log 수치 재해석 주석** — `2026-05-12 종합 마감…` handoff 및 관련 work-log 의 "R@10 0.66~0.70 / DoD 미달" 서술에 "sample-report dark 로 하향 왜곡, 복구 후 재측정 전까지 보류" 주석. DoD R@10 ≥ 0.75 미달을 검색 한계로 단정 금지.
-- **(P0) `2026-05-11 D5 chunks 회귀 복구 ship.md` 정정** — "sample-report embedding 완료" 는 사실 아님(embed 스테이지 정지) 명기.
-- **(P1) Phase 11 / acceptable judge worklog 오기 정정** — "데이터센터 huge doc(~1000 chunk)" → "sample-report(d1259dfe, 1000 chunk)". [empty] 7 row 원인 = "huge doc 후보 풀 부족" 이 아니라 "sample-report dense_vec NULL → cosine 후보 미생성". acceptable judge 2차 라운드는 복구 후로.
-- **(P1) eval 도구 가드 추가 검토** — `eval_retrieval_metrics` 에 "정답 doc 의 chunk 중 dense_vec NULL 비율 ≥ 임계 → WARN + 별도 버킷 집계" → 같은 사고 조기 발견. `_pick_target_items` doc-매칭-fail row 수도 산출물에 노출(분모 누락 상향 왜곡 점검).
+- ~~**(P0) sample-report 복구 + eval 재측정**~~ ✅ 2026-05-12 완료 (§5.3 / §5.4 — dense_vec NULL 1000→0, sample-report subset R@10 0.5968→0.6946, embed-cache 183 row, DoD 재판정 = 여전히 미달·검색 한계 확정).
+- **(P0→진행) handoff/work-log 수치 재해석 정정** — `2026-05-12 종합 마감…` handoff 및 관련 work-log 의 "R@10 0.66~0.70 / DoD 미달" 서술 + **본 문서 §3·§6 의 "복구하면 DoD 충족 가능" 추정**에 "실측 반증: 복구 후 overall R@10 0.6844 — 여전히 DoD 미달, 검색 한계로 확정" 정정. (본 문서 §0·§3·§5.4 는 이미 반영. handoff·D5 worklog 는 별도 정정 필요.)
+- **(P0) `2026-05-11 D5 chunks 회귀 복구 ship.md` 정정** — "sample-report embedding 완료" 는 사실 아님(embed 스테이지 정지 → 2026-05-12 별도 복구) 명기.
+- **(P1) Phase 11 / acceptable judge worklog 오기 정정** — "데이터센터 huge doc(~1000 chunk)" → "sample-report(d1259dfe, 1000 chunk)". [empty] 7 row 원인 = "huge doc 후보 풀 부족" 이 아니라 "sample-report dense_vec NULL → cosine 후보 미생성". **복구 완료 → acceptable judge 2차 라운드 의미 있어짐** (단 paid ~$0.05, cross_doc 진단보다 후순위).
+- **(P1) eval 도구 가드 + doc-match-fail 처리** — `eval_retrieval_metrics`/`run_s4_a_d4_breakdown_eval` 에 "정답 doc 의 chunk 중 dense_vec NULL 비율 ≥ 임계 → WARN + 별도 버킷" 가드. 그리고 doc-match-fail 3 row(G-U-018/G-U-027 `|` 멀티-doc 라벨)는 "fail"(분모 제외) 대신 "R@10=0"(분모 포함)으로 — overall 이 ~0.673 으로 약간 내려가지만 정직. 또는 골든셋 라벨을 단일 doc 으로 분할.
 - **(P2) 위생** — old-era doc 의 entities 부분 누락(직제 등)은 backfill 도구로 채움(embed 재호출 0, 검색 영향 0 — 급하지 않음). caption_dependent=true 라벨 중 G-A-011(브랜딩 pptx)·G-U-016(직제 hwpx)은 해당 포맷에 caption 합성 경로 없음 → 라벨 자체 재검토.
 - **(인지) ingest_jobs orphaned `running` 정리 정책** — 프로세스 비정상 종료 시 job 이 영영 running. 시작 시 stale `running`(예: started_at 24h+ 경과) 정리하는 startup hook 또는 watchdog 검토.
 
-## 7. 다음 스코프 (복구 완료 후)
+## 7. 다음 스코프
 
-1. **eval 전면 재측정** — sample-report 복구 후 golden_v2 183 row R@10/top-1/nDCG/MRR 재측정 → "실제" baseline 확정 → DoD 충족 여부 재판정. v2↔v2 동일 row 비교.
-2. **embed-cache 검증** (handoff 0순위 — 그대로 유효) — eval 1회로 query→vector 채움 → 2회 연속 churn 0 + HF 호출 0 확인.
-3. **acceptable judge 2차 라운드** (handoff 1순위, ~$0.05) — sample-report 복구 후에야 의미. candidate top-K 15→30+ 또는 `/search` 기반 후보 + threshold 튜닝.
-4. **cross_doc 약점 진단** (handoff 2순위) — R@10 0.1273 / top-1 0.0. entity_boost 레버 아님 판명 → query decomposition / multi-doc fusion / golden 라벨 재점검.
+- ~~eval 전면 재측정~~ ✅ §5.4. ~~embed-cache 검증~~ ✅ §5.4 (183 row, churn 0).
+1. **(진행 예정 — 1순위) cross_doc 약점 진단** — golden_v2 qtype=cross_doc 10 row R@10 **0.3333** / top-1 0.30, dense 복구로도 불변 = retrieval 측 최대 레버. 후보: ① query decomposition(`JETRAG_PAID_DECOMPOSITION_ENABLED` ON 검증) ② multi-doc fusion(doc_embedding RRF 가중) ③ 골든셋 cross_doc 라벨(`|` 멀티-doc + chunk_idx-only 스키마) 재점검 — 어디가 병목인지 판별하는 진단 sprint 먼저($0). row 별: R@10 1.0×1 / 0.66×2 / 0.5×1 / 0.33×1 / 0.16×1 / 0.0×4.
+2. **doc-match-fail 3 row 처리** (§6 P1) — G-U-018/G-U-027 라벨 정정 또는 eval 도구에서 R@10=0 분모 포함.
+3. **acceptable judge 2차 라운드** (~$0.05, paid 승인 필요) — 복구로 sample-report 후보 정상화 → 의미 있어짐. candidate top-K 15→30+ 또는 `/search` 기반 후보 + threshold 0.5→0.6. **cross_doc 진단보다 후순위** (R@10 분자 보정일 뿐 근본 약점 미해결).
+4. **chunk augment** (handoff 3순위, 5~7일) — sample-report 잔존 약점 row(G-A-021/023/204/214 등 표·도식 split) + 데이터센터 p.40 single-line table.
+5. **handoff/D5 worklog 수치 정정** (§6 P0).
 
 ---
 
 ## 8. 검증 메모 (이 세션)
 
-- DB 조회/변경: `mcp__supabase-jetrag__execute_sql` (읽기 전용 — 스키마/분포/sample-report 진단/NFC 실측/복구 후 재확인) + `evals/_repair_sample_report_dense_vec.py --apply` (`chunks.dense_vec` 1000 row UPDATE + `ingest_jobs` 1 row status='failed'). row 추가·삭제·text 변경 0.
-- 운영 코드 변경: 0. 신규 파일: `evals/_repair_sample_report_dense_vec.py` (일회용 복구 도구).
+- DB 조회/변경: `mcp__supabase-jetrag__execute_sql` (읽기 전용 — 스키마/분포/sample-report 진단/NFC 실측/복구 후 재확인/`embed_query_cache` row 수) + `evals/_repair_sample_report_dense_vec.py --apply` (`chunks.dense_vec` 1000 row UPDATE + `ingest_jobs` 1 row status='failed') + eval 1차 실행이 `embed_query_cache` 183 row insert. row 추가/삭제/text 변경 0 (`embed_query_cache` 는 캐시 테이블).
+- 운영 코드 변경: 0. 신규 파일: `evals/_repair_sample_report_dense_vec.py` (일회용 복구 도구), `evals/results/s4_a_d4_post_sample_report_repair_run{1,2}.{md,json}` (eval 산출물).
 - 단위 테스트: 997 pass / 50 subtests / 회귀 0 (운영 코드 미변경 — senior-developer 가 `uvx pytest -q` 로 확인).
-- 관련 문서: senior-qa 감사 리포트(세션 내), `work-log/2026-05-11 D5 chunks 회귀 복구 ship.md`, `work-log/2026-05-11 S4-A D4 Phase 4 — D5 reingest.md`, `work-log/2026-05-11 acceptable_chunks LLM-judge 자동 보완 ship.md`, `work-log/2026-05-12 종합 마감 + 2026-05-13 진입 핸드오프.md`.
+- 관련 문서: senior-qa 감사 리포트 + eval 재측정 리포트(세션 내), `work-log/2026-05-11 D5 chunks 회귀 복구 ship.md`, `work-log/2026-05-11 S4-A D4 Phase 4 — D5 reingest.md`, `work-log/2026-05-11 acceptable_chunks LLM-judge 자동 보완 ship.md`, `work-log/2026-05-12 종합 마감 + 2026-05-13 진입 핸드오프.md`.
