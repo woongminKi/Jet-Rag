@@ -13,6 +13,8 @@
     3) transient 5xx 케이스 — 응답 200, `Retry-After` 헤더 없음 (대조군)
 
 HF API · Supabase 모두 monkeypatch — 외부 의존성 0.
+`TestClient(app)` 사용 시 lifespan 의 `_warmup_bgem3` 가 실 HF cold-start 를 호출하므로
+no-op 으로 patch (SE-11) — 헤더 검증과 무관, 외부 호출 0 보장.
 실행: `python -m unittest tests.test_search_503_retry_after`
 """
 
@@ -20,7 +22,7 @@ from __future__ import annotations
 
 import os
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 
@@ -193,6 +195,7 @@ class HttpExceptionHeadersLiveTest(unittest.TestCase):
         """
         from fastapi.testclient import TestClient
 
+        from app import main as main_module
         from app.main import app
         from app.routers import search as search_module
 
@@ -204,6 +207,8 @@ class HttpExceptionHeadersLiveTest(unittest.TestCase):
             search_module, "get_bgem3_provider", return_value=provider_mock
         ), patch.object(
             search_module, "get_supabase_client", return_value=client_mock
+        ), patch.object(
+            main_module, "_warmup_bgem3", new=AsyncMock(return_value=None)
         ):
             with TestClient(app) as test_client:
                 response = test_client.get("/search", params={"q": "테스트"})
@@ -226,6 +231,7 @@ class HttpExceptionHeadersLiveTest(unittest.TestCase):
         """대조군 라이브 — transient 5xx fallback 200 응답에는 Retry-After 부재."""
         from fastapi.testclient import TestClient
 
+        from app import main as main_module
         from app.main import app
         from app.routers import search as search_module
 
@@ -237,6 +243,8 @@ class HttpExceptionHeadersLiveTest(unittest.TestCase):
             search_module, "get_bgem3_provider", return_value=provider_mock
         ), patch.object(
             search_module, "get_supabase_client", return_value=client_mock
+        ), patch.object(
+            main_module, "_warmup_bgem3", new=AsyncMock(return_value=None)
         ):
             with TestClient(app) as test_client:
                 response = test_client.get("/search", params={"q": "테스트"})

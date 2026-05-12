@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import email.utils
 import logging
 import random
 import threading
@@ -34,6 +35,8 @@ _DENSE_DIM = 1024
 _MAX_ATTEMPTS = 3
 _BASE_BACKOFF_SECONDS = 5.0  # BGE-M3 cold start 5~20s 가 흔함
 _REQUEST_TIMEOUT = 60.0
+# 429/503 에 서버가 Retry-After 를 주면 그 값을 우선 — 단 무한 대기 방지 위해 클램프.
+_MAX_RETRY_AFTER_SECONDS = 60.0
 
 # W4-Q-3 — embedding cache (in-process LRU, 의존성 0).
 # 페르소나 A 일일 쿼리 ~30건 × 2주 윈도우 가정. 메모리 ≈ 512 × 1024 × 8B = 4MB.
@@ -232,6 +235,35 @@ def get_bgem3_provider() -> BGEM3HFEmbeddingProvider:
     return BGEM3HFEmbeddingProvider()
 
 
+def _parse_retry_after(exc: Exception) -> float | None:
+    """HTTP 429/503 응답의 `Retry-After` 헤더를 초 단위로 파싱.
+
+    - `httpx.HTTPStatusError` 가 아니거나 헤더 없으면 None (caller 가 지수 백오프).
+    - delta-seconds 정수 형식 우선. RFC 7231 의 HTTP-date 형식도 허용 (현재시각과의 차).
+    - 음수·파싱 실패는 None. 상한은 `_MAX_RETRY_AFTER_SECONDS` 로 클램프
+      (악의적/오작동 서버의 과도한 값 방어).
+    """
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None
+    raw = exc.response.headers.get("Retry-After")
+    if not raw:
+        return None
+    raw = raw.strip()
+    try:
+        seconds = float(int(raw))
+    except ValueError:
+        try:
+            parsed = email.utils.parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
+        if parsed is None:
+            return None
+        seconds = parsed.timestamp() - time.time()
+    if seconds <= 0:
+        return None
+    return min(seconds, _MAX_RETRY_AFTER_SECONDS)
+
+
 def _with_retry(fn: Callable[[], T], *, label: str) -> T:
     last_exc: Exception | None = None
     for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -250,7 +282,13 @@ def _with_retry(fn: Callable[[], T], *, label: str) -> T:
                 break
             if attempt == _MAX_ATTEMPTS:
                 break
-            delay = _BASE_BACKOFF_SECONDS * (2 ** (attempt - 1)) + random.uniform(0, 1.0)
+            # 서버가 Retry-After 를 주면 존중 (429/503 의 cold-start·rate-limit 힌트).
+            # 없으면 기존 지수 백오프 + jitter.
+            retry_after = _parse_retry_after(exc)
+            if retry_after is not None:
+                delay = retry_after + random.uniform(0, 1.0)
+            else:
+                delay = _BASE_BACKOFF_SECONDS * (2 ** (attempt - 1)) + random.uniform(0, 1.0)
             logger.warning(
                 "%s transient 실패 (attempt=%d/%d, %.1fs 후 재시도): %s",
                 label,
