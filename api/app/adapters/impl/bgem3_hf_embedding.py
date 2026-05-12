@@ -12,10 +12,12 @@
 from __future__ import annotations
 
 import email.utils
+import hashlib
 import logging
 import random
 import threading
 import time
+import unicodedata
 from collections import OrderedDict
 from functools import lru_cache
 from typing import Callable, TypeVar
@@ -27,9 +29,14 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# 모델 슬러그 — `_URL` 과 영구 캐시(embed_query_cache) 의 model_id 가 일치해야 함.
+# model_id 상수 자체는 `app.services.embed_query_cache._MODEL_ID` 에 단일 정의 — `embed_query`
+# 안에서 lazy import 로 참조 (provider 가 supabase 의존을 강제하지 않도록). 여기선 URL 조립용
+# 으로만 동일 문자열을 사용 (캐시 헬퍼와 값이 어긋나면 캐시 hit 가 0이 되므로 동기 필수).
+_MODEL_SLUG = "BAAI/bge-m3"
 _URL = (
     "https://router.huggingface.co/hf-inference/"
-    "models/BAAI/bge-m3/pipeline/feature-extraction"
+    f"models/{_MODEL_SLUG}/pipeline/feature-extraction"
 )
 _DENSE_DIM = 1024
 _MAX_ATTEMPTS = 3
@@ -66,7 +73,10 @@ class BGEM3HFEmbeddingProvider:
         self._embed_cache_maxsize = _EMBED_CACHE_MAXSIZE
         # 직전 `embed_query` 호출의 cache hit 여부 노출 (search.py 의 메트릭 기록용).
         # 멀티 스레드 환경에서 마지막 writer 가 덮어쓰므로 정확성은 보장 안 함 — 전체 비율은 신뢰 가능.
+        # 영구 캐시 hit 도 hit=True (= "HF 호출 안 함" 통일).
         self._last_cache_hit: bool = False
+        # 직전 `embed_query` 의 cache 출처 — "lru" / "persistent" / "miss". 진단용 (선택적).
+        self._last_cache_source: str = "miss"
 
     # ---------------------- public API ----------------------
 
@@ -87,30 +97,89 @@ class BGEM3HFEmbeddingProvider:
         sparse 미사용이라 `EmbeddingResult` 래핑을 생략, list[float] 직접 반환.
         chunks 인덱싱과 같은 모델·endpoint 사용 (검색-인덱싱 일관성).
 
-        **W4-Q-3 LRU cache** — 동일 text 재호출 시 HF API 호출 0회.
-        cache hit 여부는 `self._last_cache_hit` 로 노출 (멀티 스레드 환경에선
-        전체 비율만 신뢰 가능). caller 가 vector 를 mutate 해도 cache 보존되도록
-        defensive copy 반환.
+        **2단 캐시** — (1) W4-Q-3 in-process LRU (프로세스 내, key=text) →
+        (2) S4-B 후속 영구 캐시 `embed_query_cache` (DB, key=sha256(NFC(text.strip())),model_id).
+        영구 캐시는 첫 fetch 벡터를 canonical 로 freeze → eval 재현성 + HF 호출 0.
+        LRU 가 우선 (지연 최소). 영구 캐시 hit 시 LRU 에도 채워 다음 호출은 LRU 에서.
+
+        cache hit 여부는 `self._last_cache_hit` 로 노출 (LRU·영구 둘 다 hit=True —
+        "HF 호출 안 함" 통일. 멀티 스레드 환경에선 전체 비율만 신뢰 가능).
+        `self._last_cache_source` 로 "lru"/"persistent"/"miss" 구분 (선택적 진단).
+        caller 가 vector 를 mutate 해도 cache 보존되도록 defensive copy 반환.
+
+        영구 캐시 read/write 실패는 graceful — HF 직호출로 fallback (검색 정상).
+        write 는 best-effort (실패해도 벡터 반환). 영구 캐시 모듈은 lazy import —
+        provider 가 supabase 의존을 강제하지 않도록 (token 없는 단위 테스트 보호).
 
         `embed()` / `embed_batch()` 는 인제스트 경로 — 동일 text 재호출 가능성 0
         이라 cache 미부착.
         """
+        # ① in-process LRU (key=text 단독)
         with self._embed_cache_lock:
             cached = self._embed_cache.get(text)
             if cached is not None:
                 self._embed_cache.move_to_end(text)  # MRU 갱신
                 self._last_cache_hit = True
+                self._last_cache_source = "lru"
                 return list(cached)  # caller mutation 방어
 
+        # ② 영구 캐시 (DB) — lazy import. read/write 실패는 graceful — HF 직호출로 fallback.
+        # helper 가 이미 graceful 이지만, 키 계산·import 등 예기치 못한 오류까지 흡수 (검색 정상 보장).
+        from app.services import embed_query_cache
+
+        text_sha256: str | None = None
+        model_id: str | None = None
+        try:
+            text_sha256, model_id = self._cache_key(text)
+            persisted = embed_query_cache.lookup(text_sha256, model_id)
+        except Exception as exc:  # noqa: BLE001 — 영구 캐시 read 는 best-effort
+            logger.debug("embed_query 영구 캐시 lookup 우회 (graceful): %s", exc)
+            persisted = None
+        if persisted is not None and len(persisted) == _DENSE_DIM:
+            # 다음 호출은 LRU 에서 처리되도록 채워둠.
+            with self._embed_cache_lock:
+                self._embed_cache[text] = list(persisted)
+                while len(self._embed_cache) > self._embed_cache_maxsize:
+                    self._embed_cache.popitem(last=False)
+            self._last_cache_hit = True
+            self._last_cache_source = "persistent"
+            return list(persisted)
+
+        # ③ miss — HF 직호출 (retry 포함)
         self._last_cache_hit = False
+        self._last_cache_source = "miss"
         result = self._embed_query_uncached(text)
 
+        # 영구 캐시에 best-effort write (실패해도 result 반환 — 검색 결정성보다 가용성 우선).
+        if text_sha256 is not None and model_id is not None:
+            try:
+                embed_query_cache.upsert(text_sha256, model_id, _DENSE_DIM, result)
+            except Exception as exc:  # noqa: BLE001 — write 는 best-effort
+                logger.debug("embed_query 영구 캐시 upsert 우회 (graceful): %s", exc)
+
+        # in-process LRU put
         with self._embed_cache_lock:
             self._embed_cache[text] = list(result)
             while len(self._embed_cache) > self._embed_cache_maxsize:
                 self._embed_cache.popitem(last=False)  # LRU eviction
 
         return result
+
+    @staticmethod
+    def _cache_key(text: str) -> tuple[str, str]:
+        """영구 캐시 키 `(text_sha256, model_id)`.
+
+        text_sha256 = sha256(unicodedata.normalize("NFC", text.strip())).
+        멱등 정규화 — search.py 는 이미 NFC strip 후 넘기지만 (no-op), answer.py /
+        ragas_eval 등 정규화 안 하는 호출부도 같은 키로 흡수. **embed 입력 text 자체는
+        안 건드림** — HF 에는 호출부가 준 text 그대로 전달.
+        """
+        # 모델 ID 는 캐시 헬퍼에 단일 정의 — 키 계산 시점에 lazy import.
+        from app.services.embed_query_cache import _MODEL_ID
+
+        normalized = unicodedata.normalize("NFC", text.strip())
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        return digest, _MODEL_ID
 
     def _embed_query_uncached(self, text: str) -> list[float]:
         """HF API 직호출 (retry 포함) — cache miss 경로."""
@@ -123,10 +192,13 @@ class BGEM3HFEmbeddingProvider:
         return _with_retry(call, label="bge-m3.embed_query")
 
     def clear_embed_cache(self) -> None:
-        """테스트 전용 — `embed_query` LRU 비움. 운영 코드에서 호출하지 말 것."""
+        """테스트 전용 — `embed_query` in-process LRU 비움. 영구 캐시(DB)는 건드리지 않음.
+        운영 코드에서 호출하지 말 것. (영구 캐시 비우기: `DELETE FROM embed_query_cache;`)
+        """
         with self._embed_cache_lock:
             self._embed_cache.clear()
             self._last_cache_hit = False
+            self._last_cache_source = "miss"
 
     def embed_batch(self, texts: list[str]) -> list[EmbeddingResult]:
         if not texts:

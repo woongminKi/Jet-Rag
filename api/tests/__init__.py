@@ -18,3 +18,9 @@ os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "0"
 # ENABLED='0' 일 때는 어차피 skip 이지만, ENABLED='1' 로 override 하는 테스트
 # (FirstWarnPatternTest 등) 에서 background thread race 회피 위해.
 os.environ["JET_RAG_METRICS_PERSIST_ASYNC"] = "0"
+
+# S4-B 후속 — `embed_query` 영구 캐시(embed_query_cache, 마이그 016) 도 단위 테스트에서는
+# 기본 비활성. 로컬 .env 에 실 Supabase 자격이 있으면 mock 안 한 테스트가 실 DB 에
+# 가비지 벡터를 write 할 수 있어서. 영구 캐시 자체를 검증하는 test_embed_query_cache.py 는
+# 자기 안에서 "1" 로 override + supabase mock 으로 격리.
+os.environ["JETRAG_EMBED_QUERY_CACHE"] = "0"
