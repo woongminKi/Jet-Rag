@@ -45,6 +45,16 @@ _STAGE = "chunk"
 # default false — true 일 때만 `[검색어: ...]` 마커·metadata.synonym_candidates 주입.
 _SYNONYM_LLM_ENV = "JETRAG_SYNONYM_INJECTION_LLM"
 
+# M2 W-3 (S4-A D6) — vision-derived chunk text augmentation (caption prefix only) ENV.
+# default false — true 일 때만 `_compose_vision_text` 가 caption 을 base text **앞**에
+# prefix 로 부착 (`[표 p.{page}: {cap}]\n\n{base}`). false 면 기존 suffix 동작 유지.
+# 인제스트 시점 ENV — 켰다 꺼도 이미 박힌 chunk 는 재인제스트 전까지 안 바뀜.
+# M2 W-4 전체 클린 재인제스트 때 켜고 ON/OFF ablation eval.
+_CAPTION_PREFIX_ENV = "JETRAG_CAPTION_PREFIX_ENABLED"
+
+# caption prefix 최대 길이 — 200자 초과 시 199 + `…` 잘림 (dense 임베딩·snippet 오염 회피).
+_CAPTION_PREFIX_MAX_LEN = 200
+
 _TARGET_SIZE = 800
 _MAX_SIZE = 1000
 _MIN_MERGE_SIZE = 200
@@ -344,22 +354,66 @@ def _is_vision_derived(section: ExtractedSection) -> bool:
     return title.startswith(_VISION_TITLE_PREFIX)
 
 
+def _caption_prefix_enabled() -> bool:
+    """M2 W-3 — `JETRAG_CAPTION_PREFIX_ENABLED` 함수 호출 시 1회 평가.
+
+    함수 외부(모듈 top-level) 평가 X — 테스트 `patch.dict(os.environ, ...)` 격리 가능.
+    W-2 `_SYNONYM_LLM_ENV` 의 truthy 평가 규칙(`true/1/yes/on`) 답습.
+    """
+    return os.environ.get(_CAPTION_PREFIX_ENV, "false").strip().lower() in {
+        "true",
+        "1",
+        "yes",
+        "on",
+    }
+
+
 def _compose_vision_text(
     base_text: str,
     *,
     table_caption: str | None,
     figure_caption: str | None,
+    page: int | None = None,
 ) -> str:
     """S4-A D2 — vision-derived chunk text 합성 (명세 §C).
 
-    규칙:
+    기본(ENV `JETRAG_CAPTION_PREFIX_ENABLED` OFF — default) 규칙 [S4-A D2]:
     - 둘 다 None → base_text 그대로 (skip)
     - 한쪽만 set → 해당 한 줄만 부착
     - 양쪽 set → 두 줄 모두 부착 (table 먼저)
-    - 빈 줄 1개로 분리
+    - 포맷: `{base}\n\n[표: {table}]\n[그림: {figure}]` (suffix)
 
-    포맷: `{base}\n\n[표: {table}]\n[그림: {figure}]`
+    M2 W-3 (S4-A D6) — ENV ON 일 때:
+    - table_caption 우선(없으면 figure_caption) 1개만 채택. 둘 다 None/빈 → base 그대로.
+    - caption `.strip()` 후 빈 → prefix 미부착.
+    - caption > 200자 → 앞 199자 + `…` 잘림 (dense 임베딩·snippet 오염 회피).
+    - page is not None → `[표 p.{page}: {cap}]\n\n{base}` / `[그림 p.{page}: ...]`
+    - page is None → `[표: {cap}]\n\n{base}` / `[그림: ...]`
+
+    DECISION-8 (PRD §3 W-3): caption 을 base text **앞**에 두어 (a) dense 임베딩이
+    caption 의 의미 신호를 우선적으로 학습 (CLS 토큰 인접), (b) snippet head 가 항상
+    caption 노출. M2 W-4 전체 클린 재인제스트 때 ON 박힘.
     """
+    if _caption_prefix_enabled():
+        caption: str | None
+        marker: str  # "표" or "그림"
+        if table_caption and table_caption.strip():
+            caption = table_caption.strip()
+            marker = "표"
+        elif figure_caption and figure_caption.strip():
+            caption = figure_caption.strip()
+            marker = "그림"
+        else:
+            return base_text
+        if len(caption) > _CAPTION_PREFIX_MAX_LEN:
+            caption = caption[: _CAPTION_PREFIX_MAX_LEN - 1] + "…"
+        if page is not None:
+            prefix = f"[{marker} p.{page}: {caption}]"
+        else:
+            prefix = f"[{marker}: {caption}]"
+        return f"{prefix}\n\n{base_text}"
+
+    # ENV OFF — 기존 suffix 동작 (S4-A D2) 100% 유지.
     extras: list[str] = []
     if table_caption:
         extras.append(f"[표: {table_caption}]")
@@ -419,6 +473,7 @@ def _to_chunk_records(
             section.text,
             table_caption=table_caption,
             figure_caption=figure_caption,
+            page=section.page,
         )
 
         # W25 D14+1 D1 — 한국어 NFC 정규화 (인제스트단).

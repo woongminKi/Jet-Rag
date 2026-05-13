@@ -343,6 +343,7 @@ def _sections_to_chunks(
             sec.text,
             table_caption=table_caption,
             figure_caption=figure_caption,
+            page=sec.page,
         )
         try:
             from app.services.synonym_inject import (
