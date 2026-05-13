@@ -63,19 +63,24 @@ class AdminQueriesStatsHappyPathTest(unittest.TestCase):
 
     def test_basic_mapping(self) -> None:
         from app.routers import admin as admin_module
+        from app.routers.admin import KST
 
-        # 같은 KST 일자 (2026-05-07 KST = 2026-05-06 15:00 UTC ~ 2026-05-07 14:59 UTC) 가정.
-        # recorded_at 은 UTC 로 저장되므로 ISO+00:00 사용.
-        # KST 기준 오늘이 2026-05-07 인 환경에서 2건 (성공 1 + 실패 1).
-        now_utc = datetime.now(timezone.utc)
+        # 2026-05-14 P3 fix — `now_utc` 기반 상대 시각은 KST 자정 직후 (00:00~00:29)
+        # 환경에서 row 시각이 KST 자정 경계를 넘어 yesterday bucket 으로 분리되는
+        # 회귀가 발생. 모든 row 를 KST today 정오 (UTC 03:00) 기준으로 고정 → timezone
+        # 경계 무관 deterministic. (recorded_at 은 UTC 로 저장되므로 ISO+00:00 사용.)
+        base_kst_noon = datetime.now(KST).replace(
+            hour=12, minute=0, second=0, microsecond=0,
+        )
+        base_utc = base_kst_noon.astimezone(timezone.utc)
         rows = [
             _row(
-                recorded_at=now_utc.isoformat(),
+                recorded_at=base_utc.isoformat(),
                 query_text="휠 사이즈 표 어디",  # table_lookup
                 fused=5,
             ),
             _row(
-                recorded_at=(now_utc - timedelta(minutes=30)).isoformat(),
+                recorded_at=(base_utc - timedelta(minutes=30)).isoformat(),
                 query_text="환경 인증 절차",  # exact_fact (negative 키워드 없음)
                 fused=0,  # → no_hits 실패
                 fallback_reason=None,

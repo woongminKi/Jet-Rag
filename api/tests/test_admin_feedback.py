@@ -144,21 +144,29 @@ class AdminFeedbackStatsHappyPathTest(unittest.TestCase):
 
     def test_basic_mapping(self) -> None:
         from app.routers import admin as admin_module
+        from app.routers.admin import KST
 
-        now_utc = datetime.now(timezone.utc)
+        # 2026-05-14 P3 fix — `now_utc` 기반 상대 시각은 KST 자정 직후 (00:00~00:29)
+        # 환경에서 row 시각이 KST 자정 경계를 넘어 yesterday bucket 으로 분리되는
+        # 회귀가 발생. 모든 row 를 KST today 정오 (UTC 03:00) 기준으로 고정 → timezone
+        # 경계 무관 deterministic.
+        base_kst_noon = datetime.now(KST).replace(
+            hour=12, minute=0, second=0, microsecond=0,
+        )
+        base_utc = base_kst_noon.astimezone(timezone.utc)
         rows = [
             # 👍 + 코멘트 없음
-            _row(created_at=now_utc.isoformat(), helpful=True, query="휠 사이즈"),
+            _row(created_at=base_utc.isoformat(), helpful=True, query="휠 사이즈"),
             # 👎 + source_issue 코멘트
             _row(
-                created_at=(now_utc - timedelta(minutes=10)).isoformat(),
+                created_at=(base_utc - timedelta(minutes=10)).isoformat(),
                 helpful=False,
                 query="환경 인증",
                 comment="출처가 이상해요",
             ),
             # 👎 + answer_issue 코멘트
             _row(
-                created_at=(now_utc - timedelta(minutes=20)).isoformat(),
+                created_at=(base_utc - timedelta(minutes=20)).isoformat(),
                 helpful=False,
                 query="규정 조항",
                 comment="틀린 답변이에요",
