@@ -215,6 +215,11 @@ class CellResult:
     doc_match_fail_zeroed: bool = False
     # W-6 — relevant/acceptable 라벨이 아예 비어있는 row (recall 정의 불가 → 분모 제외, 별도 카운트).
     no_ground_truth: bool = False
+    # M1 W-1(a) — paid LLM query decomposition meta (SearchResponse.meta 에서 캡처).
+    decomposition_fired: bool = False
+    decomposed_subqueries: tuple[str, ...] = ()
+    decomposition_cost_usd: float = 0.0
+    decomposition_cached: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +356,14 @@ def _measure_one_cell(g: GoldenV2Row) -> CellResult:
     items: list[dict[str, Any]] = data.get("items") or []
     qp = data.get("query_parsed") or {}
     cell.reranker_path = qp.get("reranker_path") or "disabled"
+
+    # M1 W-1(a) — paid LLM query decomposition meta (ENV OFF·미발화 시 false/[]/0.0/false).
+    meta = data.get("meta") or {}
+    cell.decomposition_fired = bool(meta.get("decomposition_fired"))
+    subq = meta.get("decomposed_subqueries") or []
+    cell.decomposed_subqueries = tuple(str(s) for s in subq)
+    cell.decomposition_cost_usd = float(meta.get("decomposition_cost_usd") or 0.0)
+    cell.decomposition_cached = bool(meta.get("decomposition_cached"))
 
     if g.is_cross_doc:
         # A 결정 — cross_doc 은 alias_map.doc_id 로 target item 직접 선별 +
@@ -597,6 +610,10 @@ class GroupSummary:
     n_doc_match_fail_zeroed: int = 0
     # W-6 — relevant/acceptable 라벨이 아예 비어있어 분모에서 제외된 row 수.
     n_no_ground_truth: int = 0
+    # M1 W-1(a) — decomposition 발화 row 수 / 총 비용 / 발화 row id 목록.
+    n_decomposition_fired: int = 0
+    decomposition_total_cost_usd: float = 0.0
+    decomposition_fired_ids: list[str] = field(default_factory=list)
 
 
 def _aggregate_group(label: str, cells: list[CellResult]) -> GroupSummary:
@@ -632,6 +649,8 @@ def _aggregate_group(label: str, cells: list[CellResult]) -> GroupSummary:
     n_zeroed = sum(1 for c in cells if c.doc_match_fail_zeroed)
     n_no_gt = sum(1 for c in cells if c.no_ground_truth)
 
+    fired_cells = [c for c in cells if c.decomposition_fired]
+
     return GroupSummary(
         label=label,
         n_rows=n,
@@ -646,6 +665,9 @@ def _aggregate_group(label: str, cells: list[CellResult]) -> GroupSummary:
         error_count=err,
         n_doc_match_fail_zeroed=n_zeroed,
         n_no_ground_truth=n_no_gt,
+        n_decomposition_fired=len(fired_cells),
+        decomposition_total_cost_usd=sum(c.decomposition_cost_usd for c in cells),
+        decomposition_fired_ids=[c.golden_id for c in fired_cells],
     )
 
 
@@ -758,6 +780,14 @@ def _format_markdown(
         f"(R@10=0, DECISION-6). ground-truth 없음 {overall.n_no_ground_truth} row 는 "
         "분모에서 제외 (recall 정의 `|relevant|=0` 불성립)."
     )
+    # M1 W-1(a) — paid LLM query decomposition 발화 실측 (ENV OFF 시 0/총 row).
+    _decomp_ids = overall.decomposition_fired_ids
+    lines.append(
+        f"- **decomposition fired {overall.n_decomposition_fired}/{overall.n_rows} row "
+        f"(비용 ${overall.decomposition_total_cost_usd:.4f}"
+        f"{', ids: ' + ', '.join(_decomp_ids) if _decomp_ids else ''})** — "
+        "`JETRAG_PAID_DECOMPOSITION_ENABLED` ON + `router_decision.needs_decomposition` 게이트"
+    )
     if doc_match_fail_zeroed_ids:
         lines.append(
             f"  - doc-match-fail zeroed: {', '.join(doc_match_fail_zeroed_ids)}"
@@ -783,6 +813,13 @@ def _format_markdown(
             f"{s.avg_mrr:.4f} | {s.top1_rate:.4f} | "
             f"{s.p95_latency_ms:.1f} | {s.doc_match_fail} |"
         )
+    lines.append("")
+    # M1 W-1(a) — qtype 별 decomposition 발화 (표 컬럼 추가 금지 — 별도 줄로).
+    for s in by_qtype:
+        if s.n_decomposition_fired > 0:
+            lines.append(
+                f"  - `{s.label}` decomp fired {s.n_decomposition_fired}/{s.n_rows}"
+            )
     lines.append("")
 
     # §3 — doc_type breakdown
@@ -945,6 +982,10 @@ def _serialize_cells(cells: list[CellResult]) -> list[dict[str, Any]]:
                 "note": c.note,
                 "doc_match_fail_zeroed": c.doc_match_fail_zeroed,
                 "no_ground_truth": c.no_ground_truth,
+                "decomposition_fired": c.decomposition_fired,
+                "decomposed_subqueries": list(c.decomposed_subqueries),
+                "decomposition_cost_usd": round(c.decomposition_cost_usd, 6),
+                "decomposition_cached": c.decomposition_cached,
             }
         )
     return out
@@ -965,6 +1006,9 @@ def _summary_to_dict(s: GroupSummary) -> dict[str, Any]:
         "error_count": s.error_count,
         "n_doc_match_fail_zeroed": s.n_doc_match_fail_zeroed,
         "n_no_ground_truth": s.n_no_ground_truth,
+        "n_decomposition_fired": s.n_decomposition_fired,
+        "decomposition_total_cost_usd": round(s.decomposition_total_cost_usd, 6),
+        "decomposition_fired_ids": s.decomposition_fired_ids,
     }
 
 
