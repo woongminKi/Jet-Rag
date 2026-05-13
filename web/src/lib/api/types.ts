@@ -206,6 +206,11 @@ export interface SearchMeta {
   decomposed_subqueries?: string[];
   decomposition_cost_usd?: number;
   decomposition_cached?: boolean;
+  /** M1 W-1(b) — cross_doc-scoped 검색 적용 여부 (RAG path · cross_doc-class query 한정).
+   *  default OFF (`JETRAG_CROSS_DOC_SCOPED_SEARCH`) — 미발화 시 false / [] / 0. */
+  cross_doc_scoped_applied?: boolean;
+  cross_doc_candidate_doc_ids?: string[];
+  cross_doc_candidate_top_n?: number;
   /** 향후 키 추가 대비 (백엔드 dict 직렬화) */
   [key: string]: unknown;
 }

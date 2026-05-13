@@ -220,6 +220,10 @@ class CellResult:
     decomposed_subqueries: tuple[str, ...] = ()
     decomposition_cost_usd: float = 0.0
     decomposition_cached: bool = False
+    # M1 W-1(b) — cross_doc-scoped 검색 meta (SearchResponse.meta 에서 graceful 캡처).
+    cross_doc_scoped_applied: bool = False
+    cross_doc_candidate_doc_ids: tuple[str, ...] = ()
+    cross_doc_candidate_top_n: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +368,12 @@ def _measure_one_cell(g: GoldenV2Row) -> CellResult:
     cell.decomposed_subqueries = tuple(str(s) for s in subq)
     cell.decomposition_cost_usd = float(meta.get("decomposition_cost_usd") or 0.0)
     cell.decomposition_cached = bool(meta.get("decomposition_cached"))
+    # M1 W-1(b) — cross_doc-scoped 검색 meta (ENV OFF / 미발화 시 false / [] / 0).
+    # graceful — 키 부재 시 default (구버전 search.py 응답과 호환).
+    cell.cross_doc_scoped_applied = bool(meta.get("cross_doc_scoped_applied"))
+    cdocs = meta.get("cross_doc_candidate_doc_ids") or []
+    cell.cross_doc_candidate_doc_ids = tuple(str(s) for s in cdocs)
+    cell.cross_doc_candidate_top_n = int(meta.get("cross_doc_candidate_top_n") or 0)
 
     if g.is_cross_doc:
         # A 결정 — cross_doc 은 alias_map.doc_id 로 target item 직접 선별 +
@@ -614,6 +624,8 @@ class GroupSummary:
     n_decomposition_fired: int = 0
     decomposition_total_cost_usd: float = 0.0
     decomposition_fired_ids: list[str] = field(default_factory=list)
+    # M1 W-1(b) — cross_doc-scoped 적용 row 수.
+    n_cross_doc_scoped_applied: int = 0
 
 
 def _aggregate_group(label: str, cells: list[CellResult]) -> GroupSummary:
@@ -650,6 +662,7 @@ def _aggregate_group(label: str, cells: list[CellResult]) -> GroupSummary:
     n_no_gt = sum(1 for c in cells if c.no_ground_truth)
 
     fired_cells = [c for c in cells if c.decomposition_fired]
+    scoped_cells = [c for c in cells if c.cross_doc_scoped_applied]
 
     return GroupSummary(
         label=label,
@@ -668,6 +681,7 @@ def _aggregate_group(label: str, cells: list[CellResult]) -> GroupSummary:
         n_decomposition_fired=len(fired_cells),
         decomposition_total_cost_usd=sum(c.decomposition_cost_usd for c in cells),
         decomposition_fired_ids=[c.golden_id for c in fired_cells],
+        n_cross_doc_scoped_applied=len(scoped_cells),
     )
 
 
@@ -819,6 +833,13 @@ def _format_markdown(
         if s.n_decomposition_fired > 0:
             lines.append(
                 f"  - `{s.label}` decomp fired {s.n_decomposition_fired}/{s.n_rows}"
+            )
+    # M1 W-1(b) — qtype 별 cross_doc-scoped 적용 (cross_doc qtype 에서 9/9 기대).
+    for s in by_qtype:
+        if s.n_cross_doc_scoped_applied > 0:
+            lines.append(
+                f"  - `{s.label}` cross_doc_scoped applied "
+                f"{s.n_cross_doc_scoped_applied}/{s.n_rows}"
             )
     lines.append("")
 
@@ -986,6 +1007,10 @@ def _serialize_cells(cells: list[CellResult]) -> list[dict[str, Any]]:
                 "decomposed_subqueries": list(c.decomposed_subqueries),
                 "decomposition_cost_usd": round(c.decomposition_cost_usd, 6),
                 "decomposition_cached": c.decomposition_cached,
+                # M1 W-1(b)
+                "cross_doc_scoped_applied": c.cross_doc_scoped_applied,
+                "cross_doc_candidate_doc_ids": list(c.cross_doc_candidate_doc_ids),
+                "cross_doc_candidate_top_n": c.cross_doc_candidate_top_n,
             }
         )
     return out
@@ -1009,6 +1034,7 @@ def _summary_to_dict(s: GroupSummary) -> dict[str, Any]:
         "n_decomposition_fired": s.n_decomposition_fired,
         "decomposition_total_cost_usd": round(s.decomposition_total_cost_usd, 6),
         "decomposition_fired_ids": s.decomposition_fired_ids,
+        "n_cross_doc_scoped_applied": s.n_cross_doc_scoped_applied,
     }
 
 

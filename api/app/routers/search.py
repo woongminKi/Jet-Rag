@@ -265,6 +265,22 @@ _DECOMPOSITION_TIMEOUT_DEFAULT_SEC = 5
 _DECOMPOSITION_TIMEOUT_MIN_SEC = 1
 _DECOMPOSITION_TIMEOUT_MAX_SEC = 30
 
+# M1 W-1(b) — cross_doc-scoped 검색 (옵션 A, 마이그 0).
+# cross_doc-class query (intent_router T1/T2/T7) 한정으로 rpc_rows 를 doc 단위로
+# 그룹화 → doc score = sum(top-3 chunk rrf_score) → score desc 상위 N doc 만 유지.
+# 라벨 doc 후보 set 을 식별해 noise doc chunk 가 RRF rank 를 밀어내는 P2 함정을
+# 회피 (W-1(a) paid decomposition 단독은 cross_doc R@10 4.7% 악화 — 2026-05-13 §8).
+# eval `_round_robin_cross_doc_chunks` 가 라벨 doc 만 평가하므로 production 측에서
+# 후보 doc set 식별 + 필터만 해도 cross_doc R@10 자연 향상.
+# default OFF — paid 와 직교, 각자 독립 토글.
+_CROSS_DOC_SCOPED_ENV = "JETRAG_CROSS_DOC_SCOPED_SEARCH"
+_CROSS_DOC_CANDIDATE_TOP_N_ENV = "JETRAG_CROSS_DOC_CANDIDATE_TOP_N"
+_CROSS_DOC_CANDIDATE_TOP_N_DEFAULT = 4
+_CROSS_DOC_CANDIDATE_TOP_N_MIN = 2
+_CROSS_DOC_CANDIDATE_TOP_N_MAX = 10
+# doc score 산출 시 doc 당 상위 K chunk 만 sum (RRF 분포가 long-tail 이라 tail noise 차단).
+_CROSS_DOC_SCOPED_DOC_SCORE_TOP_K = 3
+
 # W25 D8 Phase 2 — 메뉴 footer 가드: 1차 시도 실패 → 롤백 / 후속 sprint 신호로 보존.
 # 시도 결과 (work-log/2026-05-04 W25 D8 Phase 2 메뉴 footer 가드.md):
 #   - 단순 패턴 매칭 → 정답 청크 (idx 37/38/43) 도 함께 깎임 → G-S-006 0.50→0.03 악화
@@ -442,6 +458,86 @@ def _decomposition_meta(decomp: query_decomposer.QueryDecomposition) -> dict:
         "decomposition_cost_usd": float(decomp.cost_usd),
         "decomposition_cached": bool(decomp.cached),
     }
+
+
+# ---------------------------------------------------------------------------
+# M1 W-1(b) — cross_doc-scoped 검색 헬퍼 (옵션 A)
+# ---------------------------------------------------------------------------
+def _cross_doc_scoped_enabled() -> bool:
+    """`JETRAG_CROSS_DOC_SCOPED_SEARCH` ∈ {true,1,yes,on} (대소문자 무관). default false."""
+    return os.environ.get(_CROSS_DOC_SCOPED_ENV, "false").strip().lower() in {
+        "true", "1", "yes", "on",
+    }
+
+
+def _cross_doc_candidate_top_n() -> int:
+    """`JETRAG_CROSS_DOC_CANDIDATE_TOP_N` → int clamp [MIN, MAX]. invalid → default 4."""
+    raw = os.environ.get(_CROSS_DOC_CANDIDATE_TOP_N_ENV)
+    if raw is None or raw == "":
+        return _CROSS_DOC_CANDIDATE_TOP_N_DEFAULT
+    try:
+        value = int(raw)
+    except ValueError:
+        return _CROSS_DOC_CANDIDATE_TOP_N_DEFAULT
+    if value < _CROSS_DOC_CANDIDATE_TOP_N_MIN:
+        return _CROSS_DOC_CANDIDATE_TOP_N_MIN
+    if value > _CROSS_DOC_CANDIDATE_TOP_N_MAX:
+        return _CROSS_DOC_CANDIDATE_TOP_N_MAX
+    return value
+
+
+def _select_cross_doc_candidates(
+    rpc_rows: list[dict], top_n: int
+) -> list[str]:
+    """RPC 결과 chunks → doc 단위 그룹 → doc score = sum(top-3 chunk rrf_score)
+    → score desc + doc_id 사전순 tie-break → 상위 ``top_n`` doc_id list.
+
+    `top_n <= 0` / `rpc_rows` 빈 / 모든 doc score 가 0 → 빈 list 반환 (호출 측에서
+    "필터 미적용" 으로 해석). 순수 함수 — 외부 호출 0, 단위 테스트 용이.
+    """
+    if not rpc_rows or top_n <= 0:
+        return []
+    by_doc: dict[str, list[float]] = defaultdict(list)
+    for r in rpc_rows:
+        did = r.get("doc_id")
+        if not did:
+            continue
+        try:
+            score = float(r.get("rrf_score") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        by_doc[did].append(score)
+    if not by_doc:
+        return []
+    scored: list[tuple[str, float]] = []
+    for did, scores in by_doc.items():
+        top_scores = sorted(scores, reverse=True)[:_CROSS_DOC_SCOPED_DOC_SCORE_TOP_K]
+        scored.append((did, sum(top_scores)))
+    # 모두 0점이면 의미 없는 ranking — 빈 list (필터 미적용).
+    if all(s <= 0.0 for _, s in scored):
+        return []
+    scored.sort(key=lambda x: (-x[1], x[0]))
+    return [did for did, _ in scored[:top_n]]
+
+
+def _search_rag_meta(
+    decomp: query_decomposer.QueryDecomposition,
+    *,
+    scoped_applied: bool,
+    candidate_doc_ids: list[str],
+    top_n: int,
+) -> dict:
+    """RAG path `meta` 통합 — W-1(a) decomposition 4키 + W-1(b) cross_doc-scoped 3키.
+
+    - `cross_doc_scoped_applied`: bool — 게이트 4조건 모두 충족 + 후보 doc 1개 이상.
+    - `cross_doc_candidate_doc_ids`: list[str] — 적용된 후보 doc_id (정렬, 결정적).
+    - `cross_doc_candidate_top_n`: int — 적용된 top_n (미적용 시 0).
+    """
+    base = _decomposition_meta(decomp)
+    base["cross_doc_scoped_applied"] = bool(scoped_applied)
+    base["cross_doc_candidate_doc_ids"] = sorted(candidate_doc_ids)
+    base["cross_doc_candidate_top_n"] = int(top_n)
+    return base
 
 
 class MatchedChunk(BaseModel):
@@ -828,6 +924,35 @@ def search(
         rpc_rows = multi_query_search.rrf_merge_pools(pools, k=_RRF_K)
 
     # ------------------------------------------------------------------
+    # 2-a-3) M1 W-1(b) — cross_doc-scoped 검색 (옵션 A, 마이그 0).
+    #   게이트 4조건 AND: ENV ON + mode=hybrid + doc_id is None + cross_doc-class query.
+    #   rpc_rows 를 doc 단위로 그룹 → doc score 상위 N doc 만 유지 → 나머지 chunks 제외.
+    #   이후 파이프라인 (chunk cap·MMR·enrich) 은 rpc_rows dict 만 보므로 불변.
+    #   `_round_robin_cross_doc_chunks` (eval) 가 라벨 doc 만 평가하므로 production
+    #   측에서 noise doc 제거만 해도 cross_doc R@10 자연 향상 (W-1(a) P2 함정 회피).
+    #   meta_fast_path return 은 게이트 ② mode=hybrid 후속이라 도달 안 함 (불변).
+    # ------------------------------------------------------------------
+    cross_doc_scoped_applied = False
+    cross_doc_candidate_doc_ids: list[str] = []
+    cross_doc_top_n = 0
+    if (
+        _cross_doc_scoped_enabled()
+        and mode == "hybrid"
+        and doc_id is None
+        and _is_cross_doc_class_query(clean_q, decision=router_decision)
+    ):
+        cross_doc_top_n = _cross_doc_candidate_top_n()
+        candidates = _select_cross_doc_candidates(rpc_rows, cross_doc_top_n)
+        if candidates:
+            candidate_set = set(candidates)
+            rpc_rows = [r for r in rpc_rows if r.get("doc_id") in candidate_set]
+            cross_doc_scoped_applied = True
+            cross_doc_candidate_doc_ids = candidates
+        else:
+            # 후보 산출 실패 — 필터 미적용 (meta 노출도 0 으로 환원).
+            cross_doc_top_n = 0
+
+    # ------------------------------------------------------------------
     # 2-b) chunks 본문 통합 fetch — cover guard meta + reranker 입력 + 응답 조립 한 번에.
     #     W25 D14+1 (S2) — 기존엔 cover guard fetch (id, chunk_idx, page, text) 와
     #     응답 조립 fetch (id, doc_id, chunk_idx, page, section_title, text, metadata)
@@ -1125,7 +1250,12 @@ def search(
             items=[],
             took_ms=took_ms,
             query_parsed=query_parsed,
-            meta=decomp_meta,
+            meta=_search_rag_meta(
+                decomp,
+                scoped_applied=cross_doc_scoped_applied,
+                candidate_doc_ids=cross_doc_candidate_doc_ids,
+                top_n=cross_doc_top_n,
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -1349,7 +1479,12 @@ def search(
             items=[],
             took_ms=took_ms,
             query_parsed=query_parsed,
-            meta=decomp_meta,
+            meta=_search_rag_meta(
+                decomp,
+                scoped_applied=cross_doc_scoped_applied,
+                candidate_doc_ids=cross_doc_candidate_doc_ids,
+                top_n=cross_doc_top_n,
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -1480,7 +1615,12 @@ def search(
         items=items,
         took_ms=took_ms,
         query_parsed=query_parsed,
-        meta=decomp_meta,
+        meta=_search_rag_meta(
+            decomp,
+            scoped_applied=cross_doc_scoped_applied,
+            candidate_doc_ids=cross_doc_candidate_doc_ids,
+            top_n=cross_doc_top_n,
+        ),
     )
 
 
