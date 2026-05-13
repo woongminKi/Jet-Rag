@@ -129,6 +129,117 @@ class VisionCacheLookupTest(unittest.TestCase):
         self.assertEqual(prompt_calls, [vision_cache.get_prompt_version()])
 
 
+class VisionCacheCountUncachedTest(unittest.TestCase):
+    """P1 fix (2026-05-14) — count_uncached_pages: 사전 cap check 우회 헬퍼.
+
+    검증 포인트
+    - 모두 cache hit → 0
+    - 일부만 hit → 미스 페이지 수 정확 반환
+    - 모두 miss → len(pages)
+    - DB 실패 / sha256 falsy / disabled → None (호출자 보수적 fallback)
+    - 빈 pages → 0
+    """
+
+    def setUp(self) -> None:
+        from app.services import vision_cache
+        vision_cache._reset_first_warn_for_test()
+        os.environ.pop("JETRAG_VISION_CACHE_ENABLED", None)
+
+    def test_all_pages_cached_returns_zero(self) -> None:
+        from app.services import vision_cache
+
+        client = MagicMock()
+        chain = (
+            client.table.return_value
+            .select.return_value
+            .eq.return_value
+            .eq.return_value
+            .in_.return_value
+        )
+        chain.execute.return_value.data = [
+            {"page": 1}, {"page": 2}, {"page": 3},
+        ]
+        with patch("app.db.get_supabase_client", return_value=client):
+            uncached = vision_cache.count_uncached_pages(
+                "a" * 64, pages=[1, 2, 3],
+            )
+        self.assertEqual(uncached, 0)
+
+    def test_partial_hit_returns_missing_count(self) -> None:
+        from app.services import vision_cache
+
+        client = MagicMock()
+        chain = (
+            client.table.return_value
+            .select.return_value
+            .eq.return_value
+            .eq.return_value
+            .in_.return_value
+        )
+        # 1,3 만 cache 에 있음 → 2,4,5 가 missing → uncached=3
+        chain.execute.return_value.data = [{"page": 1}, {"page": 3}]
+        with patch("app.db.get_supabase_client", return_value=client):
+            uncached = vision_cache.count_uncached_pages(
+                "a" * 64, pages=[1, 2, 3, 4, 5],
+            )
+        self.assertEqual(uncached, 3)
+
+    def test_all_miss_returns_full_count(self) -> None:
+        from app.services import vision_cache
+
+        client = MagicMock()
+        chain = (
+            client.table.return_value
+            .select.return_value
+            .eq.return_value
+            .eq.return_value
+            .in_.return_value
+        )
+        chain.execute.return_value.data = []
+        with patch("app.db.get_supabase_client", return_value=client):
+            uncached = vision_cache.count_uncached_pages(
+                "a" * 64, pages=[1, 2, 3],
+            )
+        self.assertEqual(uncached, 3)
+
+    def test_db_failure_returns_none(self) -> None:
+        from app.services import vision_cache
+
+        client = MagicMock()
+        client.table.side_effect = RuntimeError(
+            "relation \"vision_page_cache\" does not exist"
+        )
+        with patch("app.db.get_supabase_client", return_value=client):
+            uncached = vision_cache.count_uncached_pages(
+                "a" * 64, pages=[1, 2],
+            )
+        self.assertIsNone(uncached)
+
+    def test_falsy_sha256_returns_none(self) -> None:
+        from app.services import vision_cache
+
+        uncached = vision_cache.count_uncached_pages("", pages=[1, 2])
+        self.assertIsNone(uncached)
+
+    def test_empty_pages_returns_zero(self) -> None:
+        from app.services import vision_cache
+
+        uncached = vision_cache.count_uncached_pages("a" * 64, pages=[])
+        self.assertEqual(uncached, 0)
+
+    def test_disabled_via_env_returns_none(self) -> None:
+        from app.services import vision_cache
+
+        os.environ["JETRAG_VISION_CACHE_ENABLED"] = "0"
+        try:
+            uncached = vision_cache.count_uncached_pages(
+                "a" * 64, pages=[1, 2, 3],
+            )
+            self.assertIsNone(uncached)
+        finally:
+            os.environ.pop("JETRAG_VISION_CACHE_ENABLED", None)
+
+
 class VisionCachePromptVersionInvalidateTest(unittest.TestCase):
     """prompt_version 변경 시 같은 (sha256, page) 라도 cache miss."""
 

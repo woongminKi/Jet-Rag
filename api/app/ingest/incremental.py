@@ -40,7 +40,7 @@ from app.ingest.jobs import fail_job, finish_job, start_job
 from app.ingest.stages.chunk import _compose_vision_text
 from app.ingest.stages.embed import run_embed_stage
 from app.ingest.stages.load import run_load_stage
-from app.services import budget_guard
+from app.services import budget_guard, vision_cache
 from app.services.vision_need_score import score_page as _score_page_for_vision
 
 logger = logging.getLogger(__name__)
@@ -436,13 +436,38 @@ def run_incremental_vision_pipeline(
             }
 
         # S0 D4/D5 — 사전 cap 검사 (doc + daily + 24h sliding).
+        # P1 fix (2026-05-14) — missing 페이지가 모두 vision_page_cache hit 이면 사전
+        # cap check 우회. 사유: vision_usage_log SUM 은 historical 누적 → cache hit only
+        # 재인제스트가 historical cap 도달로 차단되는 회귀 방지. inner sweep loop 가
+        # cache miss 발생 시 자연 보호 (vision_usage_log row insert → SUM 증가 감지).
         settings = get_settings()
-        pre_status = budget_guard.check_combined(
-            doc_id=doc_id,
-            doc_cap_usd=settings.doc_budget_usd,
-            daily_cap_usd=settings.daily_budget_usd,
-            sliding_24h_cap_usd=settings.sliding_24h_budget_usd,
-        )
+        pre_check_skipped = False
+        if doc_sha256 and missing:
+            uncached = vision_cache.count_uncached_pages(
+                doc_sha256, pages=list(missing),
+            )
+            if uncached == 0:
+                pre_check_skipped = True
+                logger.info(
+                    "incremental_vision — missing %d 페이지 모두 cache hit, "
+                    "사전 cap check 우회 (doc=%s)",
+                    len(missing), doc_id,
+                )
+        if pre_check_skipped:
+            pre_status = budget_guard.BudgetStatus(
+                allowed=True,
+                used_usd=0.0,
+                cap_usd=settings.doc_budget_usd,
+                scope="doc",
+                reason="모든 missing 페이지 cache hit — 사전 check 우회 (P1 fix)",
+            )
+        else:
+            pre_status = budget_guard.check_combined(
+                doc_id=doc_id,
+                doc_cap_usd=settings.doc_budget_usd,
+                daily_cap_usd=settings.daily_budget_usd,
+                sliding_24h_cap_usd=settings.sliding_24h_budget_usd,
+            )
         if not pre_status.allowed:
             logger.warning(
                 "incremental_vision skip — budget cap (scope=%s, used=$%.4f, cap=$%.4f) doc_id=%s",

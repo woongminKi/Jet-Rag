@@ -91,6 +91,55 @@ def lookup(sha256: str, page: int) -> VisionCaption | None:
     return _deserialize(raw)
 
 
+def count_uncached_pages(sha256: str, pages: list[int]) -> int | None:
+    """주어진 페이지 리스트 중 `(sha256, page, prompt_version)` 캐시 미스 수.
+
+    2026-05-14 P1 fix — vision 사전 cap check 의 historical SUM 차단 회귀 방지.
+    호출자 (extract.py / incremental.py 의 사전 cap check 직전) 가 반환값을 보고
+    "신규 vision API 호출이 필요한 페이지" 가 0 이면 사전 cap check 우회.
+
+    반환 의미
+        - 0       : 모든 페이지가 cache hit (이번 reingest 의 신규 비용 0 → cap check 우회 가능)
+        - N (>0)  : N 개 페이지가 cache miss (사전 cap check 적용 권장)
+        - None    : DB 부재 / disable / 인자 부적합 → 호출자는 보수적으로 사전 cap check 적용
+
+    설계 원칙
+        - 단일 IN query — 페이지 N 개에 대해 round trip 1회.
+        - DB 실패 graceful — None 반환, lookup 의 _warn_first 패턴 재사용.
+        - 빈 pages → 0 (조회 자체 skip — "캐시 미스 0개" 의미와 일치).
+        - sha256 falsy → None (cache 사용 안 함 시 호출자 보수적 fallback).
+    """
+    if not is_enabled():
+        return None
+    if not sha256:
+        return None
+    if not pages:
+        return 0
+
+    try:
+        from app.db import get_supabase_client
+
+        client = get_supabase_client()
+        resp = (
+            client.table("vision_page_cache")
+            .select("page")
+            .eq("sha256", sha256)
+            .eq("prompt_version", get_prompt_version())
+            .in_("page", list(pages))
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001 — DB 부재 / 015 미적용 graceful
+        _warn_first(f"vision_page_cache count_uncached_pages 실패 (graceful): {exc}")
+        return None
+
+    cached_pages = {
+        row.get("page")
+        for row in (resp.data or [])
+        if isinstance(row.get("page"), int)
+    }
+    return sum(1 for p in pages if p not in cached_pages)
+
+
 def upsert(
     sha256: str,
     page: int,

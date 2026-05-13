@@ -216,13 +216,35 @@ def run_extract_stage(
         ):
             # S0 D4 — vision 호출 진입 직전 cap 사전 검사. 통과 시 enrich, 실패 시 skip + flags.
             # S0 D5 — 24h sliding window 추가 (calendar-day daily 자정 우회 방어).
+            # P1 fix (2026-05-14) — 모든 페이지가 vision_page_cache hit 이면 사전 cap check
+            # 우회. 사유: vision_usage_log SUM 은 historical 누적 → cache hit only 재인제스트가
+            # historical cap 도달로 차단되는 회귀 방지. cache hit 페이지는 vision API 호출 0
+            # → 이번 reingest 의 신규 비용 0 보장 (inner-loop cap 재검사가 cache miss 발생 시
+            # 자연 보호). pre-scan 실패 시 None → 보수적으로 사전 check 적용.
             settings = get_settings()
-            pre_status = budget_guard.check_combined(
-                doc_id=doc_id,
-                doc_cap_usd=settings.doc_budget_usd,
-                daily_cap_usd=settings.daily_budget_usd,
-                sliding_24h_cap_usd=settings.sliding_24h_budget_usd,
+            doc_sha256 = doc.get("sha256")
+            pre_check_skipped = _vision_pre_check_all_cached(
+                data, sha256=doc_sha256,
             )
+            if pre_check_skipped:
+                logger.info(
+                    "PDF vision enrich — 모든 페이지 cache hit, 사전 cap check 우회 (doc_id=%s)",
+                    doc_id,
+                )
+                pre_status = budget_guard.BudgetStatus(
+                    allowed=True,
+                    used_usd=0.0,
+                    cap_usd=settings.doc_budget_usd,
+                    scope="doc",
+                    reason="모든 페이지 cache hit — 사전 check 우회 (P1 fix)",
+                )
+            else:
+                pre_status = budget_guard.check_combined(
+                    doc_id=doc_id,
+                    doc_cap_usd=settings.doc_budget_usd,
+                    daily_cap_usd=settings.daily_budget_usd,
+                    sliding_24h_cap_usd=settings.sliding_24h_budget_usd,
+                )
             if not pre_status.allowed:
                 logger.warning(
                     "PDF vision enrich skip — budget cap (scope=%s, used=$%.4f, cap=$%.4f) doc_id=%s",
@@ -291,6 +313,37 @@ def _mark_scan_flag(client: Any, doc_id: str, *, existing_flags: dict) -> None:
     updated = dict(existing_flags)
     updated["scan"] = True
     client.table("documents").update({"flags": updated}).eq("id", doc_id).execute()
+
+
+def _vision_pre_check_all_cached(data: bytes, *, sha256: str | None) -> bool:
+    """P1 fix (2026-05-14) — PDF 전 페이지가 vision_page_cache hit 인지 사전 확인.
+
+    True 반환 = 모든 페이지 cache hit → 신규 vision API 호출 0 → 사전 cap check 우회 안전.
+    False 반환 = cache miss 페이지 있음 또는 pre-scan 실패 → 사전 cap check 적용 권장.
+
+    설계
+        - sha256 None / 빈 PDF / fitz.open 실패 / count_uncached_pages None → False
+          (보수적 fallback — 호출자는 사전 check 적용).
+        - count_uncached_pages == 0 일 때만 True 반환.
+        - 외부에서 별도 fitz.open 호출 — _enrich_pdf_with_vision 안에서 한 번 더 열리지만
+          fitz.open 자체가 가벼움 (수십 ms). 호출 분기 단순화 우선.
+    """
+    if not sha256:
+        return False
+    try:
+        with fitz.open(stream=data, filetype="pdf") as scan_doc:
+            total_pages = len(scan_doc)
+    except Exception as exc:  # noqa: BLE001 — graceful, 호출자가 사전 check 적용
+        logger.warning(
+            "vision pre-check fitz.open 실패 (graceful): %s", exc,
+        )
+        return False
+    if total_pages <= 0:
+        return False
+    process_count = min(total_pages, _VISION_ENRICH_MAX_PAGES)
+    scan_pages = list(range(1, process_count + 1))
+    uncached = vision_cache.count_uncached_pages(sha256, pages=scan_pages)
+    return uncached == 0
 
 
 def _mark_budget_exceeded_flag(
