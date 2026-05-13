@@ -401,7 +401,7 @@ def _run_checkpoint_eval(out_label: str) -> tuple[float | None, float | None]:
     cmd = [
         sys.executable,
         str(eval_script),
-        "--out-md", str(out_md),
+        "--out", str(out_md),
         "--out-json", str(out_json),
     ]
     logger.info("checkpoint eval 실행: %s", " ".join(cmd))
@@ -697,7 +697,7 @@ def main(argv: list[str] | None = None) -> int:
         cmd = [
             sys.executable,
             str(_REPO_ROOT / "evals" / "run_s4_a_d4_breakdown_eval.py"),
-            "--out-md", str(out_md),
+            "--out", str(out_md),
             "--out-json", str(out_json),
         ]
         try:
