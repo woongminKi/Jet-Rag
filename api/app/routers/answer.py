@@ -44,6 +44,11 @@ from app.config import get_settings
 from app.db import get_supabase_client
 from app.routers.search import _build_pgroonga_query
 from app.services import intent_router, query_decomposer
+from app.services.multi_query_search import (
+    DECOMP_TOP_K_ORIGINAL as _DECOMP_TOP_K_ORIGINAL,
+    DECOMP_TOP_K_PER_SUB as _DECOMP_TOP_K_PER_SUB,
+    rrf_merge_pools as _rrf_merge_pools,
+)
 from app.services.quota import is_quota_exhausted
 
 # S3 D2 — confidence 안전망 임계 (planner v0.1 §A).
@@ -59,10 +64,9 @@ _DEFAULT_TOP_K = 5
 _MAX_TOP_K = 10
 _RRF_K = 60
 _RPC_TOP_K = 50
-# S3 D3 — 분해 활성 시 원본 query / sub-query 별 풀 사이즈 (planner v0.1 §G + 사용자 결정 Q-S3-D3-2).
-# 원본 query 가 더 큰 풀을 가져 (subqueries 가 노이즈 일 때 fallback 역할).
-_DECOMP_TOP_K_ORIGINAL = 20
-_DECOMP_TOP_K_PER_SUB = 10
+# S3 D3 — 분해 활성 시 원본 query / sub-query 별 풀 사이즈는 `multi_query_search` 모듈로
+# 이동 (M1 W-1(a) — `/search` 와 공유). 본 모듈은 import alias 로 기존 이름 유지.
+# (`_DECOMP_TOP_K_ORIGINAL` / `_DECOMP_TOP_K_PER_SUB` / `_rrf_merge_pools` — 위 import 참조)
 # D2-D — 응답 schema `model` 필드는 LLM 인스턴스 `model` property 동적 표시.
 # 검색 결과 0 (LLM 호출 회피) 시 호출 회피로 인스턴스를 만들지 않으므로 fallback 필요.
 _LLM_MODEL_FALLBACK = "gemini-2.5-flash"
@@ -334,32 +338,6 @@ def _fetch_query_pool(
     }
 
     return rows[:pool_size], query_parsed
-
-
-def _rrf_merge_pools(pools: list[list[dict]], *, k: int) -> list[dict]:
-    """RRF (Reciprocal Rank Fusion) — 여러 풀을 chunk_id 단위 ``1/(k+rank)`` 합산.
-
-    각 풀 내 rank 는 0-based (rrf_score 순으로 이미 정렬되어 있다고 가정).
-    동일 chunk_id 가 여러 풀에 등장하면 점수 합산 → 다중 sub-query hit 가
-    원본 query 단독 hit 보다 우선. 첫 등장 row 의 메타 (doc_id 등) 보존.
-    """
-    scores: dict[str, float] = {}
-    base_row: dict[str, dict] = {}
-    for pool in pools:
-        for rank, row in enumerate(pool):
-            chunk_id = row.get("chunk_id")
-            if not chunk_id:
-                continue
-            scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (k + rank + 1)
-            base_row.setdefault(chunk_id, row)
-
-    # rrf_score 갱신 (UI / sources.score 와 일관성 유지) + 점수 내림차순 정렬.
-    fused: list[dict] = []
-    for chunk_id, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
-        merged = dict(base_row[chunk_id])
-        merged["rrf_score"] = score
-        fused.append(merged)
-    return fused
 
 
 def _enrich_rows(client, rows: list[dict]) -> list[dict]:

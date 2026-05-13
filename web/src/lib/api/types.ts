@@ -194,6 +194,22 @@ export interface QueryParsedInfo {
   fallback_reason?: string | null;
 }
 
+/** `/search` 응답 `meta` (`api/app/routers/search.py` SearchResponse.meta).
+ *  - meta_fast path: { path, matched_kind, tags, title_ilike, date_range }
+ *  - RAG path (M1 W-1(a)): decomposition 4필드 (ENV OFF·미발화 시 false/[]/0/false). */
+export interface SearchMeta {
+  /** meta_fast path 식별자 (RAG path 응답엔 없음) */
+  path?: string;
+  matched_kind?: string;
+  /** M1 W-1(a) — paid LLM query decomposition 발화 여부 (RAG path 응답에만) */
+  decomposition_fired?: boolean;
+  decomposed_subqueries?: string[];
+  decomposition_cost_usd?: number;
+  decomposition_cached?: boolean;
+  /** 향후 키 추가 대비 (백엔드 dict 직렬화) */
+  [key: string]: unknown;
+}
+
 export interface SearchResponse {
   query: string;
   total: number;
@@ -202,6 +218,8 @@ export interface SearchResponse {
   items: SearchHit[];
   took_ms: number;
   query_parsed: QueryParsedInfo;
+  /** S3 D2 meta_fast 진단 / M1 W-1(a) decomposition 진단. null = (이론상) meta 미설정 */
+  meta?: SearchMeta | null;
 }
 
 export interface UploadResponse {

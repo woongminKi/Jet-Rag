@@ -17,6 +17,7 @@ RPC:
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import os
 import re
@@ -42,6 +43,8 @@ from app.services import (
     intent_router,
     meta_filter_fast_path,
     mmr,
+    multi_query_search,
+    query_decomposer,
     reranker_cache,
     search_metrics,
 )
@@ -248,6 +251,20 @@ _QUERY_EXPANSION_ENABLED_DEFAULT = "false"
 # opt-in ENV (default false). cache 강제 (같은 query 반복 시 Gemini 호출 0).
 _HYDE_ENABLED_DEFAULT = "false"
 
+# M1 W-1(a) — paid LLM query decomposition (`/answer` 와 동일 게이트 재사용).
+# 게이트 = router_decision.needs_decomposition AND ENV JETRAG_PAID_DECOMPOSITION_ENABLED.
+# (confidence 임계는 게이트에 끼우지 않음 — `query_decomposer.decompose` 내부 게이트도 동일.)
+# decompose 호출은 외부 LLM I/O 라 별도 스레드 + timeout 으로 보호 — 실패 시 graceful
+# (분해 skip → 원본 query 단독 검색, 회귀 0). ablation mode (dense/sparse) 시 미적용.
+# 분해 활성 시 원본 query 풀(_DECOMP_TOP_K_ORIGINAL=20) + sub-query 당 풀
+# (_DECOMP_TOP_K_PER_SUB=10) → RRF(k=60) merge → 기존 파이프라인(chunk cap·MMR·enrich).
+_DECOMP_TOP_K_ORIGINAL = multi_query_search.DECOMP_TOP_K_ORIGINAL
+_DECOMP_TOP_K_PER_SUB = multi_query_search.DECOMP_TOP_K_PER_SUB
+_ENV_DECOMPOSITION_TIMEOUT = "JETRAG_DECOMPOSITION_TIMEOUT_SEC"
+_DECOMPOSITION_TIMEOUT_DEFAULT_SEC = 5
+_DECOMPOSITION_TIMEOUT_MIN_SEC = 1
+_DECOMPOSITION_TIMEOUT_MAX_SEC = 30
+
 # W25 D8 Phase 2 — 메뉴 footer 가드: 1차 시도 실패 → 롤백 / 후속 sprint 신호로 보존.
 # 시도 결과 (work-log/2026-05-04 W25 D8 Phase 2 메뉴 footer 가드.md):
 #   - 단순 패턴 매칭 → 정답 청크 (idx 37/38/43) 도 함께 깎임 → G-S-006 0.50→0.03 악화
@@ -310,6 +327,121 @@ def _build_pgroonga_query(q: str, *, expansion_enabled: bool = False) -> str:
     if len(tokens) <= 1:
         return tokens[0]
     return " OR ".join(tokens)
+
+
+# ---------------------------------------------------------------------------
+# M1 W-1(a) — paid LLM query decomposition (gated + timeout-protected)
+# ---------------------------------------------------------------------------
+def _resolve_decomposition_timeout_sec() -> int:
+    """`JETRAG_DECOMPOSITION_TIMEOUT_SEC` → int. invalid/범위 밖이면 default 5.
+
+    range [_DECOMPOSITION_TIMEOUT_MIN_SEC, _DECOMPOSITION_TIMEOUT_MAX_SEC] 로 clamp —
+    0/음수 (즉시 timeout) 나 과도하게 큰 값 (latency 폭주) 을 import 가 아닌 호출 시점에 차단.
+    """
+    raw = os.environ.get(_ENV_DECOMPOSITION_TIMEOUT)
+    if raw is None or raw == "":
+        return _DECOMPOSITION_TIMEOUT_DEFAULT_SEC
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DECOMPOSITION_TIMEOUT_DEFAULT_SEC
+    if value < _DECOMPOSITION_TIMEOUT_MIN_SEC:
+        return _DECOMPOSITION_TIMEOUT_MIN_SEC
+    if value > _DECOMPOSITION_TIMEOUT_MAX_SEC:
+        return _DECOMPOSITION_TIMEOUT_MAX_SEC
+    return value
+
+
+def _decompose_with_timeout(
+    query: str, decision: intent_router.IntentRouterDecision
+) -> query_decomposer.QueryDecomposition:
+    """게이트 통과 시에만 별도 스레드로 `query_decomposer.decompose` 호출 + timeout 보호.
+
+    게이트 = `decision.needs_decomposition` AND `query_decomposer.is_enabled()` (ENV).
+    둘 중 하나라도 False 면 스레드를 만들지 않고 빈 결과를 즉시 반환 — ENV OFF 시
+    `/search` 의 동작·외부 호출 완전 불변 (스레드 0).
+
+    decompose 호출은 외부 LLM I/O — `concurrent.futures` 단일 워커 + `result(timeout=N)`.
+    timeout / 예외 → graceful (빈 subqueries, cost 0, warning 로그). 검색 자체는 절대 차단 X.
+    """
+    if not decision.needs_decomposition or not query_decomposer.is_enabled():
+        return query_decomposer.QueryDecomposition(
+            subqueries=(),
+            cost_usd=0.0,
+            cached=False,
+            skipped_reason=None,
+        )
+    timeout_sec = _resolve_decomposition_timeout_sec()
+    # shutdown(wait=False) — timeout 시 worker 스레드 완료를 기다리지 않음 (요청 latency 보호).
+    # 잔여 스레드는 decompose 의 자체 retry 한도(기본 1회) 내에 자연 종료.
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        future = pool.submit(query_decomposer.decompose, query, decision)
+        return future.result(timeout=timeout_sec)
+    except concurrent.futures.TimeoutError:
+        logger.warning(
+            "query_decomposer 호출 timeout (%ss) — 분해 skip (원본 query 단독 검색)",
+            timeout_sec,
+        )
+    except Exception as exc:  # noqa: BLE001 — graceful (검색 차단 X)
+        logger.warning("query_decomposer 호출 실패 — 분해 skip: %s", exc)
+    finally:
+        pool.shutdown(wait=False)
+    return query_decomposer.QueryDecomposition(
+        subqueries=(),
+        cost_usd=0.0,
+        cached=False,
+        skipped_reason=None,
+    )
+
+
+def _fetch_subquery_pool(
+    *, client, query: str, doc_id: str | None, user_id: str, pool_size: int
+) -> list[dict]:
+    """단일 sub-query → top-pool RPC (hybrid RRF, 실패 시 sparse-only) + doc_id 필터.
+
+    `/answer` 의 `_fetch_query_pool` 과 별개 — HyDE 미적용 (분해 후 sub-query 는 이미
+    명시적이라 HyDE 불필요), embed-cache hit 스냅샷 무시. **항상 graceful** — embed/RPC
+    실패 시 빈 list (503 아님, 원본 query 풀만으로 진행).
+    """
+    pg_q = _build_pgroonga_query(query)
+    dense_vec: list[float] | None = None
+    try:
+        dense_vec = get_bgem3_provider().embed_query(query)
+    except Exception as exc:  # noqa: BLE001 — graceful (sub-query 풀 누락 허용)
+        logger.debug("sub-query embed 실패 (graceful, sparse-only): %s", exc)
+    try:
+        if dense_vec is not None:
+            rpc_resp = client.rpc(
+                "search_hybrid_rrf",
+                {
+                    "query_text": pg_q,
+                    "query_dense": dense_vec,
+                    "k_rrf": _RRF_K,
+                    "top_k": _RPC_TOP_K,
+                    "user_id_arg": str(user_id),
+                },
+            ).execute()
+            rows = rpc_resp.data or []
+        else:
+            rows = _sparse_only_fallback(client, pg_q, str(user_id), _RPC_TOP_K)
+    except Exception as exc:  # noqa: BLE001 — graceful
+        logger.debug("sub-query RPC 실패 (graceful, 풀 skip): %s", exc)
+        return []
+    if doc_id is not None:
+        rows = [r for r in rows if r.get("doc_id") == doc_id]
+    return rows[:pool_size]
+
+
+def _decomposition_meta(decomp: query_decomposer.QueryDecomposition) -> dict:
+    """`/search` 응답 meta 의 decomposition 4키 — 미발화/ENV OFF 시 false/[]/0.0/false."""
+    fired = bool(decomp.subqueries)
+    return {
+        "decomposition_fired": fired,
+        "decomposed_subqueries": list(decomp.subqueries),
+        "decomposition_cost_usd": float(decomp.cost_usd),
+        "decomposition_cached": bool(decomp.cached),
+    }
 
 
 class MatchedChunk(BaseModel):
@@ -380,7 +512,12 @@ class SearchResponse(BaseModel):
     items: list[SearchHit]
     took_ms: int
     query_parsed: QueryParsedInfo  # W3 신규 — 기존 필드는 변경 X (backward compatible)
-    # S3 D2 — 메타 필터 fast path 진입 시 진단 정보. None 이면 RAG path (기존 흐름).
+    # 진단 정보 dict.
+    # - meta_fast path 진입 시: {path, matched_kind, tags, title_ilike, date_range} (S3 D2).
+    # - RAG path 시 (M1 W-1(a)): decomposition 4키 —
+    #   decomposition_fired(bool) / decomposed_subqueries(list[str]) /
+    #   decomposition_cost_usd(float) / decomposition_cached(bool).
+    #   ENV OFF 또는 미발화 시 false / [] / 0.0 / false.
     # 응답 헤더 X-Search-Path 와 동일 의미를 본문에도 노출 → 프론트가 stream 없이도 path 식별.
     meta: dict | None = None
 
@@ -481,6 +618,27 @@ def search(
         )
     from_dt = _parse_iso_date(from_date, "from_date")
     to_dt = _parse_iso_date(to_date, "to_date")
+
+    # ------------------------------------------------------------------
+    # 0) intent_router 룰 1회 산출 (외부 API 0) — MMR / chunk-cap / decomposition
+    #    게이트가 모두 이 결과를 재사용 (route() 중복 호출 제거, M1 W-1(a)).
+    #    clean_q 는 위에서 비어있지 않음이 보장됨 → route() ValueError 안 남.
+    # ------------------------------------------------------------------
+    router_decision = intent_router.route(clean_q)
+
+    # ------------------------------------------------------------------
+    # 0-b) M1 W-1(a) — paid LLM query decomposition (gated + timeout-protected).
+    #    게이트 = router_decision.needs_decomposition AND ENV
+    #    JETRAG_PAID_DECOMPOSITION_ENABLED. ablation mode (dense/sparse) 시에는
+    #    decomposition 미적용 (BM25 ablation 의 비교 기준을 흐리지 않기 위해).
+    #    embedding **전** 에 호출 — 분해 결과가 비면 기존 단일-query 경로 그대로 (회귀 0).
+    # ------------------------------------------------------------------
+    decomp = query_decomposer.QueryDecomposition(
+        subqueries=(), cost_usd=0.0, cached=False, skipped_reason=None
+    )
+    if mode == "hybrid":
+        decomp = _decompose_with_timeout(clean_q, router_decision)
+    decomp_meta = _decomposition_meta(decomp)
 
     # ------------------------------------------------------------------
     # 1) dense embedding (HF API).
@@ -644,6 +802,30 @@ def search(
             rpc_rows = [r for r in rpc_rows if r.get("dense_rank") is not None]
         elif mode == "sparse":
             rpc_rows = [r for r in rpc_rows if r.get("sparse_rank") is not None]
+
+    # ------------------------------------------------------------------
+    # 2-a-2) M1 W-1(a) — decomposition merge. subqueries 가 비어있지 않을 때만
+    #   (mode=hybrid 한정 — ablation mode 는 위 0-b 에서 decompose 자체를 skip).
+    #   원본 query 풀 = rpc_rows[:_DECOMP_TOP_K_ORIGINAL] (fallback 우위) + 각
+    #   sub-query 풀 (_DECOMP_TOP_K_PER_SUB) → RRF(k=60) merge → rpc_rows 대체.
+    #   이후 기존 파이프라인 (chunk cap·MMR·enrich) 은 dict[chunk_id, ...] 만 보므로 불변.
+    #   doc_id scope 지정 시에도 적용 (각 sub-query 풀에 동일 doc_id 필터 적용).
+    #   sub-query 풀 fetch 는 항상 graceful — 실패 시 원본 query 풀만으로 진행.
+    # ------------------------------------------------------------------
+    if decomp.subqueries:
+        original_pool = rpc_rows[:_DECOMP_TOP_K_ORIGINAL]
+        pools: list[list[dict]] = [original_pool]
+        for sq in decomp.subqueries:
+            pools.append(
+                _fetch_subquery_pool(
+                    client=client,
+                    query=sq,
+                    doc_id=doc_id,
+                    user_id=str(user_id),
+                    pool_size=_DECOMP_TOP_K_PER_SUB,
+                )
+            )
+        rpc_rows = multi_query_search.rrf_merge_pools(pools, k=_RRF_K)
 
     # ------------------------------------------------------------------
     # 2-b) chunks 본문 통합 fetch — cover guard meta + reranker 입력 + 응답 조립 한 번에.
@@ -943,6 +1125,7 @@ def search(
             items=[],
             took_ms=took_ms,
             query_parsed=query_parsed,
+            meta=decomp_meta,
         )
 
     # ------------------------------------------------------------------
@@ -1127,7 +1310,7 @@ def search(
         not mmr.is_disabled()
         and len(sorted_doc_ids) > 1
         and doc_id is None
-        and _is_cross_doc_query(clean_q)
+        and _is_cross_doc_query(clean_q, decision=router_decision)
     ):
         doc_embeddings_by_id: dict[str, list[float]] = {}
         for did in sorted_doc_ids:
@@ -1166,6 +1349,7 @@ def search(
             items=[],
             took_ms=took_ms,
             query_parsed=query_parsed,
+            meta=decomp_meta,
         )
 
     # ------------------------------------------------------------------
@@ -1179,7 +1363,9 @@ def search(
     is_doc_scope = rpc_top_k == _RPC_TOP_K_DOC_FILTER
     # S4-A P1 — list 모드 + cross_doc-class query 면 doc 당 미리보기 청크 cap 3 → 8.
     # doc_id 스코프는 우선순위가 더 높으므로 그대로 (모두 보기 = 200).
-    is_cross_doc_resp = (not is_doc_scope) and _is_cross_doc_class_query(clean_q)
+    is_cross_doc_resp = (not is_doc_scope) and _is_cross_doc_class_query(
+        clean_q, decision=router_decision
+    )
     if is_doc_scope:
         chunk_cap = _MAX_MATCHED_CHUNKS_DOC_SCOPE
     elif is_cross_doc_resp:
@@ -1289,6 +1475,7 @@ def search(
         items=items,
         took_ms=took_ms,
         query_parsed=query_parsed,
+        meta=decomp_meta,
     )
 
 
@@ -1447,31 +1634,43 @@ def _count_reranker_invokes_last_30d() -> int | None:
     return len(resp.data or [])
 
 
-def _is_cross_doc_query(query: str) -> bool:
+def _is_cross_doc_query(
+    query: str, *, decision: intent_router.IntentRouterDecision | None = None
+) -> bool:
     """S3 D4 — intent_router T1_cross_doc 트리거 여부.
 
     MMR 적용 범위 한정 (사용자 결정 Q-S3-D4-2). intent_router 는 외부 API 0
     이라 latency 영향 무시 가능. 빈 query 등 ValueError graceful False.
+
+    `decision` 을 넘기면 그것을 재사용 (M1 W-1(a) — `/search` 가 함수 상단에서
+    1회 산출한 router_decision 을 넘겨 route() 중복 호출 제거). None 이면 기존대로
+    내부에서 route() — backward compatible.
     """
-    try:
-        decision = intent_router.route(query)
-    except ValueError:
-        return False
+    if decision is None:
+        try:
+            decision = intent_router.route(query)
+        except ValueError:
+            return False
     return "T1_cross_doc" in decision.triggered_signals
 
 
-def _is_cross_doc_class_query(query: str) -> bool:
+def _is_cross_doc_class_query(
+    query: str, *, decision: intent_router.IntentRouterDecision | None = None
+) -> bool:
     """S4-A P1 — cross_doc 성격 query 여부 (T1/T2/T7 중 하나라도 발화).
 
     list 모드 응답에서 doc 당 미리보기 청크 cap 을 8 로 올릴지 결정.
     `_is_cross_doc_query` (T1 전용, MMR 용) 보다 넓은 집합 — 비교(T2)·복수
     대상(T7) query 도 doc 당 근거를 더 노출하는 게 자연스럽다. paid
     decomposition 게이트와 무관 (룰 기반 신호만 본다). 빈 query graceful False.
+
+    `decision` 을 넘기면 그것을 재사용 (M1 W-1(a)). None 이면 기존대로 route().
     """
-    try:
-        decision = intent_router.route(query)
-    except ValueError:
-        return False
+    if decision is None:
+        try:
+            decision = intent_router.route(query)
+        except ValueError:
+            return False
     return bool(set(decision.triggered_signals) & _CROSS_DOC_CLASS_SIGNALS)
 
 

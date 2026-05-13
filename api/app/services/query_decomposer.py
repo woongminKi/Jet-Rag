@@ -310,6 +310,16 @@ def _is_enabled() -> bool:
     return raw in ("true", "1", "yes", "on")
 
 
+def is_enabled() -> bool:
+    """`_is_enabled()` 의 public wrapper — 호출자가 LLM 호출 전 게이트 선판정.
+
+    `/search` (M1 W-1(a)) 가 `not router_decision.needs_decomposition or
+    not query_decomposer.is_enabled()` 일 때 분해 스레드 자체를 안 만들기 위해 사용.
+    `decompose()` 내부 게이트와 동일 ENV 를 본다.
+    """
+    return _is_enabled()
+
+
 def _is_cache_disabled() -> bool:
     """`JETRAG_DECOMPOSITION_CACHE_DISABLE=1` → True. 그 외 False (default 캐시 ON)."""
     return os.environ.get(_ENV_CACHE_DISABLE, "0").strip() == "1"
@@ -509,4 +519,5 @@ __all__ = [
     "QueryDecomposition",
     "decompose",
     "check_decomposition_budget",
+    "is_enabled",
 ]
