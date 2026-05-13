@@ -75,3 +75,8 @@ logs/
 
 # === Local reference only (v0 wireframe 원본) ===
 /docs/jet-rag wireframe/
+
+# scheduling system + backups
+.claude/scheduled_tasks.lock
+evals/*.bak.*
+evals/golden_v2.csv.bak.*
