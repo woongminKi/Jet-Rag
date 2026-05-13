@@ -295,11 +295,15 @@ def _restore_env(saved: dict[str, str | None]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _measure_one_cell(g: GoldenV2Row) -> CellResult:
+def _measure_one_cell(g: GoldenV2Row, *, mode: str = "hybrid") -> CellResult:
     """search() 호출 1회 → CellResult.
 
     relevant_chunks 비어있는 row 도 호출 — latency / reranker_path 는 측정 가능.
     chunk-level metric 만 None.
+
+    W-9.5 (2026-05-14) — `mode` 인자: `hybrid` (default, dense+sparse RRF) /
+    `dense` (의미 검색 only) / `sparse` (BM25 only). KPI #7 "하이브리드 우세 +5pp"
+    측정 인프라 — eval-side 만 손대 운영 코드 변경 0.
     """
     from app.routers.search import search  # noqa: E402
     from app.services.retrieval_metrics import (  # noqa: E402
@@ -347,7 +351,7 @@ def _measure_one_cell(g: GoldenV2Row) -> CellResult:
             from_date=None,
             to_date=None,
             doc_id=(g.doc_id or None),
-            mode="hybrid",
+            mode=mode,
             response=None,
         )
     except Exception as exc:  # noqa: BLE001
@@ -574,16 +578,18 @@ def _pick_target_item(
 # ---------------------------------------------------------------------------
 
 
-def _measure_all(rows: list[GoldenV2Row]) -> list[CellResult]:
+def _measure_all(rows: list[GoldenV2Row], *, mode: str = "hybrid") -> list[CellResult]:
     """RRF-only baseline ENV 적용 → row 별 측정 → CellResult list 반환.
 
     측정 후 ENV 복원.
+
+    W-9.5 — `mode` 는 `_measure_one_cell` 에 그대로 전달. KPI #7 측정용.
     """
     saved = _apply_baseline_env()
     cells: list[CellResult] = []
     try:
         for idx, g in enumerate(rows, start=1):
-            cell = _measure_one_cell(g)
+            cell = _measure_one_cell(g, mode=mode)
             cells.append(cell)
             if idx % 25 == 0:
                 print(
@@ -723,6 +729,7 @@ def _format_markdown(
     n_golden: int,
     doc_match_fail_zeroed_ids: list[str] | None = None,
     no_ground_truth_ids: list[str] | None = None,
+    mode: str = "hybrid",
 ) -> str:
     doc_match_fail_zeroed_ids = doc_match_fail_zeroed_ids or []
     no_ground_truth_ids = no_ground_truth_ids or []
@@ -734,9 +741,10 @@ def _format_markdown(
     r10_excl_zeroed = (sum_recall / n_excl) if n_excl > 0 else 0.0
 
     lines: list[str] = []
-    lines.append("# S4-A D4 — 골든셋 v2 R@10 3축 breakdown 측정")
+    lines.append(f"# S4-A D4 — 골든셋 v2 R@10 3축 breakdown 측정 (search mode = `{mode}`)")
     lines.append("")
     lines.append(f"- 골든셋 v2: **{n_golden} row** (`evals/golden_v2.csv`)")
+    lines.append(f"- **search mode**: `{mode}` (W-9.5 — KPI #7 ablation)")
     lines.append(
         "- 측정 모드: **RRF-only baseline** "
         "(`JETRAG_RERANKER_ENABLED=false` + `JETRAG_MMR_DISABLE=1`) — "
@@ -1216,6 +1224,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="chunks 에 dense_vec NULL row 가 있으면 측정 중단 (default: WARN 만)",
     )
+    # W-9.5 (2026-05-14) — KPI #7 "하이브리드 우세 +5pp" ablation harness.
+    # /search 가 이미 mode 분기 지원 — eval-side 만 손대 운영 코드 변경 0.
+    # 같은 golden_v2 를 hybrid / dense / sparse 로 3회 실행해 R@10·top-1 차이 비교.
+    p.add_argument(
+        "--mode",
+        choices=("hybrid", "dense", "sparse"),
+        default="hybrid",
+        help=(
+            "search mode (default: hybrid). dense=의미만 / sparse=BM25만 / "
+            "hybrid=dense+sparse RRF. KPI #7 ablation 비교용."
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -1241,14 +1261,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     t0 = time.monotonic()
-    cells = _measure_all(rows)
+    cells = _measure_all(rows, mode=args.mode)
     elapsed = time.monotonic() - t0
 
     overall, by_qt, by_dt, by_cap, by_qt_cap = aggregate_all(cells)
     doc_match_fail_zeroed_ids = [c.golden_id for c in cells if c.doc_match_fail_zeroed]
     no_ground_truth_ids = [c.golden_id for c in cells if c.no_ground_truth]
     print(
-        f"[INFO] 측정 완료 — {elapsed:.1f}s, "
+        f"[INFO] 측정 완료 — mode={args.mode} {elapsed:.1f}s, "
         f"R@10={overall.avg_recall_at_10:.4f}, "
         f"top-1={overall.top1_rate:.4f}, "
         f"P95={overall.p95_latency_ms:.1f}ms",
@@ -1264,6 +1284,7 @@ def main(argv: list[str] | None = None) -> int:
         n_golden=len(rows),
         doc_match_fail_zeroed_ids=doc_match_fail_zeroed_ids,
         no_ground_truth_ids=no_ground_truth_ids,
+        mode=args.mode,
     )
     out_md = Path(args.out)
     out_md.parent.mkdir(parents=True, exist_ok=True)
@@ -1275,6 +1296,7 @@ def main(argv: list[str] | None = None) -> int:
     raw = {
         "n_golden": len(rows),
         "elapsed_sec": round(elapsed, 2),
+        "search_mode": args.mode,
         "baseline_env": _BASELINE_ENV,
         "n_null_dense_vec": n_null_dense,
         "doc_match_fail_zeroed_ids": doc_match_fail_zeroed_ids,
