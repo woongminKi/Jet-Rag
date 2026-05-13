@@ -1,11 +1,12 @@
 # 검색 파이프라인 동작 명세 (living)
 
 > **Living document** — 검색 모델·인제스트 stage·검색 로직·표시 정책이 변경 또는 고도화될 때마다 갱신.
-> 마지막 갱신: 2026-05-13 (M0-a W-15 — S3 / S4-A·B / cross_doc P0·P1 / W-6 eval 가드 반영, 1차 갱신)
-> 버전: v0.3
+> 마지막 갱신: 2026-05-14 (M2 W-4 + M3 자동 측정 마감 + S5-A 회귀 fix + 잡일 P1/P2/P3 반영, **2차 갱신**)
+> 버전: **v0.4**
 >
-> ⚠️ **갱신 단계**: 본 v0.3 은 PRD `2026-05-12 검색 정확도 80% 달성 PRD.md` §3 W-15 의 **1차 갱신** (S3·S4·cross_doc P0/P1·W-6 까지).
-> M1 의 W-1(a) — `query_decomposer` 의 `/search` 노출 + W-3 chunk text augmentation + W-4 전체 클린 재인제스트 후 = **2차 갱신 예정** (그때 §4.0·§7·§9 재정비).
+> ⚠️ **갱신 단계**: 본 v0.4 는 PRD `2026-05-12 검색 정확도 80% 달성 PRD.md` (v1.4) §3 W-15 의 **2차 갱신**.
+> 반영 범위: M1 (W-1(a) `/search` 배선 ENV OFF 코드 보존 / W-1(b) doc-scoped 필터 ENV OFF / W-2 동의어 사전) + M2 (W-3 caption prefix only / W-4 전체 클린 재인제스트) + M3 (W-9.5 BM25 ablation harness `--mode` / S5-A `RouterSignalsBadge` 회귀 fix + decomposed_subqueries CTA / Acceptable judge 2차 / KPI #4·#5·#7·#10 ✅ + #6①·#9·#11 ❌) + 잡일 P1 (vision_page_cache 사전 cap check 우회).
+> 3차 갱신 = v1.5 영역 (golden_v3 확장 / self-host BGE-M3 + ColBERT / G-U-022 류 회귀 fix) 진입 후.
 
 ---
 
@@ -121,7 +122,7 @@ PDF 등  →  detect → extract → chunk → ... → DB  ←→  자연어 질
 | **meta_filter fast path** (§4.5) | ON (룰) | query 가 순수 메타 필터 (날짜·태그·doc명 단독 + 의문 동사구 잔존 X) | 임베딩·RPC·reranker 0 → documents SELECT 1회 |
 | **HyDE** | OFF | ENV `JETRAG_HYDE_ENABLED=true` | query → Gemini hypothetical doc → (query+doc) 임베딩 |
 | **query expansion** | OFF | ENV `JETRAG_QUERY_EXPANSION=true` | query 변형 후 RPC (`query_expansion.py`) |
-| **paid query decomposition** (§4.6) | OFF · **`/answer` 전용** | ENV `JETRAG_PAID_DECOMPOSITION_ENABLED=true` + intent_router `needs_decomposition=True` | sub-query 2~5개 → RRF merge. **`/search` 미배선** (W-1(a)에서 노출 예정) |
+| **paid query decomposition** (§4.6) | OFF · **`/answer` 전용 + `/search` 코드 보존** | ENV `JETRAG_PAID_DECOMPOSITION_ENABLED=true` + intent_router `needs_decomposition=True` | sub-query 2~5개 → RRF merge. **2026-05-13 M1 W-1(a)**: `/search` 배선 + `SearchMeta.decomposed_subqueries` 노출 코드 ship (`0ecc6a3`/`2db7a79`). **실측 net-neg** (cross_doc R@10 0.4424→0.4216) → **default OFF 코드 보존**, 향후 doc_embedding candidate 식별과 결합 시 시너지 가능성. **2026-05-14 W-1(b) doc-scoped 필터** (`190fbe0`, `JETRAG_CROSS_DOC_SCOPED_SEARCH`) — 또 net-neg (0.4424→0.4080), 동일 default OFF 코드 보존. |
 | **entity_boost** (§4.4) | OFF (사실상 무효) | ENV `JETRAG_ENTITY_BOOST=true` | query↔chunk entity 매칭 시 RRF score × `JETRAG_ENTITY_BOOST_FACTOR`(1.10). 단 query 측 entity 모수 ≈ 0 → ablation 효과 0 |
 | **vision_adjacent_boost** | OFF | ENV `JETRAG_VISION_ADJACENT_BOOST=true` | 같은 page 의 caption chunk 가 candidates 에 있으면 인접 chunk score propagate |
 | **doc_embedding RRF 가산** | OFF | ENV `JETRAG_DOC_EMBEDDING_RRF=true` | `documents.doc_embedding` ↔ query_dense cosine → doc-level rank 가산 |
@@ -376,7 +377,8 @@ intent_router.route()  ← 룰 1회 (외부 API 0) — triggered_signals / needs
 
 | 날짜 | W·Day | 변경 요약 | 영향 범위 | commit |
 |---|---|---|---|---|
-| 2026-05-13 | M0-a W-15 | living spec 1차 갱신 — §0·§4 에 S3(intent_router 7 trigger / meta_filter fast path / query_decomposer `/answer` 전용 / reranker 운영 OFF·D6 / MMR cross_doc 4중 가드 / cross_doc-class chunk cap 8) + S4-A·B(caption / entity_boost default OFF / embed_query_cache 마이그 016 / HF cold-start 완화) 추가, §8 에 측정 방법론(W-6 가드 — DECISION-6 zeroing / no_ground_truth 버킷 / dense_vec preflight) + cross_doc P0/P1 + baseline 수치 추가, §7 한계 갱신. **2차 갱신 = M1 W-1(a) decomposition `/search` 노출 + W-3/W-4 후 예정** | spec 문서만 (코드 변경 0) | (문서) |
+| 2026-05-14 | M3 마감 W-15 | living spec 2차 갱신 — M1 (W-1(a) `/search` 배선 ENV OFF / W-1(b) doc-scoped 필터 ENV OFF — 둘 다 search-side net-neg 실증, 코드 보존) + M2 (W-3 caption prefix only / W-4 전체 클린 재인제스트, top-1 0.7910→0.7966 사실상 달성 / caption_dependent gap +0.28→+0.012) + M3 (W-9.5 `--mode {hybrid,dense,sparse}` ablation harness + KPI #7 DECISION-13 qtype-aware 재정의 + S5-A `RouterSignalsBadge` SIGNAL_META 키 정합 fix [T1_cross_doc/T7_multi_target — backend label 정합, dead code 회귀 복구] + decomposed_subqueries CTA + Acceptable judge 2차 [11건 처리·7건 채움] + KPI 8개 중 7개 측정 마감) + 잡일 P1 (vision_page_cache 사전 cap check 우회, M2 W-4 회귀 직접 원인 fix). **3차 갱신 = v1.5 영역 (golden_v3 확장 / self-host BGE-M3 + ColBERT) 후** | spec 문서만 + 코드 §4.6 paid decomposition 경로 갱신 | `57d87e4`·`7b0f898`·`da80b86`·`0c5d3e0` 등 (PRD v1.4 §변경 이력 참조) |
+| 2026-05-13 | M0-a W-15 | living spec 1차 갱신 — §0·§4 에 S3(intent_router 7 trigger / meta_filter fast path / query_decomposer `/answer` 전용 / reranker 운영 OFF·D6 / MMR cross_doc 4중 가드 / cross_doc-class chunk cap 8) + S4-A·B(caption / entity_boost default OFF / embed_query_cache 마이그 016 / HF cold-start 완화) 추가, §8 에 측정 방법론(W-6 가드 — DECISION-6 zeroing / no_ground_truth 버킷 / dense_vec preflight) + cross_doc P0/P1 + baseline 수치 추가, §7 한계 갱신. **2차 갱신 = M1 W-1(a) decomposition `/search` 노출 + W-3/W-4 후 예정** | spec 문서만 (코드 변경 0) | `cda61dc` (문서) |
 | 2026-05-04 | W25 D8 | Phase 2 메뉴 footer 가드 시도 → **롤백** (G-S-006 0.50→0.03 악화) — 차수 (B) chunk 분리 / (D) PGroonga 회복 후보로 후속 sprint 이관 | search.py 변경 0 (시도 + 회귀) / 시도 결과 주석만 보존 | (롤백, commit 0) |
 | 2026-05-04 | W25 D7 | mini-Ragas (Phase 1) ship — Context Recall/Precision + `make eval` + ragas/datasets 의존성 첫 추가 | KPI 측정 / Makefile / pyproject.toml | (W25 sprint) |
 | 2026-05-04 | W25 D3~D6 | snippet 240 / chunk_id dedupe / 매칭 강도 라벨 / 표지 가드 / doc 페이지 ?q= / % 표시 통일 | search.py + UI | `72e14ca` |
