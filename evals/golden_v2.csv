@@ -18,7 +18,7 @@ G-U-016,직제규정에서 부서 구조 그림 같은 거 있나,vision_diagram
 G-U-017,법률 자료들에서 원심 파기환송 사례들 어디 있었지,cross_doc,,law sample2|law sample3,"law2:10,law3:13","law2:27,law2:29,law3:24","law2 ch10 (대구고등법원 환송), law3 ch13 (인천지방법원 환송)",두 판결 모두 원심 패소 부분 파기 후 고등/지방법원에 환송,파기;환송,,false,hwp,false
 G-U-018,law sample2 자료에서 하도급대금 직접지급 기준 어디 있었지,fuzzy_memory,80b48fa9-fe83-4fef-af31-af116494183d,law sample2,"16,17",27,,하도급대금 직접지급(하도급법 §14) 청구·판단 기준,하도급대금;직접지급,"하도급법 §14 직접지급 청구·원심 판단 chunk 16~17, 파기 범위 chunk 27 (law sample2 = 대구광역시 vs 공동수급체 하도급대금 직접지급 대법원 판결문, hwp 30 chunk)",false,hwp,false
 G-U-019,경제전망에서 12% 증가 그게 어디였지,numeric_lookup,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,2,"911,981",,특정 지표 12% 증가 부분,12%;증가,,false,pdf,false
-G-U-020,sample-report 경제전망 핵심만 알려줘,summary,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,"770,848,849",,,주요 경제 지표와 전망 요약,경제;전망,,false,pdf,false
+G-U-020,sample-report 경제전망 핵심만 알려줘,summary,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,"770,848,849","52,572,902,918,992",,주요 경제 지표와 전망 요약,경제;전망,,false,pdf,false
 G-U-021,브랜딩 스튜디오앤드오어 메인 컬러 뭐였지,exact_fact,430e9fbe-3ebc-4c8e-a592-a94034b2ac0f,브랜딩_스튜디오앤드오어,3,0,,주요 브랜드 컬러 정보,컬러;색상,,false,pptx,false
 G-U-022,스튜디오앤드오어 로고 디자인 컨셉이 뭐야,fuzzy_memory,430e9fbe-3ebc-4c8e-a592-a94034b2ac0f,브랜딩_스튜디오앤드오어,3,,,로고 디자인 의도와 컨셉,로고;컨셉,,false,pptx,false
 G-U-023,내 이력서에서 당근서비스 지원 포지션 뭐였지,exact_fact,51dd2cc0-4105-43c4-9585-6026a012a9cc,[당근서비스_Product Engineer(ERP)] 기웅민 이력서,7,2,,Product Engineer (ERP),Product Engineer;ERP,,false,pdf,false
@@ -156,21 +156,21 @@ G-A-122,현대차 외부 디자인 구성은 어떻게 되나요?,exact_fact,92c
 G-A-123,신차 구매 시 현대차 혜택과 포인트 적립은?,exact_fact,92c38315-659e-42f4-9043-8cec1d62823a,sonata-the-edge_catalog,128,"95,94,127,90,91,92",,,2026년;5월;1일;서비스;찾아가는,p.28,false,pdf,false
 G-N-004,자료에 GDPR 준수 방안 있어?,out_of_scope,,,,,,자료에 없음,GDPR;준수,,true,,false
 G-N-005,배송 정책 어디 있어?,out_of_scope,,,,,,자료에 없음,배송;정책,,true,,false
-G-A-200,경제전망 보고서 목차 어떻게 구성됐어,table_lookup,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,902,,경제전망 요약 보고서의 목차,"경제전망 요약, 국내외 여건 및 전망, 거시경제 전망, 전망의 리스크 평가",경제전망;목차,,false,pdf,true
+G-A-200,경제전망 보고서 목차 어떻게 구성됐어,table_lookup,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,902,"920,952",경제전망 요약 보고서의 목차,"경제전망 요약, 국내외 여건 및 전망, 거시경제 전망, 전망의 리스크 평가",경제전망;목차,,false,pdf,true
 G-A-201,국내 GDP 전망경로 표 어디 있어,table_lookup,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,911,"911,913",국내 성장률 전망 / 국내 GDP 전망경로,국내 GDP 전망경로 (지난해 11월 전망 대비 상향),GDP;전망,,false,pdf,true
 G-A-202,시나리오별 성장 물가 전망 표,table_lookup,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,916,"916,917",시나리오별 성장·물가 전망,반도체 수출 향방에 따른 시나리오별 성장률·물가 전망,시나리오;전망,,false,pdf,true
-G-A-203,물가 경상수지 고용 전망 표,table_lookup,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,914,,물가·경상수지·고용 전망 / 소비자물가 전망경로,"소비자물가, 경상수지, 취업자수 전망",물가;경상수지,,false,pdf,true
+G-A-203,물가 경상수지 고용 전망 표,table_lookup,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,914,"335,884,915,994",물가·경상수지·고용 전망 / 소비자물가 전망경로,"소비자물가, 경상수지, 취업자수 전망",물가;경상수지,,false,pdf,true
 G-A-204,2026년 경제전망 요약표 어디 있어,table_lookup,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,918,"898,919",경제전망 요약표 (2026.2월),2026.2월 기준 세계경제 성장률 등 경제전망 요약표,2026;전망;요약,,false,pdf,true
-G-A-205,빅테크 인프라투자 진행 상황 표,table_lookup,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,929,,빅테크 기업의 인프라투자 진행 상황,빅테크 기업별 자본지출 일정 및 정부 전력 인프라 지원 계획,빅테크;인프라,,false,pdf,true
+G-A-205,빅테크 인프라투자 진행 상황 표,table_lookup,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,929,"116,120,160,161",빅테크 기업의 인프라투자 진행 상황,빅테크 기업별 자본지출 일정 및 정부 전력 인프라 지원 계획,빅테크;인프라,,false,pdf,true
 G-U-100,그때 한마음 체육관 회비 어떻게 됐었지,fuzzy_memory,2e083cb0-05c3-4910-8345-2658c46fb7ed,한마음생활체육관_운영_내규,26,"11,19,50","이용료 표 (개인/단체, 일일입장/월회원)",이용료는 일일입장/월회원 기준,이용료;회원,,false,hwpx,false
 G-U-101,법률 자료에서 계약 합의해지 관련 있었나,fuzzy_memory,80b48fa9-fe83-4fef-af31-af116494183d,law sample2,4,"3,19",계약의 합의해지는 계속적 채권채무관계,계약의 합의해지에 관한 판결 요지,합의해지;계약,,false,hwp,false
 G-U-102,쏘나타 카탈로그에서 그때 모노블록 브레이크 봤었지,fuzzy_memory,92c38315-659e-42f4-9043-8cec1d62823a,sonata-the-edge_catalog,57,123,모노블록 브레이크 19인치 경량 휠 패키지,모노블록 4P 캘리퍼 + 19인치 휠 패키지,모노블록;브레이크,,false,pdf,false
 G-U-103,law sample 에서 채무자 변제 충당 관련 어디 있었지,fuzzy_memory,0ed5a024-e076-4893-a766-90b5d689f372,law sample3,20,"5,21,18",채무자가 부담하는 수 개의 채무 / 변제 충당,수개 채무의 변제 충당과 소멸시효 중단 효력,변제;채무,,false,pdf,false
 G-A-206,유로지역 GDP 및 PMI 그림 어디,vision_diagram,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,931,"931,932",[그림 1.8] 유로지역 GDP 및 PMI,"유로경제 성장 흐름과 GDP, PMI, 국방·인프라 지출 기여도",유로;GDP,,false,pdf,true
-G-A-207,국가별 평균관세율 변화 그림,exact_fact,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,907,,전망시점별 주요 관세 정책 내용 / 국가별 평균관세율 변화,관세 정책 현황 및 국가별 평균관세율 변화,관세;국가별,,false,pdf,true
+G-A-207,국가별 평균관세율 변화 그림,exact_fact,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,907,"26,908",전망시점별 주요 관세 정책 내용 / 국가별 평균관세율 변화,관세 정책 현황 및 국가별 평균관세율 변화,관세;국가별,,false,pdf,true
 G-A-208,중국 경제성장률 부문별 성장기여도 그림,vision_diagram,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,933,"933,934,185",중국 경제성장률 및 부문별 성장기여도,중국경제 성장세 둔화 (4% 중반대) 전망,중국;성장률,,false,pdf,true
-G-A-209,일본 경제성장률 및 기여도 그림,vision_diagram,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,937,,[그림 1.12] 일본 경제성장률 및 기여도,일본 4분기 회복 흐름 및 실질소득 개선,일본;경제성장률,,false,pdf,true
-G-A-210,명목임금 상승률 기여도 그림,exact_fact,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,946,,[그림 1.26] 명목임금 상승률 기여도,명목임금 상승률 반등 (특별급여 영향) 및 향후 전망,명목임금;상승률,,false,pdf,true
+G-A-209,일본 경제성장률 및 기여도 그림,vision_diagram,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,937,"191,936",[그림 1.12] 일본 경제성장률 및 기여도,일본 4분기 회복 흐름 및 실질소득 개선,일본;경제성장률,,false,pdf,true
+G-A-210,명목임금 상승률 기여도 그림,exact_fact,d1259dfe-c402-4cd0-bb04-3e67d88a2773,sample-report,946,"250,251,947",[그림 1.26] 명목임금 상승률 기여도,명목임금 상승률 반등 (특별급여 영향) 및 향후 전망,명목임금;상승률,,false,pdf,true
 G-U-104,보건의료 빅데이터에서 개인 프라이버시 지침은 어떻게 되나요?,synonym_mismatch,2303ef36-7502-407a-8a88-3c0dc63c8464,보건의료_빅데이터_플랫폼_시범사업_추진계획(안),,"9,13,18",,개인정보 비식별화 방안,비식별화;개인정보,"auto-gen (G-Z-001, B 단계)",false,pdf,false
 G-U-105,직제 규정에서 자산 관리 지침의 수정 사항은 무엇인가요?,synonym_mismatch,a5f3cfae-5059-41d4-8623-e9b6f23231c2,직제_규정(2024.4.30.개정),,"63,90,96",,재산관리내규 개정 사항 — 경영본부장이 경영전략처장으로 직제 변경 등 관련 조항 정정 내용.,다음과;개정한다;경영본부장,"auto-gen (G-Z-002, B 단계)",false,hwpx,false
 G-U-106,한마음생활체육관 운영 내규의 적용 시작일과 바뀐 점을 알려주세요.,synonym_mismatch,2e083cb0-05c3-4910-8345-2658c46fb7ed,한마음생활체육관_운영_내규(2024.4.30.개정),,"10,23,24",,"한마음생활체육관 운영 내규 시행일 — 본 내규는 2022년 7월 1일부터 시행, 이후 2024년 4월 30일 개정안은 발령일부터 시행 (부칙 제709호).",2022년;7월;1일;내규는;시행한다,"auto-gen (G-Z-003, B 단계)",false,hwpx,false
