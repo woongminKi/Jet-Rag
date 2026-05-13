@@ -1424,8 +1424,13 @@ def search(
 
         matched_chunks = []
         for c in top_chunks:
+            # M1 W-2 (S4-D) — 인제스트가 chunk text 끝에 붙인 `[검색어: ...]` 동의어
+            # 마커를 snippet 생성 전 제거 (사용자 노출 방지). 마커 없는 (재인제스트 전)
+            # chunk 는 no-op — ENV OFF 시 영향 0.
+            from app.services.synonym_inject import strip_synonym_marker
+
             snippet, highlights = _make_snippet_with_highlights(
-                c.get("text") or "", clean_q
+                strip_synonym_marker(c.get("text") or ""), clean_q
             )
             chunk_meta = c.get("metadata") or None
             matched_chunks.append(

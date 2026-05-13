@@ -324,6 +324,11 @@ def _sections_to_chunks(
     S4-A D2 — section.metadata 의 `table_caption` / `figure_caption` 이 set 이면
     chunk.metadata 에 주입 + text 합성 (vision_incremental 분기). v1 cache row 는
     두 필드 부재 → 합성 skip → 기존 동작 100% 유지.
+
+    M1 W-2 (S4-D) — incremental vision path 도 `_to_chunk_records` 와 동일하게
+    동의어 마커 주입 (정적 사전만 — incremental 은 doc-level LLM 후보 미생성). ENV
+    `JETRAG_SYNONYM_INJECTION_ENABLED` != true 면 collect_synonym_candidates 가 빈
+    list → 분기 미진입 → 기존 동작 무변경. graceful try/except 로 chunk 저장 차단 회피.
     """
     out: list[ChunkRecord] = []
     for offset, sec in enumerate(sections):
@@ -339,6 +344,19 @@ def _sections_to_chunks(
             table_caption=table_caption,
             figure_caption=figure_caption,
         )
+        try:
+            from app.services.synonym_inject import (
+                collect_synonym_candidates,
+                inject_marker,
+            )
+
+            _syn_cands = collect_synonym_candidates(synthesized)
+            if _syn_cands:
+                synthesized = inject_marker(synthesized, _syn_cands)
+                chunk_metadata["synonym_candidates"] = _syn_cands
+                chunk_metadata["synonym_source"] = "dict"
+        except Exception:  # noqa: BLE001 — chunk 저장 차단 회피
+            pass
         out.append(
             ChunkRecord(
                 doc_id=doc_id,

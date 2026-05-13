@@ -85,6 +85,19 @@ def _resolve_model_label(llm: LLMProvider | None) -> str:
     return getattr(llm, "model", None) or getattr(llm, "_model", None) or _LLM_MODEL_FALLBACK
 
 
+def _clean_chunk_text(text: str | None) -> str:
+    """M1 W-2 (S4-D) — 인제스트가 chunk text 끝에 붙인 `[검색어:...]` 동의어 마커 제거.
+
+    답변 LLM 컨텍스트(`_build_messages`)·`/answer` 응답 `sources[].text`(snippet) ·
+    Ragas `contexts` 어디에도 마커가 노출되지 않도록, chunks DB 본문을 enriched dict 에
+    담기 직전 1회 호출. `search.py` 의 snippet 경로와 동일 정책 — 마커 없는(재인제스트 전,
+    또는 ENV OFF 로 만든) chunk → no-op.
+    """
+    from app.services.synonym_inject import strip_synonym_marker
+
+    return strip_synonym_marker(text or "")
+
+
 # Phase 1 S0 D2-A — module-level singleton 제거 + lazy factory 경유.
 # ENV (JETRAG_LLM_PROVIDER) 1줄로 OpenAI/Gemini 전환. JETRAG_LLM_MODEL_ANSWER override 가능.
 @lru_cache(maxsize=1)
@@ -213,7 +226,7 @@ def _gather_chunks(
                 "doc_id": r["doc_id"],
                 "doc_title": (d or {}).get("title"),
                 "chunk_idx": c["chunk_idx"],
-                "text": c["text"],
+                "text": _clean_chunk_text(c["text"]),
                 "page": c.get("page"),
                 "section_title": c.get("section_title"),
                 "score": float(r.get("rrf_score") or 0.0),
@@ -371,7 +384,7 @@ def _enrich_rows(client, rows: list[dict]) -> list[dict]:
                 "doc_id": r["doc_id"],
                 "doc_title": (d or {}).get("title"),
                 "chunk_idx": c["chunk_idx"],
-                "text": c["text"],
+                "text": _clean_chunk_text(c["text"]),
                 "page": c.get("page"),
                 "section_title": c.get("section_title"),
                 "score": float(r.get("rrf_score") or 0.0),

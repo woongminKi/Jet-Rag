@@ -49,6 +49,7 @@ LLMPurpose = Literal[
     "decomposition",
     "reasoning",
     "hyde",
+    "synonym",
 ]
 
 VisionPurpose = Literal[
@@ -69,6 +70,9 @@ _GEMINI_DEFAULT_MODELS: dict[LLMPurpose, str] = {
     "decomposition": "gemini-2.5-flash-lite",
     "reasoning": "gemini-2.5-flash",
     "hyde": "gemini-2.5-flash-lite",
+    # M1 W-2 (S4-D) — 인제스트 단계 동의어 후보 생성. 짧은 입출력 → flash-lite.
+    # ENV `JETRAG_LLM_MODEL_SYNONYM` 으로 override (기존 `_MODEL_ENV_PREFIX` 패턴 자동 처리).
+    "synonym": "gemini-2.5-flash-lite",
 }
 
 # Vision default 모델 — 2.5-flash (이전 default, 동작 검증 OK).

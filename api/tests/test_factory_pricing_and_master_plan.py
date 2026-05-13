@@ -96,6 +96,8 @@ class DefaultModelsMasterPlanTest(unittest.TestCase):
             "decomposition": "gemini-2.5-flash-lite",
             "reasoning": "gemini-2.5-flash",
             "hyde": "gemini-2.5-flash-lite",
+            # M1 W-2 (S4-D) — 인제스트 동의어 후보 생성 purpose (flash-lite, 짧은 입출력).
+            "synonym": "gemini-2.5-flash-lite",
         }
         self.assertEqual(_GEMINI_DEFAULT_MODELS, expected)
 

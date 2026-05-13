@@ -31,6 +31,7 @@ W5 Day 3 추가 (4.6 표 청크 격리 — 청킹 정책 검토 §4.6):
 
 from __future__ import annotations
 
+import os
 import re
 import unicodedata
 
@@ -39,6 +40,10 @@ from app.adapters.vectorstore import ChunkRecord
 from app.ingest.jobs import stage
 
 _STAGE = "chunk"
+
+# M1 W-2 (S4-D) — 인제스트 단계 동의어 마커 주입 ENV (chunk.py 가 stage 진입 시 평가).
+# default false — true 일 때만 `[검색어: ...]` 마커·metadata.synonym_candidates 주입.
+_SYNONYM_LLM_ENV = "JETRAG_SYNONYM_INJECTION_LLM"
 
 _TARGET_SIZE = 800
 _MAX_SIZE = 1000
@@ -79,7 +84,15 @@ def run_chunk_stage(
     with stage(job_id, _STAGE):
         split = _split_long_sections(extraction.sections)
         merged = _merge_short_sections(split)
-        return _to_chunk_records(doc_id=doc_id, sections=merged)
+        # M1 W-2 (S4-D) — (b) LLM doc-level 동의어 후보. ENV LLM=true 일 때만 doc당
+        # 정확히 1회 호출 (chunk 루프 밖). graceful → 빈 list. ENV OFF (default) 면
+        # generate_doc_llm_pairs 가 즉시 빈 list 반환 → _to_chunk_records 동작 무변경.
+        doc_llm_pairs: list[tuple[str, list[str]]] | None = None
+        if os.environ.get(_SYNONYM_LLM_ENV, "false").strip().lower() == "true":
+            from app.services.synonym_inject import generate_doc_llm_pairs
+
+            doc_llm_pairs = generate_doc_llm_pairs(extraction.raw_text or "")
+        return _to_chunk_records(doc_id=doc_id, sections=merged, doc_llm_pairs=doc_llm_pairs)
 
 
 # ---------------------- 2차: 긴 섹션 분할 ----------------------
@@ -358,7 +371,10 @@ def _compose_vision_text(
 
 
 def _to_chunk_records(
-    *, doc_id: str, sections: list[ExtractedSection]
+    *,
+    doc_id: str,
+    sections: list[ExtractedSection],
+    doc_llm_pairs: list[tuple[str, list[str]]] | None = None,
 ) -> list[ChunkRecord]:
     """청크 레코드 변환 — W4-Q-14 4.4 overlap 메타 기록.
 
@@ -429,6 +445,30 @@ def _to_chunk_records(
             entities = extract_entities(text_nfc)
             if not entities.is_empty():
                 metadata["entities"] = entities.to_dict()
+        except Exception:  # noqa: BLE001 — chunk 저장 차단 회피
+            pass
+
+        # M1 W-2 (S4-D) — 동의어 후보 마커 주입. ENV `JETRAG_SYNONYM_INJECTION_ENABLED`
+        # != true 면 collect_synonym_candidates 가 빈 list → 분기 미진입 → text/metadata
+        # 100% 무변경 (기존 동작 보존). 마커는 text 끝에 `\n\n[검색어: ...]` 한 줄 —
+        # PGroonga 즉시 인덱싱, dense 오염은 짧은 list (cap 5) 라 수용 (M2 ablation).
+        # char_range 는 마커 부착 후 길이로 자연히 기록됨. table_noise 오탐 회피는
+        # test_synonym_inject.py 가 가드 (한글 키워드라 숫자/특수문자 비율 미발화).
+        try:
+            from app.services.synonym_inject import (
+                collect_synonym_candidates,
+                inject_marker,
+            )
+
+            _syn_cands = collect_synonym_candidates(
+                text_nfc, doc_llm_pairs=doc_llm_pairs
+            )
+            if _syn_cands:
+                text_nfc = unicodedata.normalize(
+                    "NFC", inject_marker(text_nfc, _syn_cands)
+                )
+                metadata["synonym_candidates"] = _syn_cands
+                metadata["synonym_source"] = "dict+llm" if doc_llm_pairs else "dict"
         except Exception:  # noqa: BLE001 — chunk 저장 차단 회피
             pass
 
