@@ -8,6 +8,13 @@ from dotenv import load_dotenv
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(_REPO_ROOT / ".env", override=False)
 
+# M0-a W-14 — ingest_jobs 고아 running watchdog threshold (시) default + clamp 범위.
+# Settings 필드 default 로도 쓰여서 클래스 정의 전에 둔다 (기존 테스트가 Settings(...) 를
+# 직접 구성할 때 이 인자를 생략해도 깨지지 않게 — config.get_settings() 는 항상 clamp 적용).
+_STALE_INGEST_JOB_HOURS_DEFAULT = 24
+_STALE_INGEST_JOB_HOURS_MIN = 1
+_STALE_INGEST_JOB_HOURS_MAX = 168  # 7일
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -39,6 +46,12 @@ class Settings:
     # 0 또는 음수 시 무한 (회복 토글 — S2 D1 이전 동작 100% 보존).
     # in-memory 카운터 — DB SUM 불필요 (sweep 간 누적, needs_vision skip 제외).
     vision_page_cap_per_doc: int
+    # M0-a W-14 (2026-05-13) — `ingest_jobs` 고아 running job watchdog threshold (시).
+    # `started_at` 이 이 시간 이전인 status='running' job 을 stale 로 보고 failed 마킹.
+    # ENV `JETRAG_STALE_INGEST_JOB_HOURS` 로 조정, `[1,168]` (1시간~7일) clamp.
+    # default 24 (SLO §10.11 최장 = 이미지PDF20+<3분 << 24h 이므로 안전 margin).
+    # 필드 default 보유 — 기존 Settings(...) 직접 구성 테스트 호환 (get_settings() 는 항상 clamp).
+    stale_ingest_job_hours: int = _STALE_INGEST_JOB_HOURS_DEFAULT
 
 
 # 잠정값 — 데이터 누적 부족 시 fallback. master plan §7.5 default 채택.
@@ -50,6 +63,8 @@ _BUDGET_KRW_PER_USD_DEFAULT = 1380.0
 # S2 D2 — page cap default. master plan §6 S2 D2 + 핸드오프 §6 Q-S2-4.
 # S0 D3 본 PC 5 PDF 측정 평균 21.5p/doc × 2.3배 안전 margin = 49.5 → round 50.
 _VISION_PAGE_CAP_PER_DOC_DEFAULT = 50
+
+# (_STALE_INGEST_JOB_HOURS_* 는 Settings 필드 default 로 쓰여 파일 상단에 정의됨.)
 
 
 def _parse_float(env_key: str, default: float) -> float:
@@ -124,5 +139,15 @@ def get_settings() -> Settings:
         # 0 또는 음수 시 budget_guard 가 무한 모드 (회복 토글).
         vision_page_cap_per_doc=_parse_int(
             "JETRAG_VISION_PAGE_CAP_PER_DOC", _VISION_PAGE_CAP_PER_DOC_DEFAULT
+        ),
+        # M0-a W-14 — invalid ENV 는 default 24, 그 외엔 [1,168] clamp (음수·0 → 1, >168 → 168).
+        stale_ingest_job_hours=max(
+            _STALE_INGEST_JOB_HOURS_MIN,
+            min(
+                _STALE_INGEST_JOB_HOURS_MAX,
+                _parse_int(
+                    "JETRAG_STALE_INGEST_JOB_HOURS", _STALE_INGEST_JOB_HOURS_DEFAULT
+                ),
+            ),
         ),
     )

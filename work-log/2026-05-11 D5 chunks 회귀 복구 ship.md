@@ -10,6 +10,8 @@
 
 > **2026-05-11 — chunks 회귀 -185 → +191 회복 완료**. budget_guard 우회 ENV (`JETRAG_BUDGET_GUARD_DISABLE=1`) + `JETRAG_DOC_BUDGET_USD=0.15` + `JETRAG_VISION_PROMPT_VERSION=v2` (process scope) 로 sonata / 데이터센터 / sample-report 3 doc 재 reingest. **chunks 2278 → 2469 (+191) / vision chunks 0 → 191 / vision_budget_exceeded flag 자동 해소**. Vision API 호출: sonata + 데이터센터 = **0 (cache hit 100%)**, sample-report = 4 page (cache miss) → 추가 cost **$0.0667** (의뢰서 임계 $0.05 약간 초과, 이미 발생한 매몰비용). 단위 테스트 **913 / 회귀 0**. 양 측정 도구 결과: **전체 R@10 회복** (회복 전 0.6049 / 0.6368 → 회복 후 0.6619 / 0.6819) · **caption_dependent=true R@10 회복** (0.5459 / 0.6119 → 0.6695) · **v2 라벨 R@10 회복** (0.5294 → 0.6269). 통합 핸드오프 §4 한계 #1 (chunks DB -185 회귀) + #4 (sample-report 의 vision-derived chunks 105 소실) **해소**.
 
+> **⚠️ 2026-05-12 정정**: sample-report 의 dense_vec 1000건이 이 reingest 직후 embed 스테이지에서 멈춰 전부 NULL 인 채 방치됐음 — 본 문서의 "sample-report 1000 chunk + 모든 page embedding 완료" 기록은 chunk 수(1000) 만 확인하고 dense_vec 미검증 = 사실 아님. 2026-05-12 DB 감사에서 발견(`work-log/2026-05-12 DB chunk 정합성 감사 — sample-report dense_vec NULL 발견.md` §3) → `evals/_repair_sample_report_dense_vec.py --apply` (commit `c2e0f06`) 로 dense_vec NULL 1000→0 복구. embed-cache 마이그 016·`embed_query_cache` 도 이때 도입. 아래 §1.3·§2.1·§2.3·§4·§7 의 "embedding 완료"/"적재" 표현은 이 정정의 대상. 이후 cross_doc P0/P1(`09df535`/`8f16f32`)·W-6 DECISION-6 분모 정정(`ddef019`) 거쳐 현 baseline = overall R@10 0.6841 / top-1 0.7955 (DECISION-6 후, RRF-only, embed-cache ON) — DoD R@10 ≥ 0.75 / top-1 ≥ 0.80 여전히 미달, "정확도 80%" 판정은 PRD M2 게이트로 이연.
+
 ---
 
 ## 1. 회복 절차
@@ -44,7 +46,7 @@ cd api && JETRAG_BUDGET_GUARD_DISABLE=1 JETRAG_DOC_BUDGET_USD=0.15 JETRAG_VISION
   uv run python ../evals/_phase4_d5_recovery_3docs.py
 ```
 
-총 소요: **약 16분** (sample-report 단독 vision sweep 약 13분 — cache miss page 4건 + 텍스트 추출 + 모든 page embedding).
+총 소요: **약 16분** (sample-report 단독 vision sweep 약 13분 — cache miss page 4건 + 텍스트 추출 + 모든 page embedding). ⚠️ 2026-05-12 정정: 실제로는 sample-report 의 embed 가 이 단계에서 cold-start 로 멈춤 → dense_vec 1000건 NULL → 2026-05-12 별도 복구(`c2e0f06`). §0 정정 주석 참조.
 
 ---
 
@@ -81,6 +83,8 @@ cd api && JETRAG_BUDGET_GUARD_DISABLE=1 JETRAG_DOC_BUDGET_USD=0.15 JETRAG_VISION
 
 3 doc 모두 `flags.vision_budget_exceeded = None (또는 미존재)` 로 자동 해소.
 인제스트 파이프라인의 `_reset_doc_for_reingest` 가 chunks reset 시 doc flags 도 ingest_mode 만 보존 + 나머지 초기화 → flag 가 None 으로 떨어짐. 이후 reingest 진행 중 budget_guard 가 ENV 비활성으로 모두 allowed=True → 새 마킹 없음.
+
+> **⚠️ 2026-05-12 정정 (§2 전체)**: 위 표·검증은 chunks **수** 회복만 확인했고 `dense_vec`(임베딩 벡터) 적재는 확인하지 않았음. 실제로 sample-report 1000 chunk 는 dense_vec 가 전부 NULL 상태로 멈춰 있었고(embed 스테이지 cold-start 정지, `ingest_jobs.cd912e70…` stale running), 2026-05-12 DB 감사에서 발견·복구. "vision chunks 0 → 191 적재" 중 sample-report 분(102 chunk)은 text·metadata 만 적재됐고 dense 벡터는 미적재였음. → 2026-05-12 `c2e0f06` 로 복구 (dense_vec NULL 1000→0). §0 정정 주석 참조.
 
 ### 2.4 단위 테스트 회귀
 
@@ -151,7 +155,7 @@ top-1 의 0.7471 < origin 0.8580 — golden_v2 가 162 → 184 row 로 신규 ro
 ## 4. 통합 핸드오프 §4 한계 변동
 
 - **한계 #1 (chunks DB -185)**: **해소** — 2278 → 2469 (+191)
-- **한계 #4 (sample-report 의 vision-derived chunks 105 소실)**: **해소** — sample-report 의 vision chunks 102 적재, 데이터센터 59 / sonata 30 추가
+- **한계 #4 (sample-report 의 vision-derived chunks 105 소실)**: **해소** — sample-report 의 vision chunks 102 적재, 데이터센터 59 / sonata 30 추가. ⚠️ 2026-05-12 정정: sample-report 분(102)은 text·metadata 만 적재, dense_vec 는 미적재 상태였음 → 2026-05-12 `c2e0f06` 로 복구. §0/§2.3 정정 주석 참조.
 - **한계 #2~3, #5~** (다른 항목): 변동 없음
 - **신규 발견**: vision_page_cache v2 의 sample-report cover 가 일부 page (46~49) 누락 — cache miss → 추가 cost $0.0667. 이는 통합 핸드오프 §1 의 "v2 cache 148 row 보존" 표현이 페이지 단위 cover 율을 보장하지 않음을 의미. 향후 회복 시 사전에 (sha256, page, prompt_version) 단위로 cache hit 율을 미리 점검하는 것이 안전.
 
@@ -206,6 +210,8 @@ feat(evals): D5 chunks 회귀 -185 복구 ship — 옵션 A (budget_guard 우회
 - 통합 핸드오프 §4 한계 #1, #4 해소
 - 단위 테스트 913 / 회귀 0
 ```
+
+⚠️ 2026-05-12 정정: 위 commit body 의 "chunks 2278 → 2469 (+191) / vision chunks 0 → 191" 은 chunk row 수 기준 — sample-report 의 dense_vec 1000건은 이때 NULL 로 남아 있었고 2026-05-12 `c2e0f06` 로 별도 복구됨. §0 정정 주석 참조.
 
 `.gitignore` 가 `evals/results/*` 를 제외하므로 stage 대상은:
 - `evals/_phase4_d5_recovery_3docs.py` (신규)

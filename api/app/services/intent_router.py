@@ -10,7 +10,11 @@
 ---------
 - 외부 API 호출 0 — 전부 정규식 + 키워드 매칭으로 결정 (latency 0ms 목표).
 - 의존성 추가 0 — 표준 라이브러리만 사용 (`re` / `unicodedata` / `dataclasses`).
-- 검색 path 변경 0 — 본 모듈은 `/search` `/answer` 에서 import 되지 않음 (D2 책임).
+- 검색 path 영향 0 — 본 모듈 자체는 외부 API·DB·마이그 0. (S3 D1 작성 당시엔
+  `/search` `/answer` 에서 import 되지 않는 dead code 였으나, D2 이후 배선 완료 —
+  `search.py` 가 `_is_cross_doc_query`(MMR T1 전용)·`_is_cross_doc_class_query`
+  (cross_doc-class chunk cap T1/T2/T7), `answer.py` 가 low_confidence 마킹·
+  decomposition 게이트 입력으로 `route()` 호출 중. 2026-05-13 docstring 정정.)
 - 신호 명세는 planner v0.1 §3 표 그대로 — T1~T7 7 trigger.
 
 7 Trigger
@@ -40,8 +44,10 @@ T6 발화 시 추가로 ``-0.3`` cap (모호 표현은 신뢰도 본질적으로
 회귀 영향
 --------
 - 외부 API 0, DB 0, 마이그 0.
-- 의존성 추가 0, 검색 경로 import 0.
-- D2 가 `/search` `/answer` 에서 import 시작하기 전까지 dead code (의도된 설계).
+- 의존성 추가 0.
+- S3 D1 작성 당시엔 dead code 였으나 D2 이후 `search.py`·`answer.py` 에서 import 중
+  (위 "설계 원칙" 참조) — 본 모듈 변경 시 두 라우터의 cross_doc/MMR/low_confidence
+  분기에 영향. 2026-05-13 docstring 정정 (코드·로직 무변경).
 """
 
 from __future__ import annotations

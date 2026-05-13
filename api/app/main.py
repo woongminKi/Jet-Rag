@@ -6,6 +6,9 @@
 - lifespan 에서 BGE-M3 임베딩 모델 cold-start warmup 을 fire-and-forget 으로 trigger
   (§10.11 SLO — 검색 첫 호출 시 HF cold start 5~20s 가 사용자에게 노출되는 것 회피).
   warmup 실패는 graceful — 앱 부팅을 막지 않는다 (토큰 미설정 환경·HF 장애 시에도 기동).
+- lifespan 에서 `ingest_jobs` 고아 running job sweep 도 fire-and-forget 1회 (M0-a W-14).
+  프로세스 비정상 종료로 남은 stale `running` job 의 status 만 failed 마킹 (chunks 미정리).
+  Supabase 미설정·DB 장애 시 graceful — 부팅 차단 금지.
 """
 
 from __future__ import annotations
@@ -62,21 +65,61 @@ async def _warmup_bgem3() -> None:
         logger.warning("BGE-M3 warmup 실패 (무시) — 첫 검색에서 재시도됨", exc_info=True)
 
 
+async def _sweep_stale_ingest_jobs() -> None:
+    """기동 시 1회 — 프로세스 비정상 종료로 남은 `ingest_jobs` 고아 running job 정리 (M0-a W-14).
+
+    - lazy import — config / supabase / 서비스 import 비용을 모듈 로드 시점에서 분리.
+    - Supabase 미설정(`supabase_url` 빈값)이면 조용히 skip — CI·로컬 자격 없는 환경 부팅 보장.
+    - 동기 HTTP 호출이라 `asyncio.to_thread` 로 이벤트 루프를 막지 않음.
+    - 어떤 예외도 graceful — sweep 은 best-effort. 실패해도 다음 기동 / 수동 CLI 로 재시도.
+    - chunks 는 절대 안 건드림 (status 만 마킹) — sample-report 2026-05-12 사고 교훈.
+    """
+    try:
+        from app.config import get_settings
+        from app.services.ingest_job_watchdog import sweep_stale_ingest_jobs
+
+        settings = get_settings()
+        if not settings.supabase_url:
+            logger.info("ingest_jobs watchdog skip — SUPABASE_URL 미설정")
+            return
+
+        result = await asyncio.to_thread(
+            sweep_stale_ingest_jobs,
+            threshold_hours=settings.stale_ingest_job_hours,
+            apply=True,
+        )
+        if result.scanned:
+            logger.warning(
+                "ingest_jobs watchdog — 고아 running %d건 발견, %d건 failed 마킹: %s",
+                result.scanned,
+                result.marked_failed,
+                result.stale_job_ids,
+            )
+        else:
+            logger.info("ingest_jobs watchdog — 고아 running 0건")
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — sweep 은 best-effort, 부팅 차단 금지.
+        logger.warning("ingest_jobs watchdog 실패 (무시) — 다음 기동/수동 CLI 로 재시도", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # fire-and-forget — warmup 완료를 기다리지 않고 곧바로 서비스 시작.
+    # fire-and-forget — warmup / sweep 완료를 기다리지 않고 곧바로 서비스 시작.
     # task 를 app.state 에 강참조로 보관 (보관 안 하면 GC 가 미완료 task 를 수거할 수 있음).
     app.state.bgem3_warmup_task = asyncio.create_task(_warmup_bgem3())
+    app.state.stale_job_sweep_task = asyncio.create_task(_sweep_stale_ingest_jobs())
     try:
         yield
     finally:
-        task: asyncio.Task[None] | None = getattr(app.state, "bgem3_warmup_task", None)
-        if task is not None and not task.done():
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+        for attr in ("bgem3_warmup_task", "stale_job_sweep_task"):
+            task: asyncio.Task[None] | None = getattr(app.state, attr, None)
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
 
 
 app = FastAPI(

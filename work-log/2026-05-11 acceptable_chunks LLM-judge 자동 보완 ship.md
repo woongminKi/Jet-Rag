@@ -51,7 +51,7 @@
   - caption_dependent=true 우선 9건: G-A-011, G-A-100, G-A-200, G-A-203, G-A-205, G-A-207, G-A-209, G-A-210, G-U-016 + plain 14건 (id asc)
 - 처리 23 / **채움 12 / `[empty]` 11** (judge 가 모든 candidate < threshold)
   - filled: `G-A-100=80` / `G-U-016=64,65,93,94,101,126,166` / `G-A-012=3` / `G-A-066=4,5,6,15,18,19,21,24`(max_count 8 cap) / `G-A-101=7,60,83,86,88` / `G-A-105=65` / `G-U-001=44,53` / `G-U-002=42,56` / `G-U-004=2,44,45,100,119` / `G-U-011=0,9,150,151,153,173` / `G-U-021=0` / `G-U-023=2`
-  - `[empty]`: G-A-011, G-A-200, G-A-203, G-A-205, G-A-207, G-A-209, G-A-210 (전부 데이터센터 huge doc 의 table_lookup/exact_fact/vision_diagram), G-A-013, G-U-013, G-U-020, G-U-022
+  - `[empty]`: G-A-011, G-A-200, G-A-203, G-A-205, G-A-207, G-A-209, G-A-210 (전부 데이터센터 huge doc 의 table_lookup/exact_fact/vision_diagram ⟶ ⚠️ 2026-05-12 정정: "데이터센터 huge doc(~1000 chunk)" 은 오기 — 실제 정답 doc 은 sample-report (doc_id `d1259dfe-c402-4cd0-bb04-3e67d88a2773`, 1000 chunk) (데이터센터 안내서는 ~443 chunk). 또한 이 7 row 가 `[empty]` 가 된 진짜 원인은 "huge doc candidate 풀 부족" 이 아니라 당시 sample-report 의 dense_vec 1000건이 전부 NULL (2026-05-12 DB 감사 발견·복구, `c2e0f06`) → BGE-M3 cosine top-15 candidate 자체가 생성되지 못함. 복구 완료 후 acceptable judge 2차 라운드가 의미 있어짐 — §5 #A 참조), G-A-013, G-U-013, G-U-020, G-U-022
 - `partial=False`, `consecutive_fail_stop=False`. 1회 `503 UNAVAILABLE` (G-U-023 attempt 1/3, "high demand") → `with_retry` 자동 복구.
 - **실측 cost $0.1511** (`vision_usage_log` source_type=`acceptable_judge` 합산) / 추정 $0.1150 / cap $0.30 의 50.4%.
 - golden_v2.csv: acceptable filled 146 → **158** (+12), empty 37 → **25** (-12).
@@ -78,7 +78,7 @@ R@10 변동 상세 (reranker OFF, n=158, backup `.bak.20260511` vs 현 golden_v2
 
 ## 5. 남은 이슈 / 한계
 
-- **#A caption_dependent 7건 `[empty]`** — 전부 데이터센터 huge doc (~1000 chunk) 의 table_lookup/exact_fact/vision_diagram. exact_fact·table_lookup 류는 "relevant chunk = 유일 정답, 주변 acceptable 아님" 이 자연스러우나, huge doc 에서 candidate top-15 cosine 이 진짜 acceptable 후보를 놓쳤을 가능성도 배제 못 함. → 후속 개선 후보 (P3): `--candidate-top-k` 확대 (15→30+) 또는 `/search` 기반 후보 생성 (dense+sparse+RRF, cosine-only 보다 huge doc robust). 현재로는 R@10 / claim B 영향 무시 가능.
+- **#A caption_dependent 7건 `[empty]`** — 전부 데이터센터 huge doc (~1000 chunk) 의 table_lookup/exact_fact/vision_diagram. exact_fact·table_lookup 류는 "relevant chunk = 유일 정답, 주변 acceptable 아님" 이 자연스러우나, huge doc 에서 candidate top-15 cosine 이 진짜 acceptable 후보를 놓쳤을 가능성도 배제 못 함. → 후속 개선 후보 (P3): `--candidate-top-k` 확대 (15→30+) 또는 `/search` 기반 후보 생성 (dense+sparse+RRF, cosine-only 보다 huge doc robust). 현재로는 R@10 / claim B 영향 무시 가능. ⚠️ 2026-05-12 정정: 정답 doc 은 sample-report(d1259dfe, 1000 chunk) — "데이터센터 huge doc" 은 오기. `[empty]` 의 진짜 원인은 당시 sample-report dense_vec 1000건 NULL(2026-05-12 발견·복구, `c2e0f06`) → cosine candidate 미생성. "후속 개선 후보 (P3): `--candidate-top-k` 확대 ..." 도 복구 완료 기준으로 재검토 — 2차 라운드 진입 시 sample-report 후보가 정상 생성되므로 top-K 확대 전에 단순 재시도부터.
 - **#B judge 관대 경향** — G-A-066 이 `max_count=8` cap 에 닿음, G-U-016 에 약한 부칙 개정문 chunk 포함. 향후 보완 라운드에서 `threshold 0.5→0.6` 상향 또는 `max_count 8→5` 검토 후보.
 - **#C `golden_v2.csv` 재실행 위험** — `build_golden_v2.py` 직접 재실행 시 LLM 보완 12 row 소실. `.bak.20260511` 또는 `run_acceptable_chunks_judge.py` 재실행으로만 복구. `build_golden_v2.py` docstring 에 경고 추가됨. (영구 가드 = `--preserve-acceptable` 옵션은 미구현, Q-5 별도 sprint.)
 - **#D `eval_retrieval_metrics.py` cosmetic 버그 (무관)** — 출력 markdown 헤더가 `--goldenset` 인자 무시하고 항상 `골든셋: evals/golden_v0.4_sonata.csv` 인쇄 (실제 측정은 전달 CSV). 본 작업 무관, 별도 처리 후보.
