@@ -52,6 +52,12 @@ class Settings:
     # default 24 (SLO §10.11 최장 = 이미지PDF20+<3분 << 24h 이므로 안전 margin).
     # 필드 default 보유 — 기존 Settings(...) 직접 구성 테스트 호환 (get_settings() 는 항상 clamp).
     stale_ingest_job_hours: int = _STALE_INGEST_JOB_HOURS_DEFAULT
+    # 2026-05-14 — chunks upsert batch size. 100+p PDF 가 한 statement 로 일괄 upsert 되어
+    # Supabase statement_timeout (default ~30~60s) 초과로 SQL 57014 발생하던 case fix.
+    # default 50 — SK 사업보고서 (chunks ~300+) 도 6 batch 로 안전 분할.
+    # ENV `JETRAG_CHUNK_UPSERT_BATCH_SIZE` 로 조정, 최소 1 clamp (0/음수 → 1).
+    # 필드 default 보유 — 기존 Settings(...) 직접 구성 테스트 호환.
+    chunk_upsert_batch_size: int = 50
 
 
 # 잠정값 — 데이터 누적 부족 시 fallback. master plan §7.5 default 채택.
@@ -149,5 +155,9 @@ def get_settings() -> Settings:
                     "JETRAG_STALE_INGEST_JOB_HOURS", _STALE_INGEST_JOB_HOURS_DEFAULT
                 ),
             ),
+        ),
+        # 2026-05-14 — chunks upsert batch size, 최소 1 clamp (0/음수 → 1).
+        chunk_upsert_batch_size=max(
+            1, _parse_int("JETRAG_CHUNK_UPSERT_BATCH_SIZE", 50)
         ),
     )
