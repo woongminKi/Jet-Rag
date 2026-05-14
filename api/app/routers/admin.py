@@ -16,16 +16,15 @@ single-user MVP 라 별도 인증 없음 (production 진입 시 별도 sprint).
 from __future__ import annotations
 
 import logging
-import sys
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from app.db import get_supabase_client
+from app.services.query_classifier import QUERY_TYPE_LABELS, classify_query_type
 
 logger = logging.getLogger(__name__)
 
@@ -40,34 +39,10 @@ _RANGE_TO_DAYS: dict[str, int] = {"7d": 7, "14d": 14, "30d": 30}
 # 실패 케이스 응답에 포함할 최근 샘플 수 — UI 가 한 화면에서 훑을 수 있는 양.
 _FAILED_SAMPLES_LIMIT = 10
 
-# 9 query_type 라벨 — `auto_goldenset._QUERY_TYPE_LABELS` 와 동기.
+# 9 query_type 라벨 — `app.services.query_classifier.QUERY_TYPE_LABELS` 재사용
+# (S1 D3 시점에는 `evals/auto_goldenset.py` 가 단일 source 였으나 본 모듈로 이전됨).
 # 응답 schema 에 항상 9개 키 노출 (sample 0건이라도) — frontend 0건 행 표기 용이.
-_QUERY_TYPE_LABELS: tuple[str, ...] = (
-    "exact_fact",
-    "fuzzy_memory",
-    "vision_diagram",
-    "table_lookup",
-    "numeric_lookup",
-    "cross_doc",
-    "summary",
-    "synonym_mismatch",
-    "out_of_scope",
-)
-
-
-# `evals/auto_goldenset.py` 의 분류 함수 lazy import — sys.path 보정 1회.
-# import 실패 시 (eval 모듈 미존재) frontend 가 query_type_distribution 빈 dict 로 안내.
-def _import_classify_query_type():
-    """evals/ 하위의 classify_query_type 함수를 lazy import.
-
-    test_auto_goldenset.py:21 와 동일 패턴 — `<repo>/evals/` 를 sys.path 에 1회 추가.
-    """
-    evals_dir = Path(__file__).resolve().parents[3] / "evals"
-    if str(evals_dir) not in sys.path:
-        sys.path.insert(0, str(evals_dir))
-    from auto_goldenset import classify_query_type  # type: ignore
-
-    return classify_query_type
+_QUERY_TYPE_LABELS: tuple[str, ...] = QUERY_TYPE_LABELS
 
 
 class DailyBucket(BaseModel):
@@ -94,7 +69,9 @@ class AdminQueriesStatsResponse(BaseModel):
     """`GET /admin/queries/stats` 응답.
 
     - error_code='migrations_pending': 마이그 006 미적용 환경. 모든 집계 빈 값.
-    - error_code='classify_unavailable': evals 모듈 import 실패. distribution 빈 dict.
+    - error_code='classify_unavailable': **deprecated** (`evals/auto_goldenset.py` →
+      `app/services/query_classifier.py` 이전 후 classifier 가 production 모듈이라
+      import 실패 케이스 없음). schema 후방 호환 위해 Literal 유지.
     """
 
     range: Literal["7d", "14d", "30d"]
@@ -171,7 +148,7 @@ def admin_queries_stats(
         total_queries=total,
         success_rate=success_rate,
         avg_latency_ms=avg_latency,
-        error_code=classify_error,  # None 또는 'classify_unavailable'
+        error_code=classify_error,  # 항상 None (classify_unavailable 은 deprecated)
         generated_at=generated_at,
     )
 
@@ -262,26 +239,21 @@ def _build_daily_buckets(rows: list[dict], days: int) -> list[DailyBucket]:
 def _build_query_type_distribution(
     rows: list[dict],
 ) -> tuple[dict[str, int], str | None]:
-    """9 라벨 분포 측정. classify import 실패 시 빈 dict + error_code.
+    """9 라벨 분포 측정.
 
-    빈 dict 가 아니라 `_QUERY_TYPE_LABELS` 9 키 모두 0 으로 초기화 — frontend
-    가 0건 라벨도 row 로 그릴 수 있도록.
+    9 키 모두 0 으로 초기화 — frontend 가 0건 라벨도 row 로 그릴 수 있도록.
+    classifier 는 production 모듈 (`app.services.query_classifier`) 이라 import
+    실패 케이스 없음 (`classify_unavailable` error_code 는 deprecated).
     """
     distribution: dict[str, int] = {label: 0 for label in _QUERY_TYPE_LABELS}
-    try:
-        classify = _import_classify_query_type()
-    except Exception as exc:  # noqa: BLE001 — evals 모듈 부재 graceful
-        logger.warning("classify_query_type import 실패 — distribution skip: %s", exc)
-        return {}, "classify_unavailable"
-
     counter: Counter[str] = Counter()
     for row in rows:
         query = (row.get("query_text") or "").strip()
         if not query:
             continue
         try:
-            label = classify(query)
-        except Exception as exc:  # noqa: BLE001
+            label = classify_query_type(query)
+        except Exception as exc:  # noqa: BLE001 — classifier 자체 방어
             logger.debug("classify 호출 실패 query=%r: %s", query[:80], exc)
             continue
         counter[label] += 1

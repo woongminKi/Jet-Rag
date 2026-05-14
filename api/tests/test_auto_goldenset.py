@@ -22,90 +22,30 @@ _EVALS_DIR = Path(__file__).resolve().parents[2] / "evals"
 sys.path.insert(0, str(_EVALS_DIR))
 
 
-class ClassifyQueryTypeTest(unittest.TestCase):
-    """query_type 9 라벨 룰 분류 검증 — master plan §8.2 정합."""
+class ClassifyQueryTypeReExportTest(unittest.TestCase):
+    """`from auto_goldenset import classify_query_type` re-export 호환 검증.
 
-    def test_negative_overrides_all(self) -> None:
-        """is_negative=True → 다른 키워드 무관하게 out_of_scope."""
-        from auto_goldenset import classify_query_type
-        # 다이어그램 키워드 + numeric 키워드 다 있어도 negative 우선
-        result = classify_query_type(
-            "이 자료들에 환경 다이어그램 그림 12% 나와있어?",
-            is_negative=True,
-        )
-        self.assertEqual(result, "out_of_scope")
+    분류 룰 본체 검증은 `tests/test_query_classifier.py` 로 이전. 본 클래스는
+    evals 측 alias 가 production 모듈 (`app.services.query_classifier`) 과 동일
+    객체를 가리키는지만 sanity check (backward compat 보호).
+    """
 
-    def test_vision_diagram_keyword(self) -> None:
-        """다이어그램·그림·도식 → vision_diagram."""
-        from auto_goldenset import classify_query_type
-        for q in ("그 다이어그램 어떻게 생겼어", "쏘나타 인테리어 사진 보여줘", "구조도 어디 있지"):
-            self.assertEqual(
-                classify_query_type(q), "vision_diagram",
-                msg=f"query={q!r} 가 vision_diagram 으로 분류되지 않음",
-            )
+    def test_alias_is_production_function(self) -> None:
+        """auto_goldenset.classify_query_type == query_classifier.classify_query_type."""
+        from auto_goldenset import classify_query_type as alias
 
-    def test_table_lookup_keyword(self) -> None:
-        """표·목록·리스트 → table_lookup."""
-        from auto_goldenset import classify_query_type
-        for q in ("휠 사이즈 표 어디", "지원금 목록 알려줘", "별표 1 내용 뭐야"):
-            self.assertEqual(classify_query_type(q), "table_lookup", msg=f"{q!r}")
+        from app.services.query_classifier import classify_query_type as prod
 
-    def test_numeric_lookup_pattern(self) -> None:
-        """숫자+단위 또는 '얼마/몇' 패턴 → numeric_lookup."""
-        from auto_goldenset import classify_query_type
-        for q in ("이용료 얼마야", "지원금 12% 어디", "체육관 5000원 인가", "몇 명 까지"):
-            self.assertEqual(classify_query_type(q), "numeric_lookup", msg=f"{q!r}")
+        self.assertIs(alias, prod)
 
-    def test_cross_doc_two_titles_or_keyword(self) -> None:
-        """expected_doc_titles 2개 또는 '비교/차이' 키워드 → cross_doc."""
+    def test_alias_smoke_call(self) -> None:
+        """alias 호출이 9 라벨 중 1개 반환 (smoke)."""
         from auto_goldenset import classify_query_type
-        # 2개 doc_title
-        result = classify_query_type(
-            "두 자료 안전 관련 내용",
-            expected_doc_titles=["docA", "docB"],
-        )
-        self.assertEqual(result, "cross_doc")
-        # 비교 키워드 단독
-        result = classify_query_type("운영내규랑 직제규정 위원회 차이")
-        self.assertEqual(result, "cross_doc")
 
-    def test_summary_keyword(self) -> None:
-        """요약·핵심·정리 → summary."""
-        from auto_goldenset import classify_query_type
-        for q in ("보건의료 빅데이터 요약해줘", "핵심만 짧게", "전체 정리"):
-            self.assertEqual(classify_query_type(q), "summary", msg=f"{q!r}")
+        from app.services.query_classifier import QUERY_TYPE_LABELS
 
-    def test_synonym_mismatch_cross_term(self) -> None:
-        """query 가 한쪽 표현, source 가 반대편 → synonym_mismatch."""
-        from auto_goldenset import classify_query_type
-        # query="환자 정보", source="비식별화" — 다른 표현으로 같은 의미
-        result = classify_query_type(
-            "환자 정보 보호 어떻게 해",
-            source_chunk_text="개인정보 비식별화 방안을 통해 데이터를 처리합니다",
-        )
-        self.assertEqual(result, "synonym_mismatch")
-
-    def test_synonym_mismatch_no_cross(self) -> None:
-        """동의어 둘 다 source 에 있으면 synonym_mismatch 아님."""
-        from auto_goldenset import classify_query_type
-        # source 안에 두 표현 다 있음 → mismatch 아님
-        result = classify_query_type(
-            "환자 정보 보호 방안",
-            source_chunk_text="환자 정보 및 개인정보 비식별화 방안을 적용합니다",
-        )
-        self.assertNotEqual(result, "synonym_mismatch")
-
-    def test_fuzzy_memory_keyword(self) -> None:
-        """그때·뭐였지·있었나 등 흐릿한 톤 → fuzzy_memory."""
-        from auto_goldenset import classify_query_type
-        for q in ("그때 시트 뭐였지", "쏘나타 휠 어디 있더라", "법률 자료 있었나"):
-            self.assertEqual(classify_query_type(q), "fuzzy_memory", msg=f"{q!r}")
-
-    def test_exact_fact_default(self) -> None:
-        """위 분류 안 되는 단편 사실 query → exact_fact (default)."""
-        from auto_goldenset import classify_query_type
-        for q in ("결재 라인 단계", "직제 규정 부서 구조", "프로젝트 경력"):
-            self.assertEqual(classify_query_type(q), "exact_fact", msg=f"{q!r}")
+        result = classify_query_type("이용료 얼마야")
+        self.assertIn(result, QUERY_TYPE_LABELS)
 
 
 class ExtractMustIncludeTest(unittest.TestCase):
