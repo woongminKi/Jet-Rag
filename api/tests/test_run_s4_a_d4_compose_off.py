@@ -85,7 +85,8 @@ class GoldenV2SchemaTests(unittest.TestCase):
         # Phase 3 (cross_doc n=4→8) + origin/main 누적 보강 + safety branch G-A-124~128 append → 183 row
         # → M0-b (2026-05-13) golden 라벨 재검수: G-U-027 broken row 제거 → 182 row
         # → P4 (2026-05-14): hard-deleted 4 doc (승인글 템플릿1/3·sonata·포트폴리오) 참조 row 47건 제거 → 135 row
-        self.assertEqual(meta["n_rows"], 135, "golden_v2 는 135 row (P4 에서 47 row 제거)")
+        # → P4-b (2026-05-14): cross_doc alias 가 hard-deleted doc 가리키는 잔여 3 row (G-U-031, G-A-126, G-A-127) 제거 → 132 row
+        self.assertEqual(meta["n_rows"], 132, "golden_v2 는 132 row (P4+P4-b 에서 총 50 row 제거)")
         expected = {
             "id",
             "query",
@@ -119,13 +120,13 @@ class GoldenV2SchemaTests(unittest.TestCase):
         known = {"pdf", "hwpx", "hwp", "pptx", "docx", "(empty)"}
         self.assertTrue(set(dt).issubset(known), f"예상 외 doc_type: {set(dt) - known}")
 
-    def test_caption_dependent_25_true_110_false(self):
-        """caption_dependent — true 25 / false 110 (P4 에서 hard-deleted doc 참조 row 47건 제거: caption true 31→25, false 151→110)."""
+    def test_caption_dependent_25_true_107_false(self):
+        """caption_dependent — true 25 / false 107 (P4 47건 + P4-b 3건 (모두 caption=false) 제거)."""
         from run_s4_a_d4_compose_off import validate_golden_v2_schema
 
         meta = validate_golden_v2_schema(self.golden_v2_path)
         self.assertEqual(meta["caption_counts"].get("true", 0), 25)
-        self.assertEqual(meta["caption_counts"].get("false", 0), 110)
+        self.assertEqual(meta["caption_counts"].get("false", 0), 107)
 
     def test_qtype_9_categories_present(self):
         """query_type 9종 모두 존재 — exact_fact / cross_doc / vision_diagram /
@@ -148,11 +149,12 @@ class GoldenV2SchemaTests(unittest.TestCase):
         # Phase 3 + origin/main 누적 + safety cross_doc 5 append → 183 row
         # → M0-b (2026-05-13): G-U-027 broken row 제거 → 182 row (caption false 152→151)
         # → P4 (2026-05-14): hard-deleted 4 doc 참조 row 47건 제거 → 135 row (caption true 31→25, false 151→110)
-        self.assertEqual(len(rows), 135)
+        # → P4-b (2026-05-14): cross_doc 잔여 3 row 제거 → 132 row (caption false 110→107)
+        self.assertEqual(len(rows), 132)
         n_caption_true = sum(1 for r in rows if r.caption_dependent)
         n_caption_false = sum(1 for r in rows if not r.caption_dependent)
         self.assertEqual(n_caption_true, 25)
-        self.assertEqual(n_caption_false, 110)
+        self.assertEqual(n_caption_false, 107)
 
     def test_load_golden_rows_preserves_nfc(self):
         """한국어 query 가 NFC 형식 유지 (BOM 제거 utf-8-sig)."""
