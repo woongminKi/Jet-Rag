@@ -20,13 +20,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
 import sys
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
-_BASE = "http://localhost:8000"
+_BASE = os.environ.get("JETRAG_API_BASE_URL", "http://localhost:8000").rstrip("/")
 
 # golden v0.1 의 20건 — query / expected_doc_id (단축) / meta_filters
 GOLDEN: list[dict] = [
