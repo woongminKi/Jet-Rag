@@ -1,12 +1,17 @@
 # 검색 파이프라인 동작 명세 (living)
 
 > **Living document** — 검색 모델·인제스트 stage·검색 로직·표시 정책이 변경 또는 고도화될 때마다 갱신.
-> 마지막 갱신: 2026-05-14 (M2 W-4 + M3 자동 측정 마감 + S5-A 회귀 fix + 잡일 P1/P2/P3 반영, **2차 갱신**)
-> 버전: **v0.4**
+> 마지막 갱신: 2026-05-15 (audit 권고 5 — pymupdf heading 영어 학술 보강 + page-header 블랙리스트, **3차 갱신**)
+> 버전: **v0.5**
 >
-> ⚠️ **갱신 단계**: 본 v0.4 는 PRD `2026-05-12 검색 정확도 80% 달성 PRD.md` (v1.4) §3 W-15 의 **2차 갱신**.
-> 반영 범위: M1 (W-1(a) `/search` 배선 ENV OFF 코드 보존 / W-1(b) doc-scoped 필터 ENV OFF / W-2 동의어 사전) + M2 (W-3 caption prefix only / W-4 전체 클린 재인제스트) + M3 (W-9.5 BM25 ablation harness `--mode` / S5-A `RouterSignalsBadge` 회귀 fix + decomposed_subqueries CTA / Acceptable judge 2차 / KPI #4·#5·#7·#10 ✅ + #6①·#9·#11 ❌) + 잡일 P1 (vision_page_cache 사전 cap check 우회).
-> 3차 갱신 = v1.5 영역 (golden_v3 확장 / self-host BGE-M3 + ColBERT / G-U-022 류 회귀 fix) 진입 후.
+> ⚠️ **갱신 단계**: 본 v0.5 는 PRD `2026-05-12 검색 정확도 80% 달성 PRD.md` (v1.4) §3 W-15 의 **3차 갱신**.
+> 반영 범위 (v0.4 → v0.5):
+> - 인제스트 — audit 권고 5 적용 (`pymupdf_parser.py` 의 `_HEADING_TEXT_PATTERN` 영어 numbered/standalone 추가 + `_PAGE_HEADER_BLACKLIST` 신규 — arXiv-style 페이지 헤더·페이지 번호 차단)
+> - 검색 — 변경 없음 (search path / RRF / intent_router 무영향)
+> - 진단 결과 — 권고 4 (cross_doc T1 warm) ROI 낮음 확정 (`_DOC_NOUN` 사전 변경 0) / over-chunking (chunks 2009→37057) 검색 품질 회귀 신호 0 (R@10 0.6829, M2 W-4 baseline ±1pp 안)
+> - 인프라 — DECISION-12 인제스트 KPI #1·#2·#3 인프라 readiness 측정 (현 corpus 12 active doc 기준 100% 게이트 초과 / 벤치 30개 충족만 별도 sprint)
+> - v1.5 sprint 설계 — HF self-host 7 옵션 비교, 권장=DeepInfra BGE-M3 ($0.01/M token, <$1/월, R@10 회귀 0)
+> 4차 갱신 = v1.5 W-1 (DeepInfra 어댑터 swap) ship 후, 또는 arXiv reingest 실측 후 권고 5 ROI 정량화.
 
 ---
 
@@ -59,7 +64,7 @@ PDF 등  →  detect → extract → chunk → ... → DB  ←→  자연어 질
 
 | 확장자 | Parser | page 정보 | OCR | 특이점 |
 |---|---|---|---|---|
-| **PDF** (텍스트) | PyMuPDF (`pymupdf_parser.py`) | ✅ 정확한 페이지 | 본문 추출 우선 | 페이지별 텍스트 + heading 휴리스틱 (W4) |
+| **PDF** (텍스트) | PyMuPDF (`pymupdf_parser.py`) | ✅ 정확한 페이지 | 본문 추출 우선 | 페이지별 텍스트 + heading 휴리스틱 (W4 + 2026-05-15 권고 5 영어 학술 보강 — §2.1 참조) |
 | **PDF** (스캔) | PyMuPDF → text<5자 감지 → Vision fallback | ✅ | ✅ Gemini Vision | quota 보호 cap (W9). vision 호출 시 표/그림 caption 동반 추출 (S4-A) |
 | **이미지** (PNG/JPG/WEBP) | `image_parser.py` → Gemini Vision | ❌ (page=null) | ✅ Gemini 2.0 Flash 캡셔닝 + OCR | 메신저/문서/화이트보드 분류 (W8) |
 | **HWP** (구버전, OLE) | `hwp_parser.py` (olefile + bodytext stream) | ❌ (page=null) | ❌ | 한글 5.x 포맷, 표 병합 휴리스틱 |
@@ -70,6 +75,36 @@ PDF 등  →  detect → extract → chunk → ... → DB  ←→  자연어 질
 | **URL** | `url_parser.py` (readability) | ❌ (page=null) | ❌ | HTML → 본문 추출 (W2) |
 
 → **page=null 인 doc_type 은 표지 가드 (§4.3) 영향 없음** (`page=1` 조건 fail). 가드는 PDF/PPTX 만.
+
+---
+
+### 2.1 PDF heading 휴리스틱 (`pymupdf_parser.py`)
+
+PyMuPDF block-level dict 모드에서 블록별 heading 후보를 판정하고, `section_title` 을 sticky propagate (다음 heading 까지 같은 title 상속). `_is_heading_block(block_max_size, page_median_size, text)` 가 세 단계 가드로 판정한다.
+
+| 가드 | 조건 | 우선순위 | 출처 |
+|---|---|---:|---|
+| **(D) `_PAGE_HEADER_BLACKLIST`** | arXiv-style page header (`arXiv:NNNN.NNNNNvN [cat] date`) / 페이지 번호 단독 (`12` / `Page 3` / `- 4 -`) — IGNORECASE | **첫 가드** (font ratio 무시) | 2026-05-15 권고 5 (audit 후속) |
+| (A) font ratio | block_max ≥ page_median × `_HEADING_FONT_RATIO` (1.15), page_median > 0 일 때만 | (D) 차단 통과 후 | W4-Q-17 (1차 갱신) |
+| (B)/(C) `_HEADING_TEXT_PATTERN` | text 길이 ≤ `_HEADING_TEXT_MAX_LEN` (80) + 패턴 매치 | (A) 미발화 시 | W4-Q-17 + 2026-05-15 권고 5 |
+
+`_HEADING_TEXT_PATTERN` alternation (좌측 우선):
+
+| 카테고리 | 패턴 | 출처 |
+|---|---|---|
+| 한국 법률 | `제\s*\d+\s*[조항장절편관]\|부칙\|별표\|별첨` | W4 |
+| 판시사항 | `【…】` (1~30자) / `[…]` (1~30자) | W4 |
+| 영문 일반 | `Chapter \d*` / `Section \d*` | W4 |
+| **영어 학술 numbered** | `\d+(?:\.\d+){0,3}\.?\s+[A-Z][A-Za-z]*` (예: `1. Introduction`, `2.1 Method`, `3.4.1 Methodology`) | **2026-05-15 권고 5** |
+| **영어 학술 standalone** | `Abstract\|Introduction\|Background\|Related Work\|Methodology\|Methods?\|Experiments?\|Evaluation\|Results?\|Findings?\|Discussion\|Conclusions?\|References\|Bibliography\|Acknowledg(?:e?)ments?\|Appendix(?:\s+[A-Z])?` | **2026-05-15 권고 5** |
+
+heading sticky propagate 정책 (W4-Q-17, 변경 없음):
+- 페이지 경계를 넘어도 다음 heading 만나기 전까지 직전 title 상속 (`current_title` 본 문서 전체 sticky)
+- heading 자체도 그 title 로 self-tag → 검색 대상 포함
+
+**TODO** (2026-05-15 권고 5 후속, 보류):
+- doc 전체에서 동일 텍스트가 80%+ 페이지에 반복되면 page-header 로 판정해 추가 차단 (저널명·저자명 반복) — 2-pass 비용 대비 효과 측정 후 도입.
+- arXiv reingest 실측 후 ROI 정량화 — work-log `2026-05-15 권고 5 — arXiv heading pattern 보강.md` §후속 명령 참조.
 
 ---
 
@@ -377,6 +412,7 @@ intent_router.route()  ← 룰 1회 (외부 API 0) — triggered_signals / needs
 
 | 날짜 | W·Day | 변경 요약 | 영향 범위 | commit |
 |---|---|---|---|---|
+| 2026-05-15 | audit 권고 후속 | living spec 3차 갱신 — §2.1 신규 (PDF heading 휴리스틱 명세화: `_PAGE_HEADER_BLACKLIST` 신규 / `_HEADING_TEXT_PATTERN` 영어 학술 numbered+standalone 추가 / 3-가드 순서표) + §2 매트릭스 PDF row 에 "권고 5 영어 학술 보강" 참조 추가. 변경 코드: `api/app/adapters/impl/pymupdf_parser.py` (+48 line) + `api/tests/test_pymupdf_heading.py` (+126 line, +8 신규, 1194→1202 OK). **검색 path 무영향** (인제스트 추출 단계만). 권고 4 (cross_doc T1 `_DOC_NOUN`) ROI 낮음 확정 / over-chunking (chunks 2009→37057) R@10 0.6829 회귀 신호 0 / DECISION-12 인제스트 KPI #1·#2·#3 인프라 100% (현 corpus 12 active doc 게이트 초과) / v1.5 HF self-host 7 옵션 비교 (권장=DeepInfra BGE-M3) 진단·설계 동반 — 진단은 코드 변경 0. **4차 갱신 = v1.5 W-1 ship 또는 arXiv reingest 실측 후** | spec 문서만 + production `pymupdf_parser.py` 인제스트 단계 | uncommitted (사용자 review 대기) |
 | 2026-05-14 | M3 마감 W-15 | living spec 2차 갱신 — M1 (W-1(a) `/search` 배선 ENV OFF / W-1(b) doc-scoped 필터 ENV OFF — 둘 다 search-side net-neg 실증, 코드 보존) + M2 (W-3 caption prefix only / W-4 전체 클린 재인제스트, top-1 0.7910→0.7966 사실상 달성 / caption_dependent gap +0.28→+0.012) + M3 (W-9.5 `--mode {hybrid,dense,sparse}` ablation harness + KPI #7 DECISION-13 qtype-aware 재정의 + S5-A `RouterSignalsBadge` SIGNAL_META 키 정합 fix [T1_cross_doc/T7_multi_target — backend label 정합, dead code 회귀 복구] + decomposed_subqueries CTA + Acceptable judge 2차 [11건 처리·7건 채움] + KPI 8개 중 7개 측정 마감) + 잡일 P1 (vision_page_cache 사전 cap check 우회, M2 W-4 회귀 직접 원인 fix). **3차 갱신 = v1.5 영역 (golden_v3 확장 / self-host BGE-M3 + ColBERT) 후** | spec 문서만 + 코드 §4.6 paid decomposition 경로 갱신 | `57d87e4`·`7b0f898`·`da80b86`·`0c5d3e0` 등 (PRD v1.4 §변경 이력 참조) |
 | 2026-05-13 | M0-a W-15 | living spec 1차 갱신 — §0·§4 에 S3(intent_router 7 trigger / meta_filter fast path / query_decomposer `/answer` 전용 / reranker 운영 OFF·D6 / MMR cross_doc 4중 가드 / cross_doc-class chunk cap 8) + S4-A·B(caption / entity_boost default OFF / embed_query_cache 마이그 016 / HF cold-start 완화) 추가, §8 에 측정 방법론(W-6 가드 — DECISION-6 zeroing / no_ground_truth 버킷 / dense_vec preflight) + cross_doc P0/P1 + baseline 수치 추가, §7 한계 갱신. **2차 갱신 = M1 W-1(a) decomposition `/search` 노출 + W-3/W-4 후 예정** | spec 문서만 (코드 변경 0) | `cda61dc` (문서) |
 | 2026-05-04 | W25 D8 | Phase 2 메뉴 footer 가드 시도 → **롤백** (G-S-006 0.50→0.03 악화) — 차수 (B) chunk 분리 / (D) PGroonga 회복 후보로 후속 sprint 이관 | search.py 변경 0 (시도 + 회귀) / 시도 결과 주석만 보존 | (롤백, commit 0) |
