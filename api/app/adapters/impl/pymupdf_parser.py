@@ -12,6 +12,13 @@ heading 휴리스틱 (W4-Q-17, 명세 §3.W4-Q-17)
   이상이면 heading. page 평균은 outlier (대형 표지 폰트 60pt 등) 에 취약 → median 사용.
 - (B) **inline 텍스트 패턴** — `제N조`, `부칙`, `별표`, `【판시사항】` 등. HwpxParser 패턴
   + 한국 법률 PDF 의 `【...】`/`[...]` 추가. text 길이 ≤ `_HEADING_TEXT_MAX_LEN` 일 때만 적용.
+- (C) **영어 학술 numbered heading** (2026-05-15 권고 5) — `1. Introduction`, `2.1 Method`,
+  `3.4.1 Methodology` 같은 numbered section + `Abstract`/`References` 등 표준 단독 단어.
+  arXiv 영어 학술 PDF 자산에서 section_title 의 94.5% 가 page-header 로 오인되던 케이스
+  대응.
+- (D) **page-header 블랙리스트** (2026-05-15 권고 5) — `arXiv:NNNN.NNNNNvN [cat] date`,
+  순수 페이지 번호 (`1`, `Page 3`, `- 4 -`) 는 font size 가 본문보다 커도 heading 에서
+  제외. _is_heading_block 의 첫 가드로 동작.
 - bold flag (`flags & 16`) 는 사용자 자산 sniff 결과 거의 미사용 → 미구현. TODO 참조.
 - `get_text("dict")` 호출 실패 시 `get_text("blocks")` 로 fallback (graceful degrade).
 - page median 이 0 이면 (텍스트 추출 실패 등) font 휴리스틱 skip, 텍스트 패턴만 사용.
@@ -37,11 +44,37 @@ logger = logging.getLogger(__name__)
 # 1.20 은 law sample3 의 12pt heading miss → 1.15 가 적정.
 _HEADING_FONT_RATIO = 1.15
 
-# heading 판별 — 텍스트 inline 패턴 (HwpxParser + 한국 법률 PDF 패턴 추가)
+# heading 판별 — 텍스트 inline 패턴 (HwpxParser + 한국 법률 PDF + 영어 학술)
+# 2026-05-15 권고 5: 영어 numbered section heading (`1. Introduction`, `2.1 Method`,
+# `3.4.1 Methodology`) + 학술 표준 단독 단어 (`Abstract`, `References` 등) 추가.
+# - numbered: `\d+(\.\d+){0,3}\.?` 다음 공백 + 대문자 시작 단어 1개 이상
+#   (e.g. "1. Introduction", "2.1 Related Work", "3.4.1 Detailed Method")
+# - standalone: 학술 표준 heading 명사 — 첫 글자 대문자 형태로만 (false positive 최소화)
+# 한국어/HWPX 패턴 (`제N조`, `Chapter`, `Section` 등) 은 보존, 회귀 0 보장.
 _HEADING_TEXT_PATTERN = re.compile(
-    r"^(제\s*\d+\s*[조항장절편관]|부칙|별표\s*\d*|별첨\s*\d*"
+    r"^("
+    r"제\s*\d+\s*[조항장절편관]|부칙|별표\s*\d*|별첨\s*\d*"
     r"|【[^】]{1,30}】|\[[^\]]{1,30}\]"
-    r"|Chapter\s*\d*|Section\s*\d*)([\s(].*)?$"
+    r"|Chapter\s*\d*|Section\s*\d*"
+    r"|\d+(?:\.\d+){0,3}\.?\s+[A-Z][A-Za-z]*"
+    r"|(?:Abstract|Introduction|Background|Related\s+Work|Methodology|Methods?"
+    r"|Experiments?|Evaluation|Results?|Findings?|Discussion|Conclusions?"
+    r"|References|Bibliography|Acknowledg(?:e?)ments?|Appendix(?:\s+[A-Z])?)"
+    r")([\s(].*)?$"
+)
+
+# heading 판별 — 페이지 헤더/번호 블랙리스트 (2026-05-15 권고 5)
+# arXiv-style page header (`arXiv:2601.00442v1 [hep-th] 1 Jan 2026`) + 페이지 번호
+# (`12`, `Page 3`, `- 4 -`) 는 font size 가 본문보다 커도 heading 에서 제외.
+# `_is_heading_block` 의 첫 가드로 동작.
+_PAGE_HEADER_BLACKLIST = re.compile(
+    r"^("
+    r"arXiv:\s*\d+\.\d+(v\d+)?(\s*\[[A-Za-z\-\.]+\])?(\s+.+)?"
+    r"|\d{1,4}"
+    r"|Page\s*\d+"
+    r"|-\s*\d+\s*-"
+    r")\s*$",
+    re.IGNORECASE,
 )
 
 # 텍스트 패턴 적용 최대 길이 — prefix-only false positive 차단
@@ -248,12 +281,19 @@ def _is_heading_block(
 ) -> bool:
     """블록이 heading 후보인지 판정.
 
+    (D) page-header 블랙리스트 — arXiv-style/페이지 번호 우선 차단 (font size 와 무관)
     (A) font size 비율 — block_max ≥ page_median × `_HEADING_FONT_RATIO` (page_median > 0)
-    (B) 텍스트 inline 패턴 — 길이 ≤ `_HEADING_TEXT_MAX_LEN` 일 때만 적용
+    (B)/(C) 텍스트 inline 패턴 — 길이 ≤ `_HEADING_TEXT_MAX_LEN` 일 때만 적용
+        (한국어 조문/【…】/Chapter/Section + 영어 학술 numbered/standalone)
 
     TODO(W4+): bold flag (`flags & 16`) 휴리스틱 — 사용자 자산 sniff 결과 거의 미사용.
     추가 자산 ablation 후 도입 검토.
+    TODO(2026-05-15 권고 5 후속): doc 전체에서 동일 텍스트가 80%+ 페이지에 반복되면
+    page-header 로 판정해 추가 차단 (저널명/저자명 반복 페이지 header). 2-pass 비용 대비
+    arXiv·페이지 번호 정규식만으로 회복률 충분히 확인된 뒤 도입.
     """
+    if len(text) <= _HEADING_TEXT_MAX_LEN and _PAGE_HEADER_BLACKLIST.match(text):
+        return False
     if (
         page_median_size > 0
         and block_max_size >= page_median_size * _HEADING_FONT_RATIO

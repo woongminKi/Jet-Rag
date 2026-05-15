@@ -251,6 +251,132 @@ class IsHeadingBlockTest(unittest.TestCase):
         self.assertFalse(_is_heading_block(10.0, 10.0, "본문 한 줄"))
         self.assertFalse(_is_heading_block(0.0, 0.0, ""))
 
+    # 2026-05-15 권고 5 — 영어 학술 PDF heading 보강
+
+    def test_text_pattern_hit_english_numbered(self) -> None:
+        """영어 학술 numbered section heading — `1. Introduction`, `2.1 Method`, `3.4.1 …`."""
+        from app.adapters.impl.pymupdf_parser import _is_heading_block
+
+        # size 휴리스틱 fail (1.0 ratio) + 텍스트 패턴 hit
+        self.assertTrue(_is_heading_block(10.0, 10.0, "1. Introduction"))
+        self.assertTrue(_is_heading_block(10.0, 10.0, "2.1 Related Work"))
+        self.assertTrue(_is_heading_block(10.0, 10.0, "3.4.1 Methodology"))
+        self.assertTrue(_is_heading_block(10.0, 10.0, "10. Conclusions"))
+        # 점 없는 변형 — `1 Introduction` (학술 일부 저널)
+        self.assertTrue(_is_heading_block(10.0, 10.0, "1 Introduction"))
+
+    def test_text_pattern_hit_english_standalone(self) -> None:
+        """영어 학술 표준 단독 단어 — `Abstract`, `References`, `Related Work`, `Appendix A`."""
+        from app.adapters.impl.pymupdf_parser import _is_heading_block
+
+        self.assertTrue(_is_heading_block(10.0, 10.0, "Abstract"))
+        self.assertTrue(_is_heading_block(10.0, 10.0, "Introduction"))
+        self.assertTrue(_is_heading_block(10.0, 10.0, "References"))
+        self.assertTrue(_is_heading_block(10.0, 10.0, "Related Work"))
+        self.assertTrue(_is_heading_block(10.0, 10.0, "Appendix A"))
+        self.assertTrue(_is_heading_block(10.0, 10.0, "Acknowledgments"))
+        self.assertTrue(_is_heading_block(10.0, 10.0, "Discussion"))
+
+    def test_arxiv_header_blocked_even_with_large_font(self) -> None:
+        """arXiv-style page header 는 font ratio 가 커도 heading 에서 차단.
+
+        실제 자산 (`bc7b4591` doc, 749 chunk 중 94.5% 가 이 패턴으로 잘못 잡힘)
+        를 정규식만으로 회복 — 본 변경의 핵심 검증.
+        """
+        from app.adapters.impl.pymupdf_parser import _is_heading_block
+
+        # font ratio 2.0 (= heading 후보) + 블랙리스트 hit → False 우선
+        self.assertFalse(
+            _is_heading_block(20.0, 10.0, "arXiv:2601.00442v1 [hep-th] 1 Jan 2026")
+        )
+        self.assertFalse(
+            _is_heading_block(20.0, 10.0, "arXiv:2401.12345v2 [cs.CL] 5 Feb 2024")
+        )
+        # 짧은 변형 — 카테고리·날짜 없음
+        self.assertFalse(_is_heading_block(20.0, 10.0, "arXiv:2601.00442v1"))
+        # 대소문자 변형 (IGNORECASE 동작 확인)
+        self.assertFalse(
+            _is_heading_block(20.0, 10.0, "ARXIV:2601.00442V1 [HEP-TH] 1 JAN 2026")
+        )
+
+    def test_page_number_only_blocked(self) -> None:
+        """순수 페이지 번호는 font ratio 가 커도 heading 에서 차단."""
+        from app.adapters.impl.pymupdf_parser import _is_heading_block
+
+        # font ratio 2.0 hit + 블랙리스트 hit → False
+        self.assertFalse(_is_heading_block(20.0, 10.0, "1"))
+        self.assertFalse(_is_heading_block(20.0, 10.0, "12"))
+        self.assertFalse(_is_heading_block(20.0, 10.0, "Page 3"))
+        self.assertFalse(_is_heading_block(20.0, 10.0, "- 4 -"))
+
+    def test_korean_patterns_no_regression(self) -> None:
+        """기존 한국어 + 영문 키워드 패턴은 회귀 없이 그대로 동작."""
+        from app.adapters.impl.pymupdf_parser import _is_heading_block
+
+        # 한국어 조문 (size 휴리스틱 fail 시에도 텍스트 패턴으로 hit)
+        self.assertTrue(_is_heading_block(10.0, 10.0, "제3조(목적)"))
+        self.assertTrue(_is_heading_block(10.0, 10.0, "제 12 조 (정의)"))
+        self.assertTrue(_is_heading_block(10.0, 10.0, "부칙"))
+        self.assertTrue(_is_heading_block(10.0, 10.0, "별표 2"))
+        # 한국 법률 PDF 의 corner bracket
+        self.assertTrue(_is_heading_block(10.0, 10.0, "【판시사항】"))
+        self.assertTrue(_is_heading_block(10.0, 10.0, "[참조조문]"))
+        # 영문 Chapter/Section (기존)
+        self.assertTrue(_is_heading_block(10.0, 10.0, "Chapter 1"))
+        self.assertTrue(_is_heading_block(10.0, 10.0, "Section 2.1"))
+
+
+class PageHeaderBlacklistTest(unittest.TestCase):
+    """2026-05-15 권고 5 — `_PAGE_HEADER_BLACKLIST` 패턴 단독 검증.
+
+    arXiv 영어 학술 PDF 의 page header 가 heading 으로 잡혀 section_title 94.5%
+    를 오염시키던 케이스 (`bc7b4591` doc) 회복. font size 휴리스틱과 독립적으로
+    텍스트 자체만으로 차단 가능해야 함.
+    """
+
+    def test_arxiv_variations_match(self) -> None:
+        from app.adapters.impl.pymupdf_parser import _PAGE_HEADER_BLACKLIST
+
+        cases = [
+            "arXiv:2601.00442v1 [hep-th] 1 Jan 2026",
+            "arXiv:2401.12345v2 [cs.CL] 5 Feb 2024",
+            "arXiv:2601.00442v1",
+            "arXiv: 2601.00442v1 [math.PR]",
+        ]
+        for s in cases:
+            self.assertIsNotNone(
+                _PAGE_HEADER_BLACKLIST.match(s),
+                f"arXiv 패턴 unmatched: {s!r}",
+            )
+
+    def test_page_number_variations_match(self) -> None:
+        from app.adapters.impl.pymupdf_parser import _PAGE_HEADER_BLACKLIST
+
+        for s in ("1", "12", "1234", "Page 3", "page 12", "- 4 -", "-  9  -"):
+            self.assertIsNotNone(
+                _PAGE_HEADER_BLACKLIST.match(s),
+                f"페이지 번호 패턴 unmatched: {s!r}",
+            )
+
+    def test_normal_body_text_does_not_match(self) -> None:
+        """본문/한국어/영문 heading 후보는 블랙리스트에 걸리지 않음."""
+        from app.adapters.impl.pymupdf_parser import _PAGE_HEADER_BLACKLIST
+
+        cases = [
+            "1. Introduction",  # numbered heading — 차단되면 안 됨
+            "2.1 Related Work",
+            "Abstract",
+            "제3조(목적)",
+            "【판시사항】",
+            "본문 한 줄입니다",
+            "12345678901",  # 5자리 초과 — 페이지 번호로 보기엔 너무 김
+        ]
+        for s in cases:
+            self.assertIsNone(
+                _PAGE_HEADER_BLACKLIST.match(s),
+                f"정상 텍스트가 잘못 블랙리스트 매치: {s!r}",
+            )
+
 
 class PyMuPDFParserBadInputTest(unittest.TestCase):
     """오류 입력 처리."""
