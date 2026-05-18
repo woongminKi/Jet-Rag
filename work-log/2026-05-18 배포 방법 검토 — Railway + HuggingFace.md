@@ -660,23 +660,27 @@ README/디자인 docs 에 노출할 항목:
 
 > 본 섹션은 **다른 컴퓨터** 또는 **새 Claude Code 세션** 에서 본 배포 작업을 이어받기 위한 완전 가이드. 본 세션 (2026-05-18) 의 진행 상황 + 미완료 항목 + 작업 절차를 모두 포함.
 
-### 15.1 현재 진행 상태 한눈에
+### 15.1 현재 진행 상태 한눈에 (2026-05-19 갱신)
 
 | 항목 | 상태 | commit / dashboard |
 |---|---|---|
-| **HEAD** | `e57c3ec` (origin 동기, push 완료) | `git log --oneline -1` |
+| **HEAD** | `6361894` (origin 동기, push 완료) | `git log --oneline -1` |
 | **단위 테스트** | 1206 OK (failures=3 기존 flaky, 회귀 0) | `cd api && uv run python -m unittest discover` |
 | **v1.5 W-0 결정성 시험** | ✅ PASS (n=100, min cosine 0.999984) | `evals/run_v1_5_w0_determinism.py` |
 | **DeepInfra account** | ✅ 가입 + billing + token | https://deepinfra.com/dash/api_keys |
 | **Railway account** | ✅ 가입 + billing + repo 연결 + `/api` Root Directory | https://railway.com → feisty-hope project |
-| **Railway Dockerfile push** | ✅ commit `e57c3ec` push 완료 | 자동 rebuild trigger 됨 |
-| **Railway ENV vars** | ⏳ 미등록 | Service → Variables 에서 입력 필요 |
-| **Vercel account** | ✅ 가입 + project 생성 (jetrag) | https://vercel.com/woongmins-projects/jetrag |
-| **Vercel Root Directory** | ❌ repo 루트 (잘못됨) → `web` 변경 필요 | Settings → Build and Deployment |
-| **Vercel build** | ❌ 712MB exceeds 500MB (Root Directory 오류) | Redeploy 후 재시도 |
+| **Railway Dockerfile push** | ✅ commit `e57c3ec` push 완료, production live | https://jet-rag-production.up.railway.app/ |
+| **Railway ENV vars** | ✅ 등록 완료 (ENV 8건 + `JETRAG_CORS_ORIGINS=https://jetrag.vercel.app`) | Service → Variables |
+| **Vercel account** | ✅ 가입 + `Jet-Rag` repo 연결 (대문자·하이픈 OK, 잘못된 `jetrag` repo 연결 해제 완료) | https://vercel.com/woongmins-projects/jetrag |
+| **Vercel Framework Preset** | ✅ "Next.js" (초기 "Other" 였음 — §16.2.3) | Settings → Build and Deployment |
+| **Vercel Root Directory** | ✅ `web` | Settings → Build and Deployment |
+| **Vercel ENV `NEXT_PUBLIC_API_BASE_URL`** | ✅ `https://jet-rag-production.up.railway.app` (scheme 누락 fix — §16.2.4) | Settings → Environment Variables |
+| **Vercel Deployment Protection** | ✅ Disabled (Q9 답변 후 재검토) | Settings → Deployment Protection |
+| **Vercel production** | ✅ 200 OK, 홈 정상 렌더 | https://jetrag.vercel.app/ |
 | **CORS env 화** | ✅ `JETRAG_CORS_ORIGINS` + Vercel regex | `api/app/main.py` |
+| **W-7 canary** | ✅ 완료 (DECISION-13 등록) — §16 | 본 work-log |
 | **v1.5 W-1 어댑터 swap** | ⏳ 미진입 (W-0 PASS 후 다음 단계) | senior-developer 위임 대기 |
-| **멀티유저 D1~D7** | ⏳ 미진입 | Deploy 안정화 후 |
+| **멀티유저 D1~D7** | ⏳ 미진입 | Q9 답변 후 |
 
 ### 15.2 다른 컴퓨터에서 진입 절차 (clone → 검증)
 
@@ -852,18 +856,21 @@ uv run python -m unittest discover 2>&1 | tail -5
 | `.env.example` | +6 | `DEEPINFRA_API_TOKEN=` 템플릿 |
 | `work-log/2026-05-18 배포 방법 검토 — Railway + HuggingFace.md` | 신규 (640+행) | 본 문서 |
 
-### 15.6 다음 단계 (순서)
+### 15.6 다음 단계 (순서, 2026-05-19 갱신)
+
+W-1~W-7 단계 모두 완료 (§16 참조). 다른 컴퓨터에서 다음 sprint 진입 순서:
 
 ```
-1. (사용자) Vercel Build and Deployment → Root Directory = web → Save → Redeploy
-2. (사용자) Railway Variables 에 ENV 8건 입력
-3. (자동) Railway / Vercel 양쪽 build 성공 대기 (~3분)
-4. (사용자) Railway public URL + Vercel public URL 보고
-5. (Claude) Vercel 의 NEXT_PUBLIC_API_BASE_URL 에 Railway URL 등록 가이드
-6. (Claude) Railway 의 JETRAG_CORS_ORIGINS 에 Vercel URL 등록 가이드
-7. (검증) 양쪽 public URL 접속 + /health smoke + 검색 1건 시연
-8. (다음 sprint) v1.5 W-1 — DeepInfra 어댑터 swap (senior-developer 위임, 2~3h)
-9. (다음 sprint) 멀티유저 D1·D2·D3 — Auth + RLS audit + per-user rate limit (Q9 답변 후)
+1. (검증) git pull → HEAD = 6361894 확인
+2. (검증) https://jetrag.vercel.app/ 200 OK 확인
+3. (검증) https://jet-rag-production.up.railway.app/health 200 OK 확인
+4. (다음 sprint) v1.5 W-1 — DeepInfra 어댑터 swap (senior-developer 위임, 2~3h)
+   - work-log: `2026-05-15 HF self-host 검토 — v1.5 sprint 설계.md` §3
+   - 산출: api/app/adapters/embedding/deepinfra.py + 단위 테스트 + R@10 회귀 0 검증
+5. (다음 sprint) 멀티유저 D1·D2·D3 — Auth + RLS audit + per-user rate limit
+   - 의존: Q9 답변 (공개 범위)
+   - work-log: 본 문서 §14
+6. (Q1 답변 후) 무료 도메인 부착 — Cloudflare/Freenom → Vercel custom domain
 ```
 
 ### 15.7 미응답 의사결정 (사용자 명시 답변 대기)
@@ -979,4 +986,129 @@ uv run python -m unittest discover 2>&1 | tail -5
 | `e57c3ec` | Dockerfile + DeepInfra W-0 + Vercel CORS env (전 세션) |
 | `1a8e062` | reconnect 후 webhook 빈 commit trigger 1 |
 | `117a98d` | reconnect 후 webhook 빈 commit trigger 2 |
-| 본 commit | §16 추가 + DECISION-13 등록 |
+| `6361894` | §16 추가 + DECISION-13 등록 |
+
+---
+
+## 17. 다른 컴퓨터로 작업 이어가기 — 빠른 진입 (2026-05-19 신규)
+
+본 sprint 종료. 다른 컴퓨터에서 다음 세션 진입 시 5분 안 도달 가능한 단일 가이드.
+
+### 17.1 사전 준비 (다른 컴퓨터에 1회만)
+
+```bash
+# 1. 도구 설치 (없으면)
+#    Python 3.12 (pyenv 권장)
+#    uv (https://docs.astral.sh/uv/)
+#    Node 20+
+#    pnpm
+
+# 2. git clone
+git clone https://github.com/woongminKi/Jet-Rag.git
+cd Jet-Rag
+
+# 3. backend 의존성
+cd api && uv sync --frozen && cd ..
+
+# 4. frontend 의존성
+cd web && pnpm install && cd ..
+```
+
+### 17.2 secret 복원 (1Password / Bitwarden 같은 곳에서)
+
+본 컴퓨터에 있는 다음 2개 파일을 비밀 저장소 (1Password Secure Note 등) 에 미리 옮겨두고, 다른 컴퓨터에서 그대로 복원:
+
+```bash
+# 본 컴퓨터에서 secret 백업 (안전 채널만 — 평문 채팅 X)
+cp /Users/kiwoongmin/Desktop/piLab/Jet-Rag/.env       <secret-store>/jetrag-api.env
+cp /Users/kiwoongmin/Desktop/piLab/Jet-Rag/web/.env   <secret-store>/jetrag-web.env
+
+# 다른 컴퓨터에서 복원
+cp <secret-store>/jetrag-api.env   <repo>/.env
+cp <secret-store>/jetrag-web.env   <repo>/web/.env
+```
+
+`.env` 안 값 (참조용, 다른 컴퓨터에서 같은 값 그대로):
+- `SUPABASE_URL` / `SUPABASE_KEY` / `SUPABASE_SERVICE_ROLE_KEY` / `SUPABASE_STORAGE_BUCKET`
+- `GEMINI_API_KEY` / `HF_API_TOKEN` / `DEEPINFRA_API_TOKEN`
+- `DEFAULT_USER_ID`
+- (선택) `JETRAG_DAILY_BUDGET_USD` / `JETRAG_CORS_ORIGINS` / `PORT`
+
+`web/.env` 안 값:
+- `NEXT_PUBLIC_API_BASE_URL=http://localhost:8000` (로컬 dev)
+- `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+
+**※ production 의 Railway / Vercel 은 이미 dashboard 에 ENV 등록되어 있어 다른 컴퓨터에서 추가 작업 불필요. .env 는 로컬 dev 용도만.**
+
+### 17.3 5분 안 검증 (다른 컴퓨터에서)
+
+```bash
+# 1. HEAD 확인
+git log --oneline -1
+# 기대: 6361894 docs(work-log): 2026-05-19 §16 ...
+
+# 2. 단위 테스트 회귀
+cd api && uv run python -m unittest discover 2>&1 | tail -5
+# 기대: Ran 1206 tests, failures=3 (기존 flaky)
+cd ..
+
+# 3. backend smoke (로컬)
+cd api && uv run uvicorn app.main:app --port 8000 &
+sleep 5
+curl http://localhost:8000/health
+# 기대: {"status":"ok",...}
+kill %1; cd ..
+
+# 4. production smoke (외부)
+curl -I https://jet-rag-production.up.railway.app/health
+curl -I https://jetrag.vercel.app/
+# 기대: 양쪽 HTTP/2 200
+```
+
+### 17.4 Claude Code 세션 진입
+
+```bash
+# 다른 컴퓨터에서 Claude Code 실행
+cd Jet-Rag
+claude
+
+# 또는 권한 자동 진입
+claude --dangerously-skip-permissions
+```
+
+세션 시작 시 자동 로드:
+- `CLAUDE.md` (없음 — 부모 `/Users/<user>/Desktop/piLab/CLAUDE.md` 참조 권장)
+- `~/.claude/projects/-Users-<user>-Desktop-piLab-Jet-Rag/memory/MEMORY.md`
+
+**경로가 다르면 memory 가 자동 로드 안 됨**. 같은 경로 (`~/Desktop/piLab/Jet-Rag/`) 유지 권장. 다른 경로 쓰려면 `~/.claude/projects/` 안 본 디렉토리 명으로 변환된 폴더에 memory 옮겨두기:
+
+```bash
+# 본 컴퓨터의 memory 백업
+cp -r ~/.claude/projects/-Users-kiwoongmin-Desktop-piLab-Jet-Rag/memory/ <secret-store>/
+
+# 다른 컴퓨터의 user 명에 맞게 경로 변환 (e.g. /Users/홍길동/Desktop/piLab/Jet-Rag → -Users-홍길동-Desktop-piLab-Jet-Rag)
+mkdir -p ~/.claude/projects/-Users-<other-user>-Desktop-piLab-Jet-Rag/
+cp -r <secret-store>/memory/ ~/.claude/projects/-Users-<other-user>-Desktop-piLab-Jet-Rag/
+```
+
+### 17.5 첫 명령 (Claude 에게 진입 요청)
+
+다른 컴퓨터에서 Claude Code 진입 후 첫 메시지:
+
+```
+work-log/2026-05-18 배포 방법 검토 — Railway + HuggingFace.md 의 §15 + §16 + §17 읽고 현재 상태 파악해. 다음 후보는 A (v1.5 W-1 DeepInfra swap) / B (멀티유저 D1~D3, Q9 답변 후) / C (Q1 도메인) / D (repo 정리) 중 어디로 갈까?
+```
+
+Claude 가 §15.1 표 + §16.4 다음 단계 + §15.7 Q1·Q8~Q11 미응답 의사결정 참조하여 권고안 제시.
+
+### 17.6 다른 컴퓨터에서 NOT 해야 할 작업 (보안)
+
+- ❌ `.env` 파일 평문 채팅·이메일·Slack 전송
+- ❌ `SUPABASE_SERVICE_ROLE_KEY` / `GEMINI_API_KEY` / `DEEPINFRA_API_TOKEN` 값 채팅에 노출
+- ❌ Railway/Vercel/Supabase dashboard 의 ENV 값 값 자체 출력
+- ❌ git push --force 또는 `branch -D main`
+- ❌ 두 repo (`jetrag` / `Jet-Rag`) 헷갈리지 말 것 — `Jet-Rag` (대문자·하이픈 포함) 가 master
+
+### 17.7 본 sprint 종합 — 핸드오프 한 줄
+
+> **2026-05-18 D 안 결정 → 05-19 W-7 canary 200 OK 완료. 다음 = v1.5 W-1 DeepInfra swap (senior-developer 위임).** HEAD `6361894`, https://jetrag.vercel.app/ + https://jet-rag-production.up.railway.app/ 양쪽 production live, 단위 테스트 1206 OK 회귀 0, KPI #10 production 측정 대기 (Q1·Q10 답변 후).
