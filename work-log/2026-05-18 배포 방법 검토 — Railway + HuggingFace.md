@@ -7,6 +7,16 @@
 > - 사용자 명시: 배포 목적 = **이직 포트폴리오 + 실 유저 대상 서비스 운영** (페르소나 확장)
 > - 추가 의사결정 4건 (§13) — 유료/공개 범위/공개 시점/Vercel Pro 전환
 > - 멀티유저 추가 작업 D1~D7 (§14) — Auth / RLS / per-user rate limit / 법적 / 결제 모델 / Vercel 라이선스 / Supabase Pro 전환 시점
+>
+> **2026-05-18 갱신 v0.3 — 본 세션 실 진행 결과 반영 (commit `e57c3ec`)**:
+> - ✅ **v1.5 W-0 결정성 시험 PASS** — n=100, min cosine **0.999984** ≥ 0.999 → DeepInfra swap 안전, dense_vec 재인제스트 불필요
+> - ✅ **DeepInfra·Railway 가입 + billing 완료** (사용자)
+> - ✅ **`api/Dockerfile` + `.dockerignore` 작성** — single-stage uv build, `/health` 200, image 1.28GB, 로컬 검증 완료
+> - ✅ **CORS env 화** — `JETRAG_CORS_ORIGINS` + Vercel preview regex (`https://*.vercel.app`)
+> - ✅ **commit `e57c3ec` push 완료** — Railway 자동 rebuild trigger
+> - ⏳ **Vercel build 실패** — Root Directory 가 repo 루트 → 712MB exceeded → 사용자 dashboard 에서 `web` 으로 변경 후 redeploy 필요
+> - ⏳ Railway ENV vars 미등록 — runtime 시 Supabase 등 연결 실패 가능
+> - **§15 다른 컴퓨터 / 새 세션 핸드오프 가이드** 신규 — clone → .env → 검증 절차
 
 ---
 
@@ -643,3 +653,254 @@ README/디자인 docs 에 노출할 항목:
 - 본인 데이터 노출 우려 = RLS 격리 + 약관 동의
 
 기획서 §11.5 포지셔닝은 **"기억 보조"** 유지하되 페르소나 B 도 동일 가치 약속 (chunk-first UX, 자동 paid 답변 0, 매칭 강도 production hide).
+
+---
+
+## 15. 다른 컴퓨터 / 새 세션 핸드오프 가이드 (2026-05-18 신규)
+
+> 본 섹션은 **다른 컴퓨터** 또는 **새 Claude Code 세션** 에서 본 배포 작업을 이어받기 위한 완전 가이드. 본 세션 (2026-05-18) 의 진행 상황 + 미완료 항목 + 작업 절차를 모두 포함.
+
+### 15.1 현재 진행 상태 한눈에
+
+| 항목 | 상태 | commit / dashboard |
+|---|---|---|
+| **HEAD** | `e57c3ec` (origin 동기, push 완료) | `git log --oneline -1` |
+| **단위 테스트** | 1206 OK (failures=3 기존 flaky, 회귀 0) | `cd api && uv run python -m unittest discover` |
+| **v1.5 W-0 결정성 시험** | ✅ PASS (n=100, min cosine 0.999984) | `evals/run_v1_5_w0_determinism.py` |
+| **DeepInfra account** | ✅ 가입 + billing + token | https://deepinfra.com/dash/api_keys |
+| **Railway account** | ✅ 가입 + billing + repo 연결 + `/api` Root Directory | https://railway.com → feisty-hope project |
+| **Railway Dockerfile push** | ✅ commit `e57c3ec` push 완료 | 자동 rebuild trigger 됨 |
+| **Railway ENV vars** | ⏳ 미등록 | Service → Variables 에서 입력 필요 |
+| **Vercel account** | ✅ 가입 + project 생성 (jetrag) | https://vercel.com/woongmins-projects/jetrag |
+| **Vercel Root Directory** | ❌ repo 루트 (잘못됨) → `web` 변경 필요 | Settings → Build and Deployment |
+| **Vercel build** | ❌ 712MB exceeds 500MB (Root Directory 오류) | Redeploy 후 재시도 |
+| **CORS env 화** | ✅ `JETRAG_CORS_ORIGINS` + Vercel regex | `api/app/main.py` |
+| **v1.5 W-1 어댑터 swap** | ⏳ 미진입 (W-0 PASS 후 다음 단계) | senior-developer 위임 대기 |
+| **멀티유저 D1~D7** | ⏳ 미진입 | Deploy 안정화 후 |
+
+### 15.2 다른 컴퓨터에서 진입 절차 (clone → 검증)
+
+**전제**: GitHub repo 접근 권한 + 카드 등록된 외부 서비스 account 4건 (DeepInfra / Railway / Vercel / Supabase) + .env 의 production 값.
+
+#### Step 1. 코드 clone + 의존성 설치
+
+```bash
+# Python 3.12 / uv / Node 20+ / pnpm 사전 설치 가정
+git clone https://github.com/woongminKi/Jet-Rag.git
+cd Jet-Rag
+
+# backend
+cd api
+uv sync --frozen
+cd ..
+
+# frontend
+cd web
+pnpm install
+cd ..
+```
+
+#### Step 2. `.env` 복원 (값은 본인 비밀 저장소에서)
+
+```bash
+cp .env.example .env
+# .env 편집 — 다음 값 채우기:
+#   SUPABASE_URL, SUPABASE_KEY, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_STORAGE_BUCKET
+#   GEMINI_API_KEY, HF_API_TOKEN, DEEPINFRA_API_TOKEN
+#   DEFAULT_USER_ID
+#   (선택) JETRAG_* 토글
+```
+
+`web/.env` 도 동일 (Next.js 용 NEXT_PUBLIC_* 키들).
+
+#### Step 3. W-0 결정성 시험 재실행 (검증)
+
+```bash
+cd api
+uv run python ../evals/run_v1_5_w0_determinism.py --sample 5    # smoke (~30s, <$0.0001)
+uv run python ../evals/run_v1_5_w0_determinism.py --sample 100  # 본 (~5분, <$0.001)
+```
+
+기대 결과: min cosine ≥ 0.999, "PASS" 메시지.
+
+#### Step 4. Docker build 로컬 검증
+
+```bash
+cd api
+docker build -t jetrag-api .              # 빌드 (~1분, image ~1.28GB)
+docker run --rm -p 8000:8000 -e PORT=8000 jetrag-api &
+sleep 5
+curl http://localhost:8000/health         # 기대: {"status":"ok"}
+```
+
+#### Step 5. 단위 테스트 회귀
+
+```bash
+cd api
+uv run python -m unittest discover 2>&1 | tail -5
+# 기대: Ran 1206 tests, failures=3 (기존 flaky, 본 변경 무관)
+```
+
+### 15.3 외부 서비스 dashboard 작업 (다른 컴퓨터에서도 동일)
+
+#### 15.3.1 DeepInfra (BGE-M3 embedding API)
+
+- URL: https://deepinfra.com/dash/api_keys
+- 작업: API key 발급 → `.env` 의 `DEEPINFRA_API_TOKEN` 에 등록
+- 검증: W-0 시험 PASS 면 정상
+- 비용: <$1/월 (페르소나 트래픽)
+
+#### 15.3.2 Railway (backend FastAPI 호스팅)
+
+- URL: https://railway.com → project `feisty-hope` → service `Jet-Rag`
+- 가입: GitHub OAuth → Hobby $5/월 billing 등록
+- **Settings → Source**:
+  - Source Repo: `woongminKi/Jet-Rag`
+  - **Root Directory: `/api`** ← 중요
+  - Branch: `main`
+  - Auto deploy: Enabled
+- **Settings → Build**:
+  - Builder: Dockerfile auto-detected (`api/Dockerfile`)
+  - Watch Paths (선택): `api/**`
+- **Variables** (Raw Editor 에 일괄 입력):
+  ```
+  SUPABASE_URL=
+  SUPABASE_KEY=
+  SUPABASE_SERVICE_ROLE_KEY=
+  SUPABASE_STORAGE_BUCKET=
+  GEMINI_API_KEY=
+  HF_API_TOKEN=
+  DEEPINFRA_API_TOKEN=
+  DEFAULT_USER_ID=
+  JETRAG_CORS_ORIGINS=<Vercel URL 확정 후 등록>
+  ```
+- region: **Southeast Asia (Singapore)** — Supabase Seoul 와 ap 권역
+- Deploy trigger: `main` push 시 자동, 또는 Deployments 페이지 Deploy 버튼 수동
+- public URL: 자동 발급 `*.up.railway.app`
+
+#### 15.3.3 Vercel (frontend Next.js 호스팅)
+
+- URL: https://vercel.com/woongmins-projects/jetrag
+- 가입: GitHub OAuth → Hobby (무료, 비상업 약관)
+- **Settings → Build and Deployment**:
+  - **Root Directory: `web`** ← 중요 (General 탭이 아니라 Build and Deployment 탭!)
+  - Framework Preset: `Next.js` (auto)
+  - Build Command: 기본값 (`next build`)
+  - Install Command: 기본값 (`pnpm install`)
+  - Output Directory: 기본값 (`.next`)
+- **Settings → Environment Variables**:
+  ```
+  NEXT_PUBLIC_SUPABASE_URL=<.env 의 값>
+  NEXT_PUBLIC_SUPABASE_ANON_KEY=<.env 의 값>
+  NEXT_PUBLIC_API_BASE_URL=<Railway public URL 확정 후 등록>
+  ```
+- **Deployments → Redeploy** (Use existing Build Cache **해제** 권장)
+- public URL: 자동 발급 `*.vercel.app`
+
+#### 15.3.4 Supabase (DB + Storage + Auth)
+
+- URL: https://supabase.com/dashboard
+- region: `ap-northeast-2` Seoul (변경 X)
+- 작업 없음 (기존 그대로 사용)
+- 멀티유저 D1 진입 시: Authentication → Providers (Email / Google / GitHub OAuth) 활성화
+
+### 15.4 트러블슈팅 (본 세션에서 만난 실 사례)
+
+#### 15.4.1 Vercel "Total bundle size 712 MB exceeds 500 MB"
+
+**원인**: Root Directory 가 repo 루트 → `api/` Python 의존성 + `web/` node_modules + `.venv` 모두 번들링.
+**해결**:
+1. Vercel Settings → **Build and Deployment** (General 탭 아님!)
+2. Root Directory 입력란에 `web` 입력 → Save
+3. Deployments → 실패 deployment ⋯ → Redeploy (cache 해제)
+
+#### 15.4.2 Railway "Build failed in 00:09"
+
+**원인**: Dockerfile 없음 + monorepo (api/ + web/) → RAILPACK 자동 감지 실패.
+**해결** (본 세션 commit `e57c3ec` 이후 자동 해결):
+1. `api/Dockerfile` 존재 확인
+2. Railway Settings → Source → Root Directory = `/api`
+3. 새 commit push 시 자동 rebuild
+
+#### 15.4.3 W-0 시험에서 cwd 에러 `cd: no such file or directory: api`
+
+**원인**: 직전 명령에서 cwd 가 이미 `api/` 안으로 이동됨.
+**해결**: 절대경로 사용 또는 `pwd` 로 현재 위치 확인 후 진입.
+
+#### 15.4.4 Railway outbound IPv6 미지원
+
+**원인**: Railway 가 IPv6 outbound 미지원, Supabase 가 IPv6 우선 응답.
+**영향**: Jet-Rag 는 supabase-py REST (HTTPS) 만 사용 → **무영향**.
+**대비**: 추후 raw Postgres 직접 연결 도입 시 Session Pooler URL (`pooler.supabase.com`) 강제.
+
+#### 15.4.5 Docker image 1.28GB 큼
+
+**원인**: `ragas`, `datasets`, `supabase`, `langchain-google-genai` 등 무거운 의존성을 모두 `uv sync` 로 설치.
+**영향**: cold-start 약간 느릴 수 있으나 Railway always-on 이라 무관.
+**후속 개선** (별도 sprint): multi-stage build + `--no-dev` group 분리로 ~500MB 까지 축소.
+
+### 15.5 본 세션에서 변경된 파일 (commit `e57c3ec`)
+
+| 파일 | 변경 | 목적 |
+|---|---|---|
+| `api/Dockerfile` | 신규 (32행) | Railway build |
+| `api/.dockerignore` | 신규 (48행) | image 크기 절감 |
+| `api/app/main.py` | +14 / -1 | CORS env (`JETRAG_CORS_ORIGINS`) + Vercel regex |
+| `api/app/config.py` | +6 | `deepinfra_api_token` Settings 필드 |
+| `api/tests/test_config.py` | 신규 (81행) | Settings smoke 4건 (1202 → 1206 OK) |
+| `evals/run_v1_5_w0_determinism.py` | 신규 (332행) | HF vs DeepInfra cosine 결정성 시험 |
+| `.env.example` | +6 | `DEEPINFRA_API_TOKEN=` 템플릿 |
+| `work-log/2026-05-18 배포 방법 검토 — Railway + HuggingFace.md` | 신규 (640+행) | 본 문서 |
+
+### 15.6 다음 단계 (순서)
+
+```
+1. (사용자) Vercel Build and Deployment → Root Directory = web → Save → Redeploy
+2. (사용자) Railway Variables 에 ENV 8건 입력
+3. (자동) Railway / Vercel 양쪽 build 성공 대기 (~3분)
+4. (사용자) Railway public URL + Vercel public URL 보고
+5. (Claude) Vercel 의 NEXT_PUBLIC_API_BASE_URL 에 Railway URL 등록 가이드
+6. (Claude) Railway 의 JETRAG_CORS_ORIGINS 에 Vercel URL 등록 가이드
+7. (검증) 양쪽 public URL 접속 + /health smoke + 검색 1건 시연
+8. (다음 sprint) v1.5 W-1 — DeepInfra 어댑터 swap (senior-developer 위임, 2~3h)
+9. (다음 sprint) 멀티유저 D1·D2·D3 — Auth + RLS audit + per-user rate limit (Q9 답변 후)
+```
+
+### 15.7 미응답 의사결정 (사용자 명시 답변 대기)
+
+| Q | 항목 | 권장값 | 시점 |
+|---|---|---|---|
+| Q1 | 도메인 보유 | 무료 도메인부터 | 즉시 가능 |
+| Q8 | 결제 모델 | 무료 + per-user cap | Phase 5 진입 전 |
+| Q9 | 공개 범위 + Auth provider | 초대 코드 + Email/Google OAuth | Phase 3 진입 전 |
+| Q10 | 공개 시점 | 1차 베타 5~10명 → 1주 안정화 → 공개 | Phase 5 진입 전 |
+| Q11 | Vercel 라이선스 | Hobby 유지 (수익 0 시) | Q8 답변에 의존 |
+
+### 15.8 관련 메모리 / work-log 참조 (다른 컴퓨터에서 컨텍스트 부팅용)
+
+다른 Claude Code 세션 시작 시 자동 로드되는 메모리:
+- `~/.claude/projects/-Users-kiwoongmin-Desktop-documents-test-repo-image2-piLab-project-Jet-Rag/memory/MEMORY.md` — 인덱스
+- `project_jet_rag.md` — 현 상태 종합 (2026-05-18 진전 반영)
+- `project_persona_kpi_decisions.md` v2 — 페르소나 A + B 확장, D 안 확정
+- `project_remaining_sprints.md` v0.2 — v1.5 / Deploy / 멀티유저 D1~D7 진입 순서
+
+본 work-log 외 참조 work-log:
+- `2026-05-15 HF self-host 검토 — v1.5 sprint 설계.md` — v1.5 권장안 (DeepInfra)
+- `2026-05-15 세션 종합 — 추천 4건 진행 + DECISION-12 보너스.md` — 직전 핸드오프
+- `2026-05-12 검색 정확도 80% 달성 PRD.md` — KPI #10 deferred (latency)
+
+### 15.9 보안 / secret 관리 주의
+
+- `.env` 는 절대 commit X (`.gitignore` 에 포함 확인)
+- Railway/Vercel/Supabase dashboard 의 ENV 값은 절대 채팅 X (값 보유 여부만 보고)
+- `SUPABASE_SERVICE_ROLE_KEY` 는 backend 전용 (web 클라이언트 노출 X)
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY` 는 클라이언트 노출 OK (RLS 가 보호)
+- 다른 컴퓨터로 `.env` 옮길 때: 1Password / Bitwarden 같은 secret 매니저 사용 권장. 평문 파일 전송 X.
+
+### 15.10 회고
+
+배포 작업이 0건이었던 이유는 **MVP 6주 동안 검색 정확도 80% + 인제스트 안정화에 집중**했기 때문. v1.5 sprint 와 동시에 Deploy 가 가능해진 시점에 D 안 (Railway + Vercel + DeepInfra) 으로 단순 deploy 가능했다. 본 세션의 핵심 학습:
+
+1. **monorepo 가 양쪽 PaaS 의 함정** — Vercel·Railway 둘 다 Root Directory 명시 안 하면 자동 감지가 잘못된 디렉토리 (또는 둘 다) 를 build → 실패. 두 서비스 모두 dashboard 에서 명시.
+2. **W-0 결정성 시험이 ROI 매우 높음** — 1시간 작업으로 chunks 37k 재인제스트 ($0.185 + 수 시간) 회피 결정 + 옵션 A fallback ($24/월) 회피 결정 둘 다 확정.
+3. **결제는 사용자만, 코드는 Claude** — 명확한 권한 분리가 작업 속도 ↑. 사용자가 결제까지 미리 마치면 코드 commit·push → 즉시 자동 rebuild.
