@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -129,10 +130,22 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 로컬 Next.js 개발 서버에서 직접 호출 허용. 운영 배포 시 도메인 화이트리스트로 교체할 것.
+# CORS — env `JETRAG_CORS_ORIGINS` 콤마 분리. 미설정 시 localhost 개발 서버만.
+# Vercel preview 도메인(`*.vercel.app`)은 regex 로 허용 — origin 마다 새로 발급되는
+# preview URL 을 매번 env 에 추가하지 않아도 된다. 운영 도메인 확정 시 env 로 정식
+# whitelist 교체.
+# TODO(W-5): env 기반 origin 명단을 production 도메인으로 정제 (Vercel preview 도 prod 환경
+# 에서는 차단). 현재는 Railway 첫 deploy + Vercel preview 연동 우선.
+_DEFAULT_CORS_ORIGINS = "http://localhost:3001,http://localhost:3000"
+_cors_origins = [
+    origin.strip()
+    for origin in os.environ.get("JETRAG_CORS_ORIGINS", _DEFAULT_CORS_ORIGINS).split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3001"],
+    allow_origins=_cors_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],

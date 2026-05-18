@@ -58,6 +58,11 @@ class Settings:
     # ENV `JETRAG_CHUNK_UPSERT_BATCH_SIZE` 로 조정, 최소 1 clamp (0/음수 → 1).
     # 필드 default 보유 — 기존 Settings(...) 직접 구성 테스트 호환.
     chunk_upsert_batch_size: int = 50
+    # v1.5 W-0 (2026-05-18) — DeepInfra BGE-M3 결정성 시험 + W-1 어댑터 swap 용 토큰.
+    # 발급: https://deepinfra.com/dash/api_keys (가입 후 5분 내). default "" — 미설정 시
+    # 결정성 스크립트(`evals/run_v1_5_w0_determinism.py`) 진입 시점에 RuntimeError.
+    # 필드 default 보유 — 기존 Settings(...) 직접 구성 테스트 호환 (필드 추가만으로 회귀 0).
+    deepinfra_api_token: str = ""
 
 
 # 잠정값 — 데이터 누적 부족 시 fallback. master plan §7.5 default 채택.
@@ -160,4 +165,6 @@ def get_settings() -> Settings:
         chunk_upsert_batch_size=max(
             1, _parse_int("JETRAG_CHUNK_UPSERT_BATCH_SIZE", 50)
         ),
+        # v1.5 W-0 — DeepInfra API 토큰. 미설정은 graceful (스크립트 진입 시점에 RuntimeError).
+        deepinfra_api_token=os.environ.get("DEEPINFRA_API_TOKEN", ""),
     )

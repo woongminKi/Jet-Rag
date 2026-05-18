@@ -1,0 +1,48 @@
+# Jet-Rag API — Docker build context 제외 목록
+# 608MB .venv 포함 시 빌드 컨텍스트 폭증 + 컨테이너 .venv 와 충돌 → 반드시 제외.
+
+# Python venv / 캐시
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# 비밀 — 절대 컨테이너 포함 금지 (Railway Variables 로 주입).
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+credentials.json
+service-account.json
+
+# 빌드·테스트 산출물
+dist/
+build/
+*.log
+
+# Git
+.git/
+.gitignore
+
+# 에디터·로컬 메타
+.vscode/
+.idea/
+.DS_Store
+
+# 테스트 — production image 에는 불필요. 디버깅은 Railway shell 에서 별도 mount.
+tests/
+
+# Docker meta — recursive include 방지
+Dockerfile
+.dockerignore
