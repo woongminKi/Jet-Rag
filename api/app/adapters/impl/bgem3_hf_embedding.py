@@ -7,6 +7,11 @@
     https://router.huggingface.co/hf-inference/models/BAAI/bge-m3/pipeline/feature-extraction
   (구 endpoint `api-inference.huggingface.co/models/…` 은 404 반환)
 - cold start (503 "model is loading") 1회 발생 가능 — 긴 delay 로 3회 retry
+
+v1.5 W-1 (2026-05-19) — `get_bgem3_provider()` 가 `JETRAG_EMBED_PROVIDER` ENV 로
+HF↔DeepInfra 분기. default `hf` 로 기존 동작 100% 유지. DeepInfra swap 은 always-warm
++ <$1/월 — KPI #10 (P95 < 3s) cold-start 위험 제거. 모델 동일 `BAAI/bge-m3` 이라
+embed_query_cache entry 호환 (W-0 n=100 min cosine 0.999984 ≥ 0.999 PASS).
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ from __future__ import annotations
 import email.utils
 import hashlib
 import logging
+import os
 import random
 import threading
 import time
@@ -293,17 +299,50 @@ def is_transient_hf_error(exc: Exception) -> bool:
     return _is_retryable(exc)
 
 
-# ---------------------- 싱글톤 헬퍼 ----------------------
+# ---------------------- 싱글톤 헬퍼 (v1.5 W-1 — provider factory 분기) ----------------------
+
+# v1.5 W-1 (2026-05-19) — ENV 토글로 HF↔DeepInfra swap. 호출 사이트 8개 무변경 보장.
+# default `hf` = 기존 동작 100% 유지. DeepInfra 는 always-warm + <$1/월 (페르소나 트래픽).
+# 모델 동일 `BAAI/bge-m3` 이라 embed_query_cache entry 호환 (W-0 cosine 0.999984 PASS).
+# ENV 값 변경 시 새 프로세스 필요 — lru_cache(maxsize=1) 가 첫 호출 시점에 분기 freeze.
+_PROVIDER_ENV_KEY = "JETRAG_EMBED_PROVIDER"
+_PROVIDER_DEFAULT = "hf"
+_PROVIDER_HF = "hf"
+_PROVIDER_DEEPINFRA = "deepinfra"
 
 
 @lru_cache(maxsize=1)
-def get_bgem3_provider() -> BGEM3HFEmbeddingProvider:
-    """프로세스당 단일 인스턴스 — `httpx.Client` 누수 방지.
+def get_bgem3_provider():
+    """프로세스당 단일 임베딩 provider — `httpx.Client` 누수 방지 + ENV factory 분기.
 
     이전: search.py / ingest 스테이지가 매 호출마다 `BGEM3HFEmbeddingProvider()` 생성
         → 매번 신규 `httpx.Client` (close 안 됨) → 검색 100회 = FD leak 100건.
     이후: `lru_cache(maxsize=1)` 로 프로세스당 1개 공유. `httpx.Client` 자체가 thread-safe.
+
+    v1.5 W-1 — `JETRAG_EMBED_PROVIDER` ENV 분기:
+      - `hf`        (default) → `BGEM3HFEmbeddingProvider` (현 동작 100% 유지)
+      - `deepinfra`           → `BGEM3DeepInfraEmbeddingProvider` (always-warm)
+
+    반환 타입은 `EmbeddingProvider` Protocol (구조적 타이핑) — 호출 사이트는
+    `embed`/`embed_batch`/`embed_query`/`dense_dim`/`_last_cache_*` 만 사용 → 두 구현체
+    동일 시그니처라 swap 안전. unknown 값은 default `hf` 로 fallback (graceful).
     """
+    raw = os.environ.get(_PROVIDER_ENV_KEY, _PROVIDER_DEFAULT)
+    choice = (raw or _PROVIDER_DEFAULT).strip().lower()
+    if choice == _PROVIDER_DEEPINFRA:
+        # lazy import — HF-only 환경에서 DeepInfra 모듈을 로드하지 않음 (의존성·init 분리).
+        from app.adapters.impl.bgem3_deepinfra_embedding import (
+            BGEM3DeepInfraEmbeddingProvider,
+        )
+        return BGEM3DeepInfraEmbeddingProvider()
+    if choice != _PROVIDER_HF:
+        # unknown 값은 default `hf` — 운영 graceful (ENV 오타로 startup crash 방지).
+        logger.warning(
+            "%s=%r 는 알 수 없는 값 — default '%s' 로 fallback",
+            _PROVIDER_ENV_KEY,
+            raw,
+            _PROVIDER_DEFAULT,
+        )
     return BGEM3HFEmbeddingProvider()
 
 
