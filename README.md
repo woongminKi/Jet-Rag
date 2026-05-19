@@ -28,6 +28,51 @@
 - DeepInfra ↔ HF Inference Providers 어댑터 swap R@10 회귀 **0.0000** (115/115 row top-5 ordering 100% 일치, W-0 cosine 0.999984 보증)
 - CORS env 화 + Vercel/Railway 자동 SSL → 도메인 부착 시 **코드 변경 0**
 
+## 아키텍처
+
+```mermaid
+flowchart TB
+    User([User Browser])
+
+    subgraph Frontend ["프론트엔드 · Vercel CDN · $0/월"]
+        Vercel["Next.js 16<br/>jetrag.woong-s.com<br/>(default: jetrag.vercel.app)"]
+    end
+
+    subgraph Backend ["백엔드 · Railway Singapore · $5/월"]
+        FastAPI["FastAPI · Python 3.12<br/>jetrag-api.woong-s.com"]
+        Adapter{{"Embedding Adapter<br/>JETRAG_EMBED_PROVIDER<br/>(ENV 1줄 swap)"}}
+    end
+
+    subgraph DataLayer ["데이터 계층 · Supabase Seoul · $0/월"]
+        DB[("Postgres<br/>+ pgvector HNSW<br/>+ PGroonga Mecab")]
+        Storage[("Supabase Storage<br/>PDF · HWP · 이미지")]
+    end
+
+    subgraph AILayer ["AI Provider 계층 · 무료 + DeepInfra <$1/월"]
+        DeepInfra["DeepInfra BGE-M3 dense 1024<br/>(production · always-warm)"]
+        HF["HF Inference Providers BGE-M3<br/>(fallback · cold-start)"]
+        Gemini["Gemini 2.5 Flash<br/>LLM + Vision<br/>(tag · summary · answer · caption)"]
+    end
+
+    User -->|HTTPS| Vercel
+    Vercel -->|"NEXT_PUBLIC_API_BASE_URL<br/>(HTTPS · CORS env)"| FastAPI
+    FastAPI -->|"SQL · RPC<br/>(search_hybrid_rrf)"| DB
+    FastAPI -->|"signed URL"| Storage
+    FastAPI --> Adapter
+    Adapter -.->|"ENV=deepinfra"| DeepInfra
+    Adapter -.->|"ENV=hf (default)"| HF
+    FastAPI -->|"REST · vision_budget cap"| Gemini
+
+    classDef prod fill:#0f172a,stroke:#3b82f6,stroke-width:3px,color:#f8fafc
+    classDef fallback fill:#475569,stroke:#94a3b8,stroke-dasharray:5 5,color:#f1f5f9
+    classDef boundary fill:#1e293b,stroke:#10b981,stroke-width:2px,color:#f8fafc
+    class DeepInfra prod
+    class HF fallback
+    class Adapter boundary
+```
+
+> **4-tier 분리 배포** — 프론트엔드 (Vercel) / 백엔드 (Railway Singapore) / 데이터 (Supabase Seoul) / AI Provider (DeepInfra + Gemini). 어댑터 계층이 embedding provider 의 swap path 를 ENV 1줄로 추상화 — **HF Inference Providers ↔ DeepInfra production 간 R@10 회귀 0.0000 으로 검증** (W-0 결정성 시험 cosine 0.999984, 호출 사이트 8건 무수정). 총 운영비 **~$5~6/월** + 도메인 ~$10/년.
+
 ## 진척 현황
 
 ### MVP (W1~W21, 2026-04-22 ~ 2026-05-03)
