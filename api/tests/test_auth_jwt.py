@@ -3,16 +3,18 @@
 대상: `app.auth.jwt_verify.verify_jwt` + `app.auth.dependencies.get_current_user`.
 
 검증:
-- 유효 JWT → VerifiedToken(user_id, email)
+- 유효 JWT (HS256/ES256) → VerifiedToken(user_id, email)
 - 만료 → JWTValidationError
 - 서명 불일치 → JWTValidationError
 - audience 불일치 → JWTValidationError
 - sub 누락 → JWTValidationError
+- JWKS URL 미설정 (비대칭) → JWTValidationError
+- JWKS fetch 실패 (mock 예외) → JWTValidationError
 - get_current_user: auth_enabled=false → default_user_id fallback (무중단 핵심)
 - get_current_user: auth_enabled=true + 토큰 없음 → 401
 - get_current_user: auth_enabled=true + 유효 토큰 → CurrentUser
 
-외부 의존성 0 — PyJWT 로 직접 토큰 생성, Settings 직접 구성. stdlib unittest 만.
+외부 의존성 0 — PyJWT 로 직접 토큰 생성, Settings 직접 구성, JWKS fetch 는 mock.
 실행: `python -m unittest tests.test_auth_jwt`
 """
 
@@ -22,10 +24,14 @@ import json
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import jwt
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 
 from app.auth.dependencies import CurrentUser, get_current_user
+from app.auth import jwt_verify
 from app.auth.jwt_verify import JWTValidationError, verify_jwt
 from app.config import Settings
 
@@ -43,6 +49,7 @@ def _make_settings(*, auth_enabled: bool, secret: str | None = _SECRET) -> Setti
     """auth 필드만 의미 있는 최소 Settings.
 
     supabase_url 은 쿠키 경로(project_ref 유도)를 위해 실제 형식으로 채운다.
+    `supabase_jwks_url` 은 default None — HS256 경로에는 무영향, 비대칭 테스트는 `replace` 로 주입.
     """
     return Settings(
         supabase_url=_SUPABASE_URL,
@@ -148,9 +155,130 @@ class VerifyJwtTest(unittest.TestCase):
             verify_jwt(_make_token(), settings)
 
     def test_unsupported_algorithm_raises(self) -> None:
-        settings = replace(_make_settings(auth_enabled=True), supabase_jwt_algorithm="RS256")
+        # PS256 은 화이트리스트(대칭/비대칭) 어디에도 없는 미지원 알고리즘 — fail-fast.
+        # (RS256/ES256 은 JWKS 경로로 지원 — VerifyJwtAsymmetricTest 참고.)
+        settings = replace(_make_settings(auth_enabled=True), supabase_jwt_algorithm="PS256")
         with self.assertRaises(JWTValidationError):
             verify_jwt(_make_token(), settings)
+
+
+class VerifyJwtAsymmetricTest(unittest.TestCase):
+    """ES256 (Supabase ECC P-256 기본) + JWKS 경로 검증.
+
+    전략: `cryptography` 로 ephemeral keypair 생성 → private key 로 ES256 토큰 서명 →
+    `PyJWKClient.get_signing_key_from_jwt` 를 `unittest.mock.patch` 로 stub 해서
+    공개키만 반환. 외부 HTTP 호출 0.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        # 테스트 전용 ES256 keypair (P-256). PyJWKClient mock 이 이 공개키를 반환한다.
+        cls._private_key = ec.generate_private_key(ec.SECP256R1())
+        cls._public_key = cls._private_key.public_key()
+        # PyJWT 가 검증 시 받는 키 형식은 cryptography 객체 그대로 OK.
+        cls._public_key_pem = cls._public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        # PyJWKClient.get_signing_key_from_jwt 가 반환할 stub — `.key` 속성만 필요.
+        cls._jwks_url = "https://example.supabase.co/auth/v1/.well-known/jwks.json"
+
+    def setUp(self) -> None:
+        # PyJWKClient lru_cache 비워 테스트 간 격리. 같은 URL 재호출 시 stub 없으면 실제 HTTP.
+        jwt_verify._get_jwks_client.cache_clear()
+
+    def _make_es256_settings(self, *, jwks_url: str | None = None) -> Settings:
+        """ES256 + JWKS 설정. jwks_url 미지정 시 default 사용 (None 명시도 가능)."""
+        base = _make_settings(auth_enabled=True, secret=None)
+        return replace(
+            base,
+            supabase_jwt_algorithm="ES256",
+            supabase_jwks_url=jwks_url if jwks_url is not None else self._jwks_url,
+        )
+
+    def _make_es256_token(
+        self,
+        *,
+        exp_delta: timedelta = timedelta(hours=1),
+        sub: str | None = _USER_ID,
+    ) -> str:
+        """ES256 토큰 발급. kid header 포함 — PyJWKClient 가 사용."""
+        payload: dict = {"aud": "authenticated"}
+        if sub is not None:
+            payload["sub"] = sub
+        payload["email"] = "user@example.com"
+        payload["exp"] = datetime.now(timezone.utc) + exp_delta
+        return jwt.encode(
+            payload,
+            self._private_key,
+            algorithm="ES256",
+            headers={"kid": "test-kid"},
+        )
+
+    def _stub_signing_key(self):
+        """PyJWKClient.get_signing_key_from_jwt → 공개키만 담은 stub 반환."""
+
+        class _FakeSigningKey:
+            def __init__(self, key) -> None:
+                self.key = key
+
+        return _FakeSigningKey(self._public_key_pem)
+
+    def test_valid_es256_token_returns_verified(self) -> None:
+        settings = self._make_es256_settings()
+        token = self._make_es256_token()
+        with patch(
+            "app.auth.jwt_verify.PyJWKClient.get_signing_key_from_jwt",
+            return_value=self._stub_signing_key(),
+        ):
+            verified = verify_jwt(token, settings)
+        self.assertEqual(verified.user_id, _USER_ID)
+        self.assertEqual(verified.email, "user@example.com")
+
+    def test_es256_without_jwks_url_raises(self) -> None:
+        # 비대칭 알고리즘 설정인데 JWKS URL 미지정 → fail-fast (한국어 메시지).
+        settings = self._make_es256_settings(jwks_url="")
+        # Settings 는 supabase_jwks_url=None 으로 normalize 안 됨(빈 문자열 그대로) — falsy 검사.
+        # 실제로는 get_settings() 가 빈 문자열을 None 으로 변환하지만 dataclass 직접 구성은 그대로 유지.
+        settings = replace(settings, supabase_jwks_url=None)
+        token = self._make_es256_token()
+        with self.assertRaises(JWTValidationError) as ctx:
+            verify_jwt(token, settings)
+        self.assertIn("JWKS URL", str(ctx.exception))
+
+    def test_es256_jwks_fetch_failure_raises(self) -> None:
+        settings = self._make_es256_settings()
+        token = self._make_es256_token()
+        # PyJWKClient.get_signing_key_from_jwt 가 PyJWKClientError 던지면 → 한국어 변환.
+        with patch(
+            "app.auth.jwt_verify.PyJWKClient.get_signing_key_from_jwt",
+            side_effect=jwt.PyJWKClientError("kid not found"),
+        ):
+            with self.assertRaises(JWTValidationError) as ctx:
+                verify_jwt(token, settings)
+        self.assertIn("JWKS", str(ctx.exception))
+
+    def test_es256_jwks_network_failure_raises(self) -> None:
+        # PyJWKClient 가 자체 흡수 못한 IO 예외 (urllib URLError 등) 도 한국어 변환.
+        settings = self._make_es256_settings()
+        token = self._make_es256_token()
+        with patch(
+            "app.auth.jwt_verify.PyJWKClient.get_signing_key_from_jwt",
+            side_effect=OSError("network down"),
+        ):
+            with self.assertRaises(JWTValidationError):
+                verify_jwt(token, settings)
+
+    def test_expired_es256_token_raises(self) -> None:
+        settings = self._make_es256_settings()
+        token = self._make_es256_token(exp_delta=timedelta(hours=-1))
+        with patch(
+            "app.auth.jwt_verify.PyJWKClient.get_signing_key_from_jwt",
+            return_value=self._stub_signing_key(),
+        ):
+            with self.assertRaises(JWTValidationError) as ctx:
+                verify_jwt(token, settings)
+        self.assertIn("만료", str(ctx.exception))
 
 
 class GetCurrentUserTest(unittest.TestCase):
