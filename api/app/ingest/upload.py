@@ -2,7 +2,9 @@
 
 수신 단계는 Storage upload 를 하지 않고 documents row 만 pending path 로 INSERT 후 202 반환.
 본 함수는 응답이 클라이언트에 나간 뒤 비동기로 다음을 수행:
-  1) Supabase Storage 에 final path (`<sha256>{ext}`) 로 업로드 (멱등 upsert)
+  1) Supabase Storage 에 final path 로 업로드 (멱등 upsert)
+     - D2 (2026-05-20, plan §3.1): `user_id` 가 주어지면 `user/<uid>/<sha256>{ext}`
+     - legacy fallback: `<sha256>{ext}` (user_id=None — 단위 테스트 / 기존 호출처)
   2) `documents.storage_path` 를 final path 로 update
   3) 기존 8-stage 파이프라인 (`run_pipeline`) 위임
 
@@ -37,16 +39,28 @@ def run_full_ingest(
     ext: str,
     content_type: str,
     page_cap_override: int | None = None,
+    user_id: str | None = None,
 ) -> None:
     """Storage upload → storage_path update → run_pipeline 위임.
 
     S2 D3 — `page_cap_override` 가 주어지면 mode 별 vision page cap.
     None 이면 settings.vision_page_cap_per_doc (S2 D2 기존 동작).
+
+    D2 (plan §3.1) — `user_id` 가 주어지면 final path 는 `user/<uid>/<sha256>{ext}`.
+    None 이면 legacy `<sha256>{ext}` (회귀 0, 기존 호출처/단위 테스트 호환).
     """
     settings = get_settings()
     supabase = get_supabase_client()
 
-    final_path = f"{sha256}{ext}"
+    if user_id:
+        # D2 (plan §3.1) — 헬퍼로 user/<uid>/<sha256>{ext}. file_name 가 없어도
+        # ext 만으로 path 결정. build_user_path 가 file_name 의 suffix 를 다시 추출하므로
+        # 임의 file 이름에 sha256+ext 만 붙여 전달 (ext 가 이미 정규화돼 있음).
+        final_path = SupabaseBlobStorage.build_user_path(
+            user_id=user_id, sha256=sha256, file_name=f"x{ext}"
+        )
+    else:
+        final_path = f"{sha256}{ext}"
     storage = SupabaseBlobStorage(bucket=settings.supabase_storage_bucket)
 
     # 1) Storage upload (final path, 멱등)

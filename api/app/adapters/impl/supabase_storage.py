@@ -1,7 +1,25 @@
 """Supabase Storage 기반 BlobStorage 구현체.
 
-저장 경로 규칙: `<sha256>.<ext>` — 파일 해시가 곧 식별자.
-동일 해시 파일을 여러 유저가 업로드해도 Storage 객체는 1개로 공유되고, 유저별 귀속은 `documents.user_id` 에서 처리한다.
+저장 경로 규칙 (D2 — 2026-05-20, plan §3.1):
+    user/<user_id>/<sha256>{ext}             — final path (인제스트 완료본)
+    user/<user_id>/pending/<doc_uuid>{ext}   — pending path (수신 직후, BG 가 final 로 이관)
+
+D2 이전 (legacy):
+    <sha256>{ext}                            — user 격리 없음 (단일 사용자 MVP)
+    pending/default/<doc_uuid>{ext}          — pending 도 user 미구분
+
+D2 마이그(020) 가 `documents.storage_path` 를 일괄 `user/<uid>/` prefix 로 갱신한 뒤,
+Storage RLS 정책 4개(SELECT/INSERT/UPDATE/DELETE on storage.objects) 가 prefix 기반
+per-user 격리를 강제한다. 백엔드는 service_role 라 RLS bypass — 인증 후의 호출자
+user_id 를 직접 전달해 path 를 결정한다.
+
+helper API (D2 신규):
+    SupabaseBlobStorage.build_user_path(user_id, sha256, file_name) -> str
+    SupabaseBlobStorage.build_pending_path(user_id, doc_uuid, ext)  -> str
+
+Protocol 시그니처는 무변경 — `put()` 자동 path 생성은 D2 이전 legacy fallback 로 유지하되
+호출처는 D2 부터 `put_at(path=build_user_path(...))` 명시 사용. 본 모듈의 `_legacy_path`
+private helper 가 기존 sha256-only 경로를 캡슐화한다.
 """
 
 from __future__ import annotations
@@ -30,8 +48,12 @@ class SupabaseBlobStorage:
         file_name: str,
         content_type: str,
     ) -> StoredBlob:
+        """legacy 자동 path 생성. D2 이후 신규 호출처는 `put_at()` + `build_user_path()` 사용.
+
+        실제 호출처 0건이라 보존만 — Protocol 시그니처 호환을 위해 유지.
+        """
         sha256 = hashlib.sha256(data).hexdigest()
-        path = self._build_path(sha256=sha256, file_name=file_name)
+        path = self._legacy_path(sha256=sha256, file_name=file_name)
         return self._upload(
             path=path, data=data, content_type=content_type, sha256=sha256
         )
@@ -46,9 +68,8 @@ class SupabaseBlobStorage:
     ) -> StoredBlob:
         """호출자가 결정한 path 로 업로드. SHA-256 은 외부에서 이미 계산했으면 전달.
 
-        용례: W2 SLO 회복 시 BackgroundTask 가 수신 단계에서 계산한 sha256 으로
-        final path 를 결정한 뒤 그대로 업로드. put() 의 자동 path 생성과 달리
-        pending → final 같은 단계 분리 시나리오를 명시적으로 표현한다.
+        D2 (plan §3) — `path` 는 통상 `build_user_path()` 결과. 응답 단계에서 결정한
+        pending path 도 동일하게 받아 멱등 upsert.
         """
         if sha256 is None:
             sha256 = hashlib.sha256(data).hexdigest()
@@ -72,6 +93,29 @@ class SupabaseBlobStorage:
         if not url:
             raise RuntimeError(f"signed url 생성 실패: {result!r}")
         return url
+
+    # ---------------------- path builders (D2) ----------------------
+
+    @staticmethod
+    def build_user_path(*, user_id: str, sha256: str, file_name: str) -> str:
+        """D2 final path: `user/<user_id>/<sha256>{ext}`.
+
+        plan §3.1 — Storage RLS 정책이 (storage.foldername(name))[1]='user' AND
+        [2]=auth.uid() 패턴으로 per-user 격리. ext 는 file_name 에서 추출
+        (소문자, 빈 ext 면 mimetypes guess fallback — legacy 와 동일).
+        """
+        ext = _ext_for(file_name)
+        return f"user/{user_id}/{sha256}{ext}"
+
+    @staticmethod
+    def build_pending_path(*, user_id: str, doc_uuid: str, ext: str) -> str:
+        """D2 pending path: `user/<user_id>/pending/<doc_uuid>{ext}`.
+
+        documents row 가 INSERT 되는 수신 단계의 placeholder. BG run_full_ingest 가
+        final path 로 이관 후 documents.storage_path UPDATE. ext 는 호출자가 이미
+        검증/추출했으므로 그대로 사용 (소문자, '.' 포함 또는 빈 문자열).
+        """
+        return f"user/{user_id}/pending/{doc_uuid}{ext}"
 
     # ---------------------- internals ----------------------
 
@@ -101,9 +145,16 @@ class SupabaseBlobStorage:
         )
 
     @staticmethod
-    def _build_path(*, sha256: str, file_name: str) -> str:
-        ext = PurePosixPath(file_name).suffix.lower()
-        if not ext:
-            guessed = mimetypes.guess_extension("application/octet-stream") or ""
-            ext = guessed
+    def _legacy_path(*, sha256: str, file_name: str) -> str:
+        """D2 이전 sha256-only path. `put()` 의 자동 path 생성에만 사용."""
+        ext = _ext_for(file_name)
         return f"{sha256}{ext}"
+
+
+def _ext_for(file_name: str) -> str:
+    """확장자 추출 — 소문자 + '.' 포함. 비어있으면 mimetypes guess fallback."""
+    ext = PurePosixPath(file_name).suffix.lower()
+    if not ext:
+        guessed = mimetypes.guess_extension("application/octet-stream") or ""
+        ext = guessed
+    return ext

@@ -210,10 +210,10 @@ def stats(
         TagCount(tag=t, count=c) for t, c in tag_counter.most_common(10)
     ]
 
-    # ---- chunks ----
-    chunks_resp = supabase.table("chunks").select("id", count="exact").execute()
-    chunks_total = chunks_resp.count or 0
-    chunks_stats = _compute_chunks_stats(supabase, chunks_total)
+    # ---- chunks (D2 P1#2 — 본인 chunks 만, plan §4) ----
+    # 마이그 019 의 RPC `get_chunks_stats_for_user(user_id_arg)` 1회 호출로 total/filtered/
+    # breakdown 일괄 산출. 마이그 미적용 환경에서는 graceful 빈 통계.
+    chunks_total, chunks_stats = _compute_chunks_stats_via_rpc(supabase, user_id)
 
     # ---- jobs ----
     jobs = (
@@ -278,35 +278,53 @@ def stats(
 # ---------------------- helpers ----------------------
 
 
-def _compute_chunks_stats(supabase, chunks_total: int) -> ChunksStats:
-    """W7 Day 3 — chunks_filter 마킹 분포 가시성.
+def _compute_chunks_stats_via_rpc(
+    supabase, user_id: str,
+) -> tuple[int, ChunksStats]:
+    """D2 P1#2 차단 (plan §4) — 호출자의 chunks 만 RPC 1회로 집계.
 
-    DE-65 본 적용 후 chunks 1256 환경에서 effective vs filtered 비율 추적용.
-    PostgREST `flags->>'filtered_reason'` JSONB path query 사용.
+    마이그 019 의 `get_chunks_stats_for_user(user_id_arg)` 는 documents JOIN 으로
+    `d.user_id = user_id_arg AND d.deleted_at IS NULL` 인 chunks 만 합산한다.
+    응답: total / filtered / breakdown(JSONB) — `ChunksStats` schema 와 1:1 매핑.
+
+    graceful — RPC 부재(마이그 미적용) 또는 일시 장애 시 빈 통계 반환. 코드 deploy 가
+    마이그 apply 전이어도 안전 (plan §3.2 3-step 무중단).
     """
-    # filtered (filtered_reason IS NOT NULL) 카운트 — JSONB path 활용
-    filtered_resp = (
-        supabase.table("chunks")
-        .select("flags", count="exact")
-        .not_.is_("flags->>filtered_reason", "null")
-        .execute()
-    )
-    filtered_rows = filtered_resp.data or []
-    filtered_total = filtered_resp.count or 0
+    try:
+        rpc_resp = (
+            supabase.rpc(
+                "get_chunks_stats_for_user",
+                {"user_id_arg": user_id},
+            ).execute()
+        )
+        rows = rpc_resp.data or []
+    except Exception as exc:  # noqa: BLE001 — 마이그 미적용/일시 장애 graceful
+        logger.warning(
+            "get_chunks_stats_for_user RPC 미적용/실패 — 빈 통계 (user=%s): %s",
+            user_id, exc,
+        )
+        empty = ChunksStats(
+            total=0, effective=0, filtered_breakdown={}, filtered_ratio=0.0
+        )
+        return 0, empty
 
-    # 사유별 카운트 — 페이지네이션 없이 가져온 flags 만 집계
-    # (chunks 가 매우 커지면 별도 RPC 권장. 현재 1256 환경에서는 OK)
-    breakdown: dict[str, int] = {}
-    for r in filtered_rows:
-        flags = r.get("flags") or {}
-        reason = flags.get("filtered_reason")
-        if reason:
-            breakdown[reason] = breakdown.get(reason, 0) + 1
+    if not rows:
+        empty = ChunksStats(
+            total=0, effective=0, filtered_breakdown={}, filtered_ratio=0.0
+        )
+        return 0, empty
 
-    effective = chunks_total - filtered_total
-    ratio = filtered_total / chunks_total if chunks_total else 0.0
-    return ChunksStats(
-        total=chunks_total,
+    row = rows[0]
+    total = int(row.get("total") or 0)
+    filtered = int(row.get("filtered") or 0)
+    breakdown_raw = row.get("breakdown") or {}
+    breakdown: dict[str, int] = {
+        str(k): int(v) for k, v in breakdown_raw.items()
+    }
+    effective = max(total - filtered, 0)
+    ratio = filtered / total if total else 0.0
+    return total, ChunksStats(
+        total=total,
         effective=effective,
         filtered_breakdown=breakdown,
         filtered_ratio=round(ratio, 4),

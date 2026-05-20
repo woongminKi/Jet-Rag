@@ -33,6 +33,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
+from app.adapters.impl.supabase_storage import SupabaseBlobStorage
 from app.auth import LEGACY_DEFAULT_USER, CurrentUserDep, require_auth
 from app.config import get_settings
 from app.db import get_supabase_client
@@ -71,10 +72,9 @@ _ALLOWED_EXTENSIONS: dict[str, str] = {
 }
 _MAX_SIZE_BYTES = 50 * 1024 * 1024  # 50MB
 _CHUNK_SIZE = 64 * 1024              # 스트리밍 read chunk
-# pending path 네임스페이스. 단일 사용자 MVP 동안 "default" 고정.
-# W5 멀티유저 도입 시 실제 user_id 로 치환 → Supabase Storage RLS 정책이 prefix 기반으로
-# 자연스럽게 대응. documents.user_id (UUID) 와 별개의 path 라벨.
-_PENDING_PATH_NAMESPACE = "default"
+# D2 (2026-05-20, plan §3.1) — pending/final path 는 `user/<user_id>/...` prefix.
+# 헬퍼는 `SupabaseBlobStorage.build_pending_path()` / `build_user_path()`. 본 라우터는
+# 호출자의 `current_user.user_id` 를 그대로 전달 (auth_enabled=false 면 default_user_id).
 _SourceChannel = Literal["drag-drop", "os-share", "clipboard", "url", "camera", "api"]
 
 # S2 D3 — 운영 모드 default. UI/router 양쪽이 같은 default 를 본다.
@@ -502,6 +502,7 @@ async def upload_document(
                 ext=ext,
                 content_type=content_type,
                 page_cap_override=page_cap_override,
+                user_id=current_user.user_id,
             )
             return UploadResponse(
                 doc_id=existing_doc_id,
@@ -517,8 +518,11 @@ async def upload_document(
         )
 
     # ---- 신규 — pending path 로 documents insert (Storage upload 는 BG 가 담당) ----
+    # D2 (plan §3.1) — `user/<uid>/pending/<uuid>{ext}` prefix.
     doc_uuid = uuid.uuid4().hex
-    pending_path = f"pending/{_PENDING_PATH_NAMESPACE}/{doc_uuid}{ext}"
+    pending_path = SupabaseBlobStorage.build_pending_path(
+        user_id=current_user.user_id, doc_uuid=doc_uuid, ext=ext
+    )
     # W25 D14 — 한국어 NFD/NFC 불일치 회피 (macOS Finder 가 NFD 로 파일명 보냄)
     # → ilike/검색 query (NFC) 와 byte 매칭 fail. 인제스트 단에서 NFC 통일.
     doc_title = unicodedata.normalize("NFC", title or PurePosixPath(file_name).stem)
@@ -556,6 +560,7 @@ async def upload_document(
         ext=ext,
         content_type=content_type,
         page_cap_override=page_cap_override,
+        user_id=current_user.user_id,
     )
     return UploadResponse(doc_id=doc_id, job_id=job.id, duplicated=False)
 
@@ -685,6 +690,7 @@ async def upload_url(
                 ext=".html",
                 content_type=content_type,
                 page_cap_override=page_cap_override,
+                user_id=current_user.user_id,
             )
             return UploadResponse(
                 doc_id=existing_doc_id, job_id=job.id, duplicated=False
@@ -714,8 +720,11 @@ async def upload_url(
     title = unicodedata.normalize("NFC", title)
 
     # ---- documents insert (pending path + flags.source_url + ingest_mode) ----
+    # D2 (plan §3.1) — `user/<uid>/pending/<uuid>.html` prefix.
     doc_uuid = uuid.uuid4().hex
-    pending_path = f"pending/{_PENDING_PATH_NAMESPACE}/{doc_uuid}.html"
+    pending_path = SupabaseBlobStorage.build_pending_path(
+        user_id=current_user.user_id, doc_uuid=doc_uuid, ext=".html"
+    )
     received_ms = int((time.perf_counter() - started_at) * 1000)
     page_cap_override = resolve_page_cap(ingest_mode, settings)
     doc_row = (
@@ -751,6 +760,7 @@ async def upload_url(
         ext=".html",
         content_type=content_type,
         page_cap_override=page_cap_override,
+        user_id=current_user.user_id,
     )
     return UploadResponse(doc_id=doc_id, job_id=job.id, duplicated=False)
 

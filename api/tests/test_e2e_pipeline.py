@@ -316,6 +316,14 @@ class FakeSupabaseClient:
     def table(self, name: str) -> _FakeTableQuery:
         return _FakeTableQuery(self, name)
 
+    def rpc(self, name: str, args: dict[str, Any]) -> "_FakeRpcCall":  # noqa: ARG002
+        """D2 — chunks stats RPC 흉내. 본인 user_id 의 chunks 만 집계.
+
+        documents JOIN: c.doc_id IN (documents where user_id=user_id_arg AND deleted_at IS NULL).
+        chunks.flags->>filtered_reason 카운트.
+        """
+        return _FakeRpcCall(self, name, args)
+
     # ---------------------- helpers ----------------------
 
     def _next_log_id(self) -> int:
@@ -325,6 +333,49 @@ class FakeSupabaseClient:
     def _next_chunk_id(self) -> int:
         self._chunk_id_seq += 1
         return self._chunk_id_seq
+
+
+class _FakeRpcCall:
+    """`.rpc(name, args).execute()` chain 흉내."""
+
+    def __init__(self, client: "FakeSupabaseClient", name: str, args: dict[str, Any]) -> None:
+        self._client = client
+        self._name = name
+        self._args = args
+
+    def execute(self) -> Any:
+        if self._name == "get_chunks_stats_for_user":
+            return self._chunks_stats_for_user()
+        # 미지원 RPC 는 실 production RPC 미적용과 동일하게 raise — graceful 분기 검증.
+        raise RuntimeError(f"unknown rpc: {self._name}")
+
+    def _chunks_stats_for_user(self) -> Any:
+        from types import SimpleNamespace
+
+        user_id = self._args.get("user_id_arg")
+        docs = self._client._tables.get("documents") or []
+        owned_doc_ids = {
+            d["id"] for d in docs
+            if d.get("user_id") == user_id and not d.get("deleted_at")
+        }
+        chunks = [
+            c for c in (self._client._tables.get("chunks") or [])
+            if c.get("doc_id") in owned_doc_ids
+        ]
+        total = len(chunks)
+        breakdown: dict[str, int] = {}
+        filtered = 0
+        for c in chunks:
+            flags = c.get("flags") or {}
+            reason = flags.get("filtered_reason")
+            if reason:
+                filtered += 1
+                breakdown[reason] = breakdown.get(reason, 0) + 1
+        return SimpleNamespace(data=[{
+            "total": total,
+            "filtered": filtered,
+            "breakdown": breakdown,
+        }])
 
 
 # ====================================================================

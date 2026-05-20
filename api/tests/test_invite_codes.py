@@ -164,14 +164,29 @@ class RedeemInviteTest(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 503)
 
 
+class _FakeAuthRequest:
+    """auth_me 가 읽는 headers / cookies 만 흉내 (D2 — request 인자 추가)."""
+
+    def __init__(self) -> None:
+        self.headers: dict[str, str] = {}
+        self.cookies: dict[str, str] = {}
+
+
 class AuthMeTest(unittest.TestCase):
-    """GET /auth/me — OAuth 복귀 유저 게이트 (plan §1.1)."""
+    """GET /auth/me — OAuth 복귀 유저 게이트 (plan §1.1).
+
+    D2 (2026-05-20) — `auth_me(request, ...)` 시그니처 추가에 따라 _FakeAuthRequest 주입.
+    """
 
     def test_auth_disabled_always_authorized(self) -> None:
         # auth_enabled=false 면 DB 조회 없이 authorized=true.
         client = MagicMock()
         with patch("app.routers.auth.get_supabase_client", return_value=client):
-            resp = auth_me(current_user=_USER, settings=_settings(auth_enabled=False))
+            resp = auth_me(
+                request=_FakeAuthRequest(),
+                current_user=_USER,
+                settings=_settings(auth_enabled=False),
+            )
         self.assertTrue(resp.authorized)
         self.assertEqual(resp.user_id, _USER.user_id)
         client.table.assert_not_called()
@@ -182,7 +197,11 @@ class AuthMeTest(unittest.TestCase):
         chain = client.table.return_value.select.return_value.eq.return_value.limit.return_value
         chain.execute.return_value = _resp([{"code": "USED-CODE"}])
         with patch("app.routers.auth.get_supabase_client", return_value=client):
-            resp = auth_me(current_user=_USER, settings=_settings(auth_enabled=True))
+            resp = auth_me(
+                request=_FakeAuthRequest(),
+                current_user=_USER,
+                settings=_settings(auth_enabled=True),
+            )
         self.assertTrue(resp.authorized)
 
     def test_no_invite_user_not_authorized(self) -> None:
@@ -191,7 +210,11 @@ class AuthMeTest(unittest.TestCase):
         chain = client.table.return_value.select.return_value.eq.return_value.limit.return_value
         chain.execute.return_value = _resp([])
         with patch("app.routers.auth.get_supabase_client", return_value=client):
-            resp = auth_me(current_user=_USER, settings=_settings(auth_enabled=True))
+            resp = auth_me(
+                request=_FakeAuthRequest(),
+                current_user=_USER,
+                settings=_settings(auth_enabled=True),
+            )
         self.assertFalse(resp.authorized)
 
     def test_db_error_not_authorized(self) -> None:
@@ -200,7 +223,11 @@ class AuthMeTest(unittest.TestCase):
         chain = client.table.return_value.select.return_value.eq.return_value.limit.return_value
         chain.execute.side_effect = RuntimeError("relation invite_codes 없음")
         with patch("app.routers.auth.get_supabase_client", return_value=client):
-            resp = auth_me(current_user=_USER, settings=_settings(auth_enabled=True))
+            resp = auth_me(
+                request=_FakeAuthRequest(),
+                current_user=_USER,
+                settings=_settings(auth_enabled=True),
+            )
         self.assertFalse(resp.authorized)
 
 

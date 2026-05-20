@@ -15,10 +15,11 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.auth import CurrentUser, get_current_user
+from app.auth.cookie_token import derive_project_ref, extract_access_token
 from app.config import Settings, get_settings
 from app.db import get_supabase_client
 
@@ -44,15 +45,23 @@ class RedeemInviteResponse(BaseModel):
 
 
 class AuthMeResponse(BaseModel):
-    """GET /auth/me — 호출자 인증/승인 상태 (OAuth 복귀 유저 게이트용, plan §1.1)."""
+    """GET /auth/me — 호출자 인증/승인 상태 (OAuth 복귀 유저 게이트용, plan §1.1).
+
+    D2 (2026-05-20, plan §5) — `access_token` 추가. Supabase Realtime 클라이언트가
+    `supabase.realtime.setAuth(token)` 로 JWT 주입한 뒤 publication 구독해야 D2 RLS
+    정책 (ingest_jobs SELECT JOIN documents) 통과. token 추출 실패 / auth_enabled=false /
+    authorized=false 면 None.
+    """
 
     authorized: bool
     user_id: str
     email: str | None = None
+    access_token: str | None = None
 
 
 @router.get("/me", response_model=AuthMeResponse)
 def auth_me(
+    request: Request,
     current_user: CurrentUser = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ) -> AuthMeResponse:
@@ -66,12 +75,16 @@ def auth_me(
     프론트 OAuth 콜백이 `jetrag-pending-invite` 쿠키가 없을 때(=신규 가입이 아닌
     재로그인) 이 endpoint 로 복귀 유저인지 판별한다. invite_codes 조회 실패는
     graceful — authorized=false 로 처리(차단 우선, 운영자 인지).
+
+    D2 (plan §5) — access_token 노출. get_current_user 가 이미 검증한 토큰(Authorization
+    Bearer 또는 Supabase auth 쿠키)을 그대로 반환. 검증 후 재발급 X — 토큰 단순 forward.
     """
     if not settings.auth_enabled:
         return AuthMeResponse(
             authorized=True,
             user_id=current_user.user_id,
             email=current_user.email,
+            access_token=None,
         )
 
     authorized = False
@@ -89,11 +102,35 @@ def auth_me(
         logger.exception("invite_codes 승인 조회 실패 (user=%s)", current_user.user_id)
         authorized = False
 
+    access_token = _extract_request_token(request, settings) if authorized else None
+
     return AuthMeResponse(
         authorized=authorized,
         user_id=current_user.user_id,
         email=current_user.email,
+        access_token=access_token,
     )
+
+
+def _extract_request_token(request: Request, settings: Settings) -> str | None:
+    """현 요청의 access_token 추출 (D2 — plan §5).
+
+    우선순위: Authorization Bearer → Supabase auth 쿠키. get_current_user 와 동일한
+    순서로 정확한 동일 토큰 반환을 보장한다. 어떤 실패도 None — 호출부가 graceful 분기.
+    """
+    header = request.headers.get("Authorization")
+    if header and header.startswith("Bearer "):
+        token = header[len("Bearer ") :].strip()
+        if token:
+            return token
+
+    cookies = getattr(request, "cookies", None)
+    if not cookies:
+        return None
+    project_ref = derive_project_ref(settings.supabase_url)
+    if not project_ref:
+        return None
+    return extract_access_token(dict(cookies), project_ref)
 
 
 @router.post("/redeem-invite", response_model=RedeemInviteResponse)

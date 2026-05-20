@@ -126,36 +126,66 @@ export function useActiveDocsRealtime(
       };
     }
 
-    const channel = sb
-      .channel('jet-rag:ingest_jobs')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'ingest_jobs' },
-        (payload) => {
-          if (cancelled) return;
-          // payload.new 는 row snapshot. queued_at < 24h 필터는 frontend 에서 단순화.
-          const next = payload.new as
-            | {
-                id: string;
-                doc_id: string;
-                status: string;
-                current_stage: string | null;
-                attempts: number;
-                error_msg: string | null;
-                queued_at: string;
-                started_at: string | null;
-                finished_at: string | null;
+    // D2 (2026-05-20, plan §5 / senior-qa P2#3) — Realtime publication 도 ingest_jobs
+    // RLS 정책의 영향을 받는다. setAuth(jwt) 로 사용자 JWT 주입 후 구독해야 본인 row
+    // 만 push 받음. setAuth 와 channel.subscribe() 는 sequential 이어야 — 두 작업이
+    // race 하면 RLS 활성화 직후 첫 이벤트가 누락될 수 있다. 본 effect 는 단일 async
+    // chain (fetch → setAuth → subscribe) 으로 묶고, cleanup 사이의 race 는 cancel
+    // flag + 지역 channel 변수로 방어한다.
+    let channel: ReturnType<typeof sb.channel> | null = null;
+
+    const buildSubscription = () => {
+      const ch = sb
+        .channel('jet-rag:ingest_jobs')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'ingest_jobs' },
+          (payload) => {
+            if (cancelled) return;
+            // payload.new 는 row snapshot. queued_at < 24h 필터는 frontend 에서 단순화.
+            const next = payload.new as
+              | {
+                  id: string;
+                  doc_id: string;
+                  status: string;
+                  current_stage: string | null;
+                  attempts: number;
+                  error_msg: string | null;
+                  queued_at: string;
+                  started_at: string | null;
+                  finished_at: string | null;
+                }
+              | undefined;
+
+            if (!next || !next.id || !next.doc_id) return;
+
+            const existing = itemsByJobId.get(next.id) ?? itemsByDocId.get(next.doc_id);
+
+            if (TERMINAL_STATUSES.has(next.status)) {
+              // 완료·실패·취소 → 제거 + onTerminal 콜백
+              if (existing) {
+                const finalItem: ActiveDocItem = {
+                  ...existing,
+                  job: {
+                    ...existing.job,
+                    status: next.status as ActiveDocItem['job']['status'],
+                    current_stage: next.current_stage as ActiveDocItem['job']['current_stage'],
+                    attempts: next.attempts,
+                    error_msg: next.error_msg,
+                    finished_at: next.finished_at,
+                  },
+                };
+                removeItem(next.doc_id, next.id);
+                flush();
+                onTerminalRef.current?.(finalItem, next.status);
               }
-            | undefined;
+              return;
+            }
 
-          if (!next || !next.id || !next.doc_id) return;
-
-          const existing = itemsByJobId.get(next.id) ?? itemsByDocId.get(next.doc_id);
-
-          if (TERMINAL_STATUSES.has(next.status)) {
-            // 완료·실패·취소 → 제거 + onTerminal 콜백
+            // queued/running — upsert 후 flush. file_name/size 는 active fetch 결과 보존,
+            // 신규 row 면 백엔드 fetch 1회 보강 (heavy 없음, 단건 GET).
             if (existing) {
-              const finalItem: ActiveDocItem = {
+              upsertItem({
                 ...existing,
                 job: {
                   ...existing.job,
@@ -163,40 +193,51 @@ export function useActiveDocsRealtime(
                   current_stage: next.current_stage as ActiveDocItem['job']['current_stage'],
                   attempts: next.attempts,
                   error_msg: next.error_msg,
+                  queued_at: next.queued_at,
+                  started_at: next.started_at,
                   finished_at: next.finished_at,
                 },
-              };
-              removeItem(next.doc_id, next.id);
+              });
               flush();
-              onTerminalRef.current?.(finalItem, next.status);
+            } else {
+              // 신규 doc — 메타 보강 + ground truth 동기화 (전체 교체로 stale 제거)
+              resyncFromBackend();
             }
-            return;
-          }
+          },
+        );
+      ch.subscribe();
+      return ch;
+    };
 
-          // queued/running — upsert 후 flush. file_name/size 는 active fetch 결과 보존,
-          // 신규 row 면 백엔드 fetch 1회 보강 (heavy 없음, 단건 GET).
-          if (existing) {
-            upsertItem({
-              ...existing,
-              job: {
-                ...existing.job,
-                status: next.status as ActiveDocItem['job']['status'],
-                current_stage: next.current_stage as ActiveDocItem['job']['current_stage'],
-                attempts: next.attempts,
-                error_msg: next.error_msg,
-                queued_at: next.queued_at,
-                started_at: next.started_at,
-                finished_at: next.finished_at,
-              },
-            });
-            flush();
-          } else {
-            // 신규 doc — 메타 보강 + ground truth 동기화 (전체 교체로 stale 제거)
-            resyncFromBackend();
+    // fetch → setAuth → subscribe 를 단일 sequential chain 으로. fetch/setAuth 실패해도
+    // graceful — subscribe 는 그대로 진행 (RLS bypass 는 service_role 백엔드 + polling
+    // fallback 이 ground truth 보정). cancel 체크는 단계 사이마다 — unmount 와 race 시
+    // 새 channel 생성을 회피한다.
+    (async () => {
+      try {
+        const resp = await fetch('/api/auth-token', {
+          credentials: 'include',
+          cache: 'no-store',
+        });
+        if (cancelled) return;
+        if (resp.ok) {
+          const body = (await resp.json()) as { access_token?: string | null };
+          if (cancelled) return;
+          const token = body.access_token;
+          if (token && typeof token === 'string') {
+            try {
+              sb.realtime.setAuth(token);
+            } catch {
+              /* graceful — setAuth 실패해도 subscribe 는 진행 */
+            }
           }
-        },
-      )
-      .subscribe();
+        }
+      } catch {
+        /* graceful — fetch 실패 시 토큰 미주입, subscribe 는 진행 */
+      }
+      if (cancelled) return;
+      channel = buildSubscription();
+    })();
 
     // safety net — Realtime 가 RLS 차단·missing event 등으로 terminal 누락해도
     // 60s 마다 ground truth 정정. polling 1.5s/5s 보다 훨씬 가벼움.
@@ -213,7 +254,7 @@ export function useActiveDocsRealtime(
 
     return () => {
       cancelled = true;
-      sb.removeChannel(channel);
+      if (channel) sb.removeChannel(channel);
       clearInterval(safetyTick);
       offUploaded();
     };

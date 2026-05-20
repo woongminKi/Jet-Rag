@@ -23,6 +23,8 @@ Supabase SQL Editor에서 순서대로 실행.
 | 016 | `016_embed_query_cache.sql` | W4-Q-3 후속 — embed query 영구 캐시 (sha256(NFC(strip(text))), model_id) → 1024-dim 벡터. eval 재현성 + HF cold-start 부수 완화. W-1 (DeepInfra swap) 시점에 model_id 통일로 HF↔DeepInfra entry 공유 안전. |
 | 017 | `017_invite_codes.sql` | D1 멀티유저 Auth (2026-05-20) — `invite_codes` 테이블 (code PK / used_by / expires_at) + 미사용 부분 인덱스 + RLS enable. 가입 직후 `POST /auth/redeem-invite` 가 조건부 UPDATE 로 소진 (race 방어). 베타 30개 seed INSERT 는 파일 하단에 주석 (사용자가 코드 교체 후 실행). |
 | 018 | `018_migrate_default_user.sql` | D1 (2026-05-20) — 기존 single-user MVP 데이터(`default_user_id`)를 본인 Supabase UUID 로 이관. **1회성·idempotent**. `:owner`/`:legacy` placeholder 직접 치환 후 실행. 대상 = `documents`/`answer_feedback`/`answer_ragas_evals` (user_id 컬럼 보유 3개. `vision_usage_log`/`search_metrics_log` 는 user_id 컬럼 미보유 → 제외). `JETRAG_AUTH_ENABLED=true` 전환 직전 실행. |
+| 019 | `019_rls_policies.sql` | D2 (2026-05-20) — 멀티유저 RLS 정책 7 테이블 + chunks stats RPC. `documents`/`answer_feedback`/`answer_ragas_evals` (user_id 직접 매칭) + `chunks`/`ingest_jobs` (EXISTS JOIN documents) + `ingest_logs` (2-hop JOIN) + `invite_codes` (SELECT used_by 만). 각 테이블 SELECT/INSERT/UPDATE/DELETE 4정책 `TO authenticated` (service_role 자연 bypass). RPC `get_chunks_stats_for_user(user_id_arg UUID)` 는 P1#2 chunks_total 전역 누출 차단 — `SECURITY DEFINER` + `GRANT EXECUTE TO authenticated, service_role`. **모든 정책 `DROP POLICY IF EXISTS` → `CREATE POLICY` 멱등**. |
+| 020 | `020_storage_per_user_prefix.sql` | D2 (2026-05-20) — Storage 객체 `<sha256>{ext}` → `user/<uid>/<sha256>{ext}` 이관. **PART 1·2 분리** (단계별 검증 가능). PART 1 = `documents.storage_path` 일괄 `user/<uid>/` prefix UPDATE (`NOT LIKE 'user/%'` 가드 멱등). PART 2 = `storage.objects` 4 RLS 정책 (`bucket_id='documents'` AND `(storage.foldername(name))[1]='user'` AND `[2]=auth.uid()::text`). **실행 순서: 코드 deploy → PART 1 → `scripts/migrate_storage_to_per_user.py` 실행 → PART 2**. 파일 헤더에 ROLLBACK + 검증 SQL 명시. |
 
 ## 실행 절차
 
@@ -87,13 +89,50 @@ SELECT proname FROM pg_proc WHERE proname IN ('search_dense_only', 'search_spars
 
 ## RLS 정책
 
-현재는 모든 테이블 RLS 활성화 + 정책 없음 상태. `anon`·`authenticated` 키로는 접근 불가,
-`service_role` 키만 모든 작업 가능. 백엔드 FastAPI는 `SUPABASE_SERVICE_ROLE_KEY`로 연결.
+**현재 상태 (마이그 019/020 미적용 시)**: 모든 테이블 RLS 활성화 + 정책 없음 →
+`anon`·`authenticated` 키로는 접근 불가, `service_role` 키만 모든 작업 가능.
+백엔드 FastAPI는 `SUPABASE_SERVICE_ROLE_KEY`로 연결 (D1 ship 이후에도 동일).
 
-W5(인증 도입) 시점에 per-user 정책 추가 예정:
-- `documents`: `user_id = auth.uid()`
-- `chunks`: `doc_id IN (SELECT id FROM documents WHERE user_id = auth.uid())`
-- `ingest_jobs`·`ingest_logs`: 동일 패턴
+**D2 적용 후 (019 + 020 — 2026-05-20)**: per-user 정책 7 테이블 활성화. `documents` /
+`answer_feedback` / `answer_ragas_evals` 는 `user_id = auth.uid()` 직접, `chunks` /
+`ingest_jobs` 는 documents JOIN EXISTS, `ingest_logs` 는 2-hop JOIN, `invite_codes` 는
+SELECT `used_by = auth.uid()` 만. 백엔드는 service_role 라 RLS bypass — 회귀 0. 다른
+user 의 anon/authenticated 키 흐름이 자연 차단. Storage 객체도 `user/<uid>/` prefix +
+RLS 정책 4 개로 격리.
+
+### D2 신규 업로드 path (auth_enabled 무관)
+
+본 D2 코드는 `JETRAG_AUTH_ENABLED` 상태와 무관하게 신규 업로드를 **항상 `user/<user_id>/...` prefix 로 저장**한다. auth 미활성 환경에서는 `default_user_id` 가 prefix 가 되며, 마이그 020 PART 1 의 `NOT LIKE 'user/%'` 가드가 신규 row 를 자연 skip 한다 (멱등). 따라서 단계 1 코드 deploy 직후 신규 업로드가 자동으로 새 path 규칙을 따른다.
+
+### D2 deploy 순서 (Q4 게이트 통과 후) — 패턴 A / B 선택
+
+공통 선두 단계 (4단계):
+
+1. 본 PR (코드 변경) 머지·Railway push — `auth_enabled=false` default 라 production 무중단
+2. `018_migrate_default_user.sql` apply (placeholder `:owner` / `:legacy` 치환 후 SQL Editor 실행)
+3. `019_rls_policies.sql` apply (7 테이블 정책 + chunks stats RPC)
+4. `JETRAG_AUTH_ENABLED=true` ENV 등록 + redeploy
+
+#### 패턴 A — 단순 (단일유저 베타 권장, ~1분 downtime 수용)
+
+5A. `020_storage_per_user_prefix.sql` **PART 1 만** apply (storage_path 일괄 prefix UPDATE)
+6A. `python scripts/migrate_storage_to_per_user.py --dry-run` 실행 → 영향 row 확인
+7A. `python scripts/migrate_storage_to_per_user.py` 실행 (default = move + 제거) → moved/skipped/errors 검증 (errors=0 필수)
+8A. `020_storage_per_user_prefix.sql` **PART 2** apply (Storage RLS 정책 활성화) — 사전 검증 SQL (헤더 참조) 0 확인
+9A. smoke: 본인 JWT 로 GET /documents → 200·자기 row, anon 으로 storage 객체 직접 GET → 403
+
+특성: PART 1 적용 ~ 7A 사이 짧은 (~1분) window 에서 `storage.get(new_path)` 가 404. 심야 실행 또는 maintenance 안내 권장.
+
+#### 패턴 B — downtime 0 (멀티유저 운영 모드)
+
+5B. `python scripts/migrate_storage_to_per_user.py --copy-only --dry-run` → 영향 row 확인
+6B. `python scripts/migrate_storage_to_per_user.py --copy-only` → 객체를 new path 에 복사 (old 보존). copied/skipped/errors 검증 (errors=0 필수)
+7B. `020_storage_per_user_prefix.sql` **PART 1** apply (storage_path 일괄 prefix UPDATE) — 적용 즉시 응답 정상 (객체가 이미 new path 에 존재)
+8B. `python scripts/migrate_storage_to_per_user.py --cleanup-only` → new 존재 확인 후 old 제거. cleaned/skipped/errors 검증
+9B. `020_storage_per_user_prefix.sql` **PART 2** apply (Storage RLS 정책 활성화)
+10B. smoke: 본인 JWT 로 GET /documents → 200·자기 row, anon 으로 storage 객체 직접 GET → 403
+
+특성: copy-only 단계 ~ cleanup-only 사이 객체가 일시적으로 2배 (사후 cleanup 으로 원복). 응답 404 0.
 
 ## Storage Bucket
 
