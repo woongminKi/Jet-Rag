@@ -63,6 +63,21 @@ class Settings:
     # 결정성 스크립트(`evals/run_v1_5_w0_determinism.py`) 진입 시점에 RuntimeError.
     # 필드 default 보유 — 기존 Settings(...) 직접 구성 테스트 호환 (필드 추가만으로 회귀 0).
     deepinfra_api_token: str = ""
+    # D1 멀티유저 Auth (2026-05-20) — plan §1·§4. graceful default 로 production 무중단.
+    # auth_enabled=false (default) 면 JWT 검증 skip → CurrentUser(user_id=default_user_id)
+    # fallback. 프론트·데이터 이관 후 Railway ENV `JETRAG_AUTH_ENABLED=true` 1줄로 전환.
+    # 기존 Settings(...) 직접 구성 테스트 호환 — 전부 default 보유 (필드 추가만으로 회귀 0).
+    auth_enabled: bool = False
+    # Supabase JWT 서명 검증 secret (HS256). Railway ENV `SUPABASE_JWT_SECRET`.
+    # None 이면 auth_enabled=true 라도 검증 불가 — jwt_verify 가 RuntimeError (운영 fail-fast).
+    supabase_jwt_secret: str | None = None
+    # D1-Q1 잔여 — JWT 알고리즘 분기. default HS256 (Supabase 대칭 secret).
+    # 추후 비대칭(JWKS) 전환 시 "RS256"/"ES256" 등으로 ENV `SUPABASE_JWT_ALGORITHM` 지정 +
+    # JWKS 키 소스 추가 (jwt_verify 가 분기 hook 보유). 현재는 HS256 경로만 동작.
+    supabase_jwt_algorithm: str = "HS256"
+    # admin 라우트 게이트 (D1-Q7) — 본인 Supabase UUID. Railway ENV `OWNER_USER_ID`.
+    # None + auth_enabled=true 면 admin 전면 차단(안전). auth_enabled=false 면 게이트 통과.
+    owner_user_id: str | None = None
 
 
 # 잠정값 — 데이터 누적 부족 시 fallback. master plan §7.5 default 채택.
@@ -167,4 +182,10 @@ def get_settings() -> Settings:
         ),
         # v1.5 W-0 — DeepInfra API 토큰. 미설정은 graceful (스크립트 진입 시점에 RuntimeError).
         deepinfra_api_token=os.environ.get("DEEPINFRA_API_TOKEN", ""),
+        # D1 — auth_enabled default false (production 무중단). invalid ENV 는 default 유지.
+        auth_enabled=_parse_bool("JETRAG_AUTH_ENABLED", False),
+        # D1 — JWT secret/algorithm/owner. 미설정 None — graceful (auth_enabled=false 면 무영향).
+        supabase_jwt_secret=os.environ.get("SUPABASE_JWT_SECRET") or None,
+        supabase_jwt_algorithm=os.environ.get("SUPABASE_JWT_ALGORITHM", "HS256"),
+        owner_user_id=os.environ.get("OWNER_USER_ID") or None,
     )

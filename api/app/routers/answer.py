@@ -31,7 +31,7 @@ import time
 import unicodedata
 from functools import lru_cache
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel
 
 from app.adapters.factory import get_llm_provider
@@ -40,7 +40,7 @@ from app.adapters.impl.bgem3_hf_embedding import (
     is_transient_hf_error,
 )
 from app.adapters.llm import ChatMessage, LLMProvider
-from app.config import get_settings
+from app.auth import LEGACY_DEFAULT_USER, CurrentUserDep, require_auth
 from app.db import get_supabase_client
 from app.routers.search import _build_pgroonga_query
 from app.services import intent_router, query_decomposer
@@ -57,7 +57,8 @@ from app.services.quota import is_quota_exhausted
 _LOW_CONFIDENCE_THRESHOLD = 0.75
 
 logger = logging.getLogger(__name__)
-router = APIRouter(tags=["answer"])
+# D1 — router-level 인증 게이트 (auth_enabled=false 면 fallback 통과).
+router = APIRouter(tags=["answer"], dependencies=[Depends(require_auth)])
 
 _MAX_QUERY_LEN = 200
 _DEFAULT_TOP_K = 5
@@ -430,10 +431,11 @@ def answer(
     top_k: int = Query(_DEFAULT_TOP_K, ge=1, le=_MAX_TOP_K, description="LLM 에 전달할 검색 결과 chunks 수"),
     doc_id: str | None = Query(default=None, description="단일 문서 스코프 (W11 doc_id 필터)"),
     response: Response = None,  # type: ignore[assignment]
+    current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
 ) -> AnswerResponse:
     start_t = time.monotonic()
-    settings = get_settings()
-    user_id = str(settings.default_user_id)
+    # D1 — 호출자 본인 user_id 격리 (auth_enabled=false 면 default_user_id fallback).
+    user_id = str(current_user.user_id)
     # W25 D14 — 한국어 NFD/NFC 정규화 (DB title/chunk 이 NFC 인데 query 가 NFD 면 매칭 fail)
     clean_q = unicodedata.normalize("NFC", q.strip())
     if not clean_q:
@@ -582,7 +584,10 @@ def reset_feedback_disabled() -> None:
 
 
 @router.post("/answer/feedback", response_model=AnswerFeedbackResponse)
-def submit_answer_feedback(payload: AnswerFeedbackRequest) -> AnswerFeedbackResponse:
+def submit_answer_feedback(
+    payload: AnswerFeedbackRequest,
+    current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
+) -> AnswerFeedbackResponse:
     """답변에 대한 사용자 피드백 저장 (W25 D14).
 
     답변 자체는 stateless 라 query+answer_text 보존. 향후 RAGAS 정성 ground truth +
@@ -595,14 +600,13 @@ def submit_answer_feedback(payload: AnswerFeedbackRequest) -> AnswerFeedbackResp
             note="answer_feedback 테이블 미존재 — 마이그 011 적용 필요",
         )
 
-    settings = get_settings()
     try:
         client = get_supabase_client()
         resp = (
             client.table("answer_feedback")
             .insert(
                 {
-                    "user_id": str(settings.default_user_id),
+                    "user_id": str(current_user.user_id),
                     "doc_id": payload.doc_id,
                     "query": payload.query,
                     "answer_text": payload.answer_text,
@@ -733,7 +737,10 @@ def get_ragas_eval(
 
 
 @router.post("/answer/eval-ragas", response_model=RagasEvalResponse)
-def submit_ragas_eval(payload: RagasEvalRequest) -> RagasEvalResponse:
+def submit_ragas_eval(
+    payload: RagasEvalRequest,
+    current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
+) -> RagasEvalResponse:
     """RAGAS 평가 실행 + DB 저장. 캐시 hit 시 재호출 회피."""
     if _ragas_eval_disabled:
         return RagasEvalResponse(
@@ -748,7 +755,6 @@ def submit_ragas_eval(payload: RagasEvalRequest) -> RagasEvalResponse:
     from app.services.ragas_eval import RagasUnavailable, evaluate_single
 
     clean_q = _u.normalize("NFC", payload.query.strip())
-    settings = get_settings()
     client = get_supabase_client()
 
     # 캐시 우선 — 같은 query+answer_text+doc_id 매칭 시 재사용
@@ -782,7 +788,7 @@ def submit_ragas_eval(payload: RagasEvalRequest) -> RagasEvalResponse:
     try:
         client.table("answer_ragas_evals").insert(
             {
-                "user_id": str(settings.default_user_id),
+                "user_id": str(current_user.user_id),
                 "doc_id": payload.doc_id,
                 "query": clean_q,
                 "answer_text": payload.answer_text,
@@ -877,7 +883,10 @@ def get_search_precision(
 
 
 @router.post("/search/eval-precision", response_model=RagasEvalResponse)
-def submit_search_precision(payload: SearchPrecisionRequest) -> RagasEvalResponse:
+def submit_search_precision(
+    payload: SearchPrecisionRequest,
+    current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
+) -> RagasEvalResponse:
     """검색 적합도 (Context Precision) 만 측정 + 캐시.
 
     LLM judge 호출 1개 → ~$0.003/평가. 답변 생성 (Faithfulness/Relevancy) 호출 X.
@@ -897,7 +906,6 @@ def submit_search_precision(payload: SearchPrecisionRequest) -> RagasEvalRespons
     )
 
     clean_q = _u.normalize("NFC", payload.query.strip())
-    settings = get_settings()
     client = get_supabase_client()
 
     # 캐시 우선 조회 (검색 전용 row — answer_text="")
@@ -950,7 +958,7 @@ def submit_search_precision(payload: SearchPrecisionRequest) -> RagasEvalRespons
     try:
         client.table("answer_ragas_evals").insert(
             {
-                "user_id": str(settings.default_user_id),
+                "user_id": str(current_user.user_id),
                 "doc_id": payload.doc_id,
                 "query": clean_q,
                 "answer_text": "",  # sentinel — 검색 전용 row

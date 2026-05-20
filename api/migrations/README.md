@@ -21,6 +21,8 @@ Supabase SQL Editor에서 순서대로 실행.
 | 014 | `014_vision_usage_log_enhanced.sql` | Phase 1 S0 D1 (2026-05-06) — `vision_usage_log` 컬럼 확장 (doc_id/page/prompt/output/thinking 토큰/estimated_cost/retry_attempt). ADD COLUMN IF NOT EXISTS, 호출 코드 회귀 0. |
 | 015 | `015_vision_page_cache.sql` | Phase 1 S0 — Vision API 페이지 캐시 (doc_id+page → caption JSONB). reingest 비용 절감. |
 | 016 | `016_embed_query_cache.sql` | W4-Q-3 후속 — embed query 영구 캐시 (sha256(NFC(strip(text))), model_id) → 1024-dim 벡터. eval 재현성 + HF cold-start 부수 완화. W-1 (DeepInfra swap) 시점에 model_id 통일로 HF↔DeepInfra entry 공유 안전. |
+| 017 | `017_invite_codes.sql` | D1 멀티유저 Auth (2026-05-20) — `invite_codes` 테이블 (code PK / used_by / expires_at) + 미사용 부분 인덱스 + RLS enable. 가입 직후 `POST /auth/redeem-invite` 가 조건부 UPDATE 로 소진 (race 방어). 베타 30개 seed INSERT 는 파일 하단에 주석 (사용자가 코드 교체 후 실행). |
+| 018 | `018_migrate_default_user.sql` | D1 (2026-05-20) — 기존 single-user MVP 데이터(`default_user_id`)를 본인 Supabase UUID 로 이관. **1회성·idempotent**. `:owner`/`:legacy` placeholder 직접 치환 후 실행. 대상 = `documents`/`answer_feedback`/`answer_ragas_evals` (user_id 컬럼 보유 3개. `vision_usage_log`/`search_metrics_log` 는 user_id 컬럼 미보유 → 제외). `JETRAG_AUTH_ENABLED=true` 전환 직전 실행. |
 
 ## 실행 절차
 

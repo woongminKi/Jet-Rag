@@ -27,8 +27,8 @@ def _mock_supabase_with(jobs_rows: list[dict], docs_rows: list[dict]) -> MagicMo
         m = MagicMock()
         if name == "ingest_jobs":
             m.select.return_value.gte.return_value.order.return_value.execute.return_value = jobs_resp
-        else:  # documents
-            m.select.return_value.in_.return_value.execute.return_value = docs_resp
+        else:  # documents — D1 P1#1 부터 .eq("user_id") 한 단계 추가
+            m.select.return_value.in_.return_value.eq.return_value.execute.return_value = docs_resp
         return m
 
     client.table.side_effect = _table_dispatch

@@ -30,6 +30,7 @@ configure_app_logging()
 from app.routers import (  # noqa: E402 — logger 부트스트랩 후 import (import 중 로그 캡처).
     admin_router,
     answer_router,
+    auth_router,
     documents_router,
     search_router,
     stats_router,
@@ -134,8 +135,9 @@ app = FastAPI(
 # Vercel preview 도메인(`*.vercel.app`)은 regex 로 허용 — origin 마다 새로 발급되는
 # preview URL 을 매번 env 에 추가하지 않아도 된다. 운영 도메인 확정 시 env 로 정식
 # whitelist 교체.
-# TODO(W-5): env 기반 origin 명단을 production 도메인으로 정제 (Vercel preview 도 prod 환경
-# 에서는 차단). 현재는 Railway 첫 deploy + Vercel preview 연동 우선.
+# D1 Phase B (plan §1.1) — 아키텍처 B(httpOnly 쿠키) 채택으로 `allow_credentials=True`.
+# 이때 와일드카드 `*` origin 은 CORS 스펙상 금지(credentials 비호환)이므로 명시 origin 만 사용.
+# `allow_origin_regex` 는 명시 패턴(`*.vercel.app`)이라 credentials 와 호환됨.
 _DEFAULT_CORS_ORIGINS = "http://localhost:3001,http://localhost:3000"
 _cors_origins = [
     origin.strip()
@@ -146,7 +148,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_origin_regex=r"https://.*\.vercel\.app",
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
@@ -156,6 +158,9 @@ app.include_router(search_router)
 app.include_router(stats_router)
 app.include_router(answer_router)
 app.include_router(admin_router)
+# D1 — 가입 게이트 (POST /auth/redeem-invite). get_current_user dependency 내장이라
+# router-level require_auth 불필요 (auth_enabled=true 시 토큰 없으면 401).
+app.include_router(auth_router)
 
 
 @app.get("/", include_in_schema=False)

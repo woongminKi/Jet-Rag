@@ -41,11 +41,17 @@ def _mock_supabase_for_reingest(
             select_chain = MagicMock()
             # SELECT id, flags / id, doc_type, flags / storage_path 등 다양한 chain.
             # 모든 select 변형을 동일 row 로 응답.
+            # D1 P1#1 — reingest 핸들러가 user_id ownership check 추가됨. 직접
+            # 호출 시 CurrentUserDep default = LEGACY_DEFAULT_USER 이므로 mock row 도
+            # 동일 user_id 로 둬야 통과.
+            from app.auth import LEGACY_DEFAULT_USER
+
             doc_row = {
                 "id": "doc-1",
                 "doc_type": doc_type,
                 "flags": existing_flags or {},
                 "storage_path": "abc123.pdf",
+                "user_id": LEGACY_DEFAULT_USER.user_id,
             }
             data = [doc_row] if doc_exists else []
             select_chain.eq.return_value.is_.return_value.limit.return_value.execute.return_value = MagicMock(data=data)

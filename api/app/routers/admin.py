@@ -20,15 +20,20 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
+from app.auth import require_admin
 from app.db import get_supabase_client
 from app.services.query_classifier import QUERY_TYPE_LABELS, classify_query_type
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+# D1 (D1-Q7) — router-level 운영자 게이트. auth_enabled=false 면 통과(기존 MVP 동작),
+# true 면 OWNER_USER_ID 와 호출자 비교 → 불일치/미설정 시 403.
+router = APIRouter(
+    prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)]
+)
 
 # 한국 시간대 — single-user MVP 기준 하드코딩 (`stats.py` 와 동일).
 KST = timezone(timedelta(hours=9))

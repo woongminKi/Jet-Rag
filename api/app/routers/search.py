@@ -26,7 +26,7 @@ import unicodedata
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel
 
 from app.adapters.impl.bge_reranker_hf import (
@@ -37,7 +37,7 @@ from app.adapters.impl.bgem3_hf_embedding import (
     get_bgem3_provider,
     is_transient_hf_error,
 )
-from app.config import get_settings
+from app.auth import LEGACY_DEFAULT_USER, CurrentUserDep, require_auth
 from app.db import get_supabase_client
 from app.services import (
     intent_router,
@@ -50,7 +50,9 @@ from app.services import (
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter(tags=["search"])
+# D1 — router-level 인증 게이트. auth_enabled=false 면 require_auth 가 default_user_id
+# fallback 으로 통과 (무중단). true 면 Bearer JWT 필수.
+router = APIRouter(tags=["search"], dependencies=[Depends(require_auth)])
 
 _MAX_QUERY_LEN = 200
 # 검색 결과 카드의 본문 미리보기 개수 — list 모드 (doc_id 미지정) 에 적용.
@@ -659,11 +661,12 @@ def search(
         ),
     ),
     response: Response = None,  # type: ignore[assignment]
+    current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
 ) -> SearchResponse:
     start_t = time.monotonic()
     client = get_supabase_client()
-    settings = get_settings()
-    user_id = settings.default_user_id
+    # D1 — 호출자 본인 user_id 격리 (auth_enabled=false 면 default_user_id fallback).
+    user_id = current_user.user_id
 
     # W25 D14 — 한국어 NFD/NFC 정규화 (DB title 이 NFC 인데 query 가 NFD 면 매칭 fail)
     clean_q = unicodedata.normalize("NFC", q.strip())

@@ -2,8 +2,10 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Upload, Zap } from 'lucide-react';
+import { LogIn, LogOut, Upload, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { useAuth } from '@/lib/auth/auth-context';
+import { signOut } from '@/lib/auth/actions';
 import { ActiveDocsIndicator } from './active-docs-indicator';
 import { HeaderSearch } from './header-search';
 import { HeaderMobileToggle } from './header-mobile-toggle';
@@ -11,6 +13,7 @@ import { HeaderMobilePanel } from './header-mobile-panel';
 
 export function Header() {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { user } = useAuth();
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-border bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80">
@@ -39,6 +42,33 @@ export function Header() {
               <span className="hidden lg:inline">업로드</span>
             </Link>
           </Button>
+
+          {user ? (
+            <form action={signOut} className="hidden sm:block">
+              <Button
+                type="submit"
+                size="sm"
+                variant="ghost"
+                className="gap-2"
+                title={user.email ?? '로그아웃'}
+              >
+                <LogOut className="h-4 w-4" />
+                <span className="hidden lg:inline">로그아웃</span>
+              </Button>
+            </form>
+          ) : (
+            <Button
+              asChild
+              size="sm"
+              variant="ghost"
+              className="hidden gap-2 sm:flex"
+            >
+              <Link href="/login">
+                <LogIn className="h-4 w-4" />
+                <span className="hidden lg:inline">로그인</span>
+              </Link>
+            </Button>
+          )}
 
           <HeaderMobileToggle
             open={mobileOpen}

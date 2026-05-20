@@ -11,16 +11,17 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from app.config import get_settings
+from app.auth import LEGACY_DEFAULT_USER, CurrentUserDep, require_auth
 from app.db import get_supabase_client
 from app.services import search_metrics, vision_metrics
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["stats"])
+# D1 — router-level 인증 게이트 (auth_enabled=false 면 fallback 통과).
+router = APIRouter(tags=["stats"], dependencies=[Depends(require_auth)])
 
 # 한국 시간대 — 단일 사용자 MVP 기준이라 하드코딩
 KST = timezone(timedelta(hours=9))
@@ -152,9 +153,12 @@ class StatsResponse(BaseModel):
 
 
 @router.get("/stats", response_model=StatsResponse)
-def stats() -> StatsResponse:
+def stats(
+    current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
+) -> StatsResponse:
     supabase = get_supabase_client()
-    user_id = get_settings().default_user_id
+    # D1 — 호출자 본인 통계만 (auth_enabled=false 면 default_user_id fallback).
+    user_id = current_user.user_id
 
     # ---- documents ----
     all_docs = (

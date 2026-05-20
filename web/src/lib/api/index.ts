@@ -116,21 +116,27 @@ export interface AnswerFeedbackResponse {
   note: string | null;
 }
 
-export const submitAnswerFeedback = async (
-  payload: AnswerFeedbackPayload,
-): Promise<AnswerFeedbackResponse> => {
-  const res = await fetch(
-    `${process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000'}/answer/feedback`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify(payload),
-      cache: 'no-store',
-    },
-  );
+// D1 Phase B (plan §1.1) — 직접 fetch 4곳(feedback/ragas/precision)도 인증 첨부.
+// 이들은 'use client' 컴포넌트에서 호출 → 브라우저 컨텍스트라 credentials:'include' 로
+// httpOnly 쿠키 자동 첨부. 백엔드 auth_enabled=false 면 무영향(기존 동작 보존).
+const _API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
+
+const postJson = async <T>(path: string, payload: unknown): Promise<T> => {
+  const res = await fetch(`${_API_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+    credentials: 'include',
+  });
   if (!res.ok) throw new ApiError(res.status, await res.text());
-  return res.json() as Promise<AnswerFeedbackResponse>;
+  return res.json() as Promise<T>;
 };
+
+export const submitAnswerFeedback = (
+  payload: AnswerFeedbackPayload,
+): Promise<AnswerFeedbackResponse> =>
+  postJson<AnswerFeedbackResponse>('/answer/feedback', payload);
 
 /** W25 D14 — RAGAS 정량 평가 (Faithfulness + AnswerRelevancy + 옵션 메트릭). */
 export interface RagasMetrics {
@@ -158,26 +164,16 @@ export interface RagasEvalPayload {
   contexts: string[];
 }
 
-const _API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
-
 export const getRagasEval = (query: string, docId?: string | null) => {
   const qs = new URLSearchParams({ query });
   if (docId) qs.set('doc_id', docId);
   return apiGet<RagasEvalResponse>(`/answer/eval-ragas?${qs.toString()}`);
 };
 
-export const submitRagasEval = async (
+export const submitRagasEval = (
   payload: RagasEvalPayload,
-): Promise<RagasEvalResponse> => {
-  const res = await fetch(`${_API_BASE}/answer/eval-ragas`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify(payload),
-    cache: 'no-store',
-  });
-  if (!res.ok) throw new ApiError(res.status, await res.text());
-  return res.json() as Promise<RagasEvalResponse>;
-};
+): Promise<RagasEvalResponse> =>
+  postJson<RagasEvalResponse>('/answer/eval-ragas', payload);
 
 /** W25 D14 — 검색 적합도 (Context Precision) 만 측정 (LLM 호출 1개). */
 export interface SearchPrecisionPayload {
@@ -192,18 +188,10 @@ export const getSearchPrecision = (query: string, docId?: string | null) => {
   return apiGet<RagasEvalResponse>(`/search/eval-precision?${qs.toString()}`);
 };
 
-export const submitSearchPrecision = async (
+export const submitSearchPrecision = (
   payload: SearchPrecisionPayload,
-): Promise<RagasEvalResponse> => {
-  const res = await fetch(`${_API_BASE}/search/eval-precision`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify(payload),
-    cache: 'no-store',
-  });
-  if (!res.ok) throw new ApiError(res.status, await res.text());
-  return res.json() as Promise<RagasEvalResponse>;
-};
+): Promise<RagasEvalResponse> =>
+  postJson<RagasEvalResponse>('/search/eval-precision', payload);
 
 /** S2 D3 — `?mode=` 옵션 (운영 모드 변경). 미지정 시 백엔드가 이전 mode 재사용. */
 export const reingestDocument = (docId: string, mode?: IngestMode) => {

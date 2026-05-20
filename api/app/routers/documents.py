@@ -20,9 +20,20 @@ from typing import Literal
 
 import httpx
 import trafilatura
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel, Field
 
+from app.auth import LEGACY_DEFAULT_USER, CurrentUserDep, require_auth
 from app.config import get_settings
 from app.db import get_supabase_client
 from app.ingest import (
@@ -39,7 +50,10 @@ from app.services.ingest_mode import INGEST_MODES, IngestMode, resolve_page_cap
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/documents", tags=["documents"])
+# D1 — router-level 인증 게이트 (auth_enabled=false 면 fallback 통과).
+router = APIRouter(
+    prefix="/documents", tags=["documents"], dependencies=[Depends(require_auth)]
+)
 
 # 기획서 §11.3 단계 A
 _ALLOWED_EXTENSIONS: dict[str, str] = {
@@ -287,6 +301,7 @@ def list_documents(
         alias="include_failed",
         description="True 면 flags.failed 인 문서도 포함 (디버깅 용)",
     ),
+    current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
 ) -> DocumentListResponse:
     """최신순 문서 리스트. 각 항목에 chunks 개수 + 최신 ingest_jobs 상태 포함.
 
@@ -299,7 +314,6 @@ def list_documents(
     - `include_failed=true` 로 호출하면 디버깅용으로 전체 노출
     """
     supabase = get_supabase_client()
-    settings = get_settings()
 
     docs_resp = (
         supabase.table("documents")
@@ -307,7 +321,7 @@ def list_documents(
             "id, title, doc_type, source_channel, size_bytes, content_type, "
             "tags, summary, flags, created_at"
         )
-        .eq("user_id", settings.default_user_id)
+        .eq("user_id", current_user.user_id)
         .is_("deleted_at", "null")
         .order("created_at", desc=True)
         .execute()
@@ -381,6 +395,7 @@ async def upload_document(
     source_channel: _SourceChannel = Form("api"),
     title: str | None = Form(None),
     mode: str = Form(_DEFAULT_INGEST_MODE),
+    current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
 ) -> UploadResponse:
     """수신 ≤ 2초 SLO. Storage upload 는 BG `run_full_ingest` 위임.
 
@@ -448,7 +463,7 @@ async def upload_document(
     existing = (
         supabase.table("documents")
         .select("id, flags")
-        .eq("user_id", settings.default_user_id)
+        .eq("user_id", current_user.user_id)
         .eq("sha256", sha256)
         .is_("deleted_at", "null")
         .limit(1)
@@ -514,7 +529,7 @@ async def upload_document(
         supabase.table("documents")
         .insert(
             {
-                "user_id": settings.default_user_id,
+                "user_id": current_user.user_id,
                 "title": doc_title,
                 "doc_type": doc_type,
                 "source_channel": source_channel,
@@ -556,6 +571,7 @@ async def upload_document(
 async def upload_url(
     background_tasks: BackgroundTasks,
     payload: UrlUploadRequest,
+    current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
 ) -> UploadResponse:
     """URL 수집. SSRF 검증 → fetch → 기존 BG 흐름 (`run_full_ingest`) 재사용.
 
@@ -630,7 +646,7 @@ async def upload_url(
     existing = (
         supabase.table("documents")
         .select("id, flags")
-        .eq("user_id", settings.default_user_id)
+        .eq("user_id", current_user.user_id)
         .eq("sha256", sha256)
         .is_("deleted_at", "null")
         .limit(1)
@@ -706,7 +722,7 @@ async def upload_url(
         supabase.table("documents")
         .insert(
             {
-                "user_id": settings.default_user_id,
+                "user_id": current_user.user_id,
                 "title": title,
                 "doc_type": "url",
                 "source_channel": payload.source_channel,
@@ -757,6 +773,7 @@ def reingest_document(
             "재사용 (없으면 'default')."
         ),
     ),
+    current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
 ) -> ReingestResponse:
     """기존 doc 의 chunks/메타를 reset 하고 같은 storage_path 로 파이프라인 재실행.
 
@@ -770,19 +787,22 @@ def reingest_document(
     - storage_path · sha256 등 원본 식별자는 유지 — Storage 재업로드 X
 
     S2 D3 — `?mode=` 쿼리로 운영 모드 변경 가능. 미지정 시 기존 mode 보존.
+
+    D1 P1#1 — 본인 소유 doc 만 reingest 허용. 타인 doc 은 404 (존재 위장 — IDOR
+    정보 노출 회피). reingest 는 chunks 삭제·재인제스트라 IDOR 시 데이터 파괴.
     """
     supabase = get_supabase_client()
     settings = get_settings()
 
     existing = (
         supabase.table("documents")
-        .select("id, flags")
+        .select("id, flags, user_id")
         .eq("id", doc_id)
         .is_("deleted_at", "null")
         .limit(1)
         .execute()
     )
-    if not existing.data:
+    if not existing.data or existing.data[0]["user_id"] != current_user.user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="문서를 찾을 수 없습니다.",
@@ -841,6 +861,7 @@ def reingest_missing_vision(
             "재사용 (없으면 'default')."
         ),
     ),
+    current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
 ) -> ReingestMissingResponse:
     """incremental vision reingest — 기존 chunks 보존 + 누락 페이지만 vision 처리.
 
@@ -856,19 +877,22 @@ def reingest_missing_vision(
       (이미 적용된 메타 보존)
 
     PDF 자체가 변경된 경우는 부정확 — full reingest 권장.
+
+    D1 P1#1 — 본인 소유 doc 만 incremental reingest 허용. 타인 doc 은 404 (존재
+    위장). vision 호출 비용 + chunks 추가 변경 양쪽 IDOR 차단.
     """
     supabase = get_supabase_client()
     settings = get_settings()
 
     existing = (
         supabase.table("documents")
-        .select("id,doc_type,flags")
+        .select("id,doc_type,flags,user_id")
         .eq("id", doc_id)
         .is_("deleted_at", "null")
         .limit(1)
         .execute()
     )
-    if not existing.data:
+    if not existing.data or existing.data[0]["user_id"] != current_user.user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="문서를 찾을 수 없습니다.",
@@ -1004,6 +1028,7 @@ def list_active_documents(
         le=_ACTIVE_DOC_MAX_HOURS,
         description=f"최근 N시간 (max {_ACTIVE_DOC_MAX_HOURS}=7일)",
     ),
+    current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
 ) -> ActiveDocsResponse:
     """진행 중·실패 doc 자동 표시 (W25 D14 Sprint 0).
 
@@ -1013,6 +1038,9 @@ def list_active_documents(
     - completed 는 제외 (이미 검색·문서 리스트로 노출)
     - cancelled 도 제외 (사용자가 명시적 종료)
     - 정렬: queued_at desc (최신 먼저)
+
+    D1 P1#1 — documents 조회 단계에서 `user_id` 필터링 → 타인의 active doc 는 자연
+    제외 (doc_meta lookup miss → 응답 루프 `continue`).
     """
     supabase = get_supabase_client()
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
@@ -1061,6 +1089,7 @@ def list_active_documents(
         supabase.table("documents")
         .select("id, title, size_bytes")
         .in_("id", list(latest_by_doc.keys()))
+        .eq("user_id", current_user.user_id)
         .execute()
     )
     doc_meta = {d["id"]: d for d in (docs_resp.data or [])}
@@ -1103,11 +1132,16 @@ def batch_status(
         ...,
         description="콤마 구분 doc_id 리스트 (max 50). 예: ?ids=uuid1,uuid2",
     ),
+    current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
 ) -> BatchStatusResponse:
     """여러 doc_id 의 latest job status 를 한 번에 조회 (W2 §3.H, W1 §6 이월).
 
     프론트 폴러가 doc_id 단위 N회 → batch 단위 1회로 호출 횟수 절감.
     1 SQL 로 모든 jobs 가져온 뒤 Python 측에서 doc_id 별 latest 만 추출.
+
+    D1 P1#1 — 본인 소유 doc_id 만 응답. 미소유 doc_id 는 결과에서 제외 (404 아님 —
+    배치라 부분 응답이 자연). 프론트 폴러(`use-docs-batch-polling.ts`) 가
+    `item.doc_id` 키 기반 Record 매핑이라 누락된 id 는 자연 `undefined`.
     """
     doc_ids = [s.strip() for s in ids.split(",") if s.strip()]
     if not doc_ids:
@@ -1123,11 +1157,24 @@ def batch_status(
 
     supabase = get_supabase_client()
 
+    # 본인 소유 doc_id 만 허용 — IDOR 차단. 입력 순서 보존.
+    owned_resp = (
+        supabase.table("documents")
+        .select("id")
+        .in_("id", doc_ids)
+        .eq("user_id", current_user.user_id)
+        .execute()
+    )
+    owned_ids = {r["id"] for r in (owned_resp.data or [])}
+    allowed_doc_ids = [d for d in doc_ids if d in owned_ids]
+    if not allowed_doc_ids:
+        return BatchStatusResponse(items=[])
+
     def _query():
         return (
             supabase.table("ingest_jobs")
             .select(_ingest_jobs_select_columns())
-            .in_("doc_id", doc_ids)
+            .in_("doc_id", allowed_doc_ids)
             .order("queued_at", desc=True)
             .execute()
         )
@@ -1150,7 +1197,7 @@ def batch_status(
             latest_by_doc[doc_id] = row
 
     items: list[BatchStatusItem] = []
-    for doc_id in doc_ids:
+    for doc_id in allowed_doc_ids:
         row = latest_by_doc.get(doc_id)
         if row is None:
             items.append(BatchStatusItem(doc_id=doc_id, job=None))
@@ -1185,14 +1232,20 @@ def batch_status(
 # GET /documents/{doc_id} — `/doc/[id]` 경량판 (W2 §3.M)
 # ============================================================
 @router.get("/{doc_id}", response_model=DocumentDetailResponse)
-def get_document(doc_id: str) -> DocumentDetailResponse:
-    """단건 종합 조회 — `/doc/[id]` 페이지가 한 번에 필요한 메타·태그·요약·진행 상태."""
+def get_document(
+    doc_id: str,
+    current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
+) -> DocumentDetailResponse:
+    """단건 종합 조회 — `/doc/[id]` 페이지가 한 번에 필요한 메타·태그·요약·진행 상태.
+
+    D1 P1#1 — 본인 소유 doc 만 노출. 타인 doc 은 404 (존재 위장).
+    """
     supabase = get_supabase_client()
     doc_resp = (
         supabase.table("documents")
         .select(
             "id, title, doc_type, source_channel, size_bytes, content_type, "
-            "tags, summary, flags, created_at, received_ms"
+            "tags, summary, flags, created_at, received_ms, user_id"
         )
         .eq("id", doc_id)
         .is_("deleted_at", "null")
@@ -1200,7 +1253,7 @@ def get_document(doc_id: str) -> DocumentDetailResponse:
         .execute()
     )
     rows = doc_resp.data or []
-    if not rows:
+    if not rows or rows[0]["user_id"] != current_user.user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="문서를 찾을 수 없습니다.",
@@ -1260,16 +1313,18 @@ def get_document(doc_id: str) -> DocumentDetailResponse:
 def get_document_status(
     doc_id: str,
     include_logs: bool = Query(False, alias="include_logs"),
+    current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
 ) -> DocumentStatusResponse:
+    """D1 P1#1 — 본인 소유 doc 만 status 노출. 타인 doc 은 404."""
     supabase = get_supabase_client()
     existing = (
         supabase.table("documents")
-        .select("id")
+        .select("id, user_id")
         .eq("id", doc_id)
         .limit(1)
         .execute()
     )
-    if not existing.data:
+    if not existing.data or existing.data[0]["user_id"] != current_user.user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="문서를 찾을 수 없습니다.",
