@@ -6,7 +6,7 @@
 >
 > "정리하지 않아도, 기억의 단편으로 꺼내 쓰는 앱."
 
-**상태**: v0.1 MVP — **production live** (2026-05-18 배포 D 안 도달 → 2026-05-19 도메인 부착 완료) / 검색 정확도 80% PRD **M0~M2 완료** (top-1 0.7966 — 0.80 게이트 noise band 내 사실상 달성, M2 W-4 `beb83b4`) / 단위 테스트 **1229/1229 PASS** (v1.5 W-2 +10 P2 보강) / 마이그레이션 **16개** / commit 누적 **548**.
+**상태**: v0.1 MVP — **production live + 본인 단독 멀티유저 활성화** (2026-05-18 배포 D 안 → 2026-05-19 도메인 부착 → **2026-05-21 D1+D2 ship + E4 fix**) / 검색 정확도 80% PRD **M0~M2 완료** (top-1 0.7966 — 0.80 게이트 noise band 내 사실상 달성, M2 W-4 `beb83b4`) / 단위 테스트 **1336+ PASS** (D1+D2+E4 누적, baseline flaky 7 동일) / 마이그레이션 **20개** (017~020 = invite_codes + 018 이관 + 019 RLS + 020 Storage prefix) / commit 누적 **563**.
 **목적**: **이직 포트폴리오** + 페르소나 A (한국 직장인) 개인 지식 보조. 공공·대기업 비IT 실무자가 일상적으로 받는 HWP/HWPX·PDF·DOCX·이미지·URL 자료를 자연어로 역검색.
 
 ## Production (live)
@@ -228,6 +228,16 @@ flowchart LR
 - ✅ DECISION-13 — 배포 D 안 (Railway + Vercel + DeepInfra) production 도달 (`6361894`)
 - ✅ 도메인 부착 — `woong-s.com` (Cloudflare Registrar) + `jetrag.woong-s.com` + `jetrag-api.woong-s.com`, **코드 변경 0** (`c2c4e26`)
 
+### W31 멀티유저 sprint — D1 Auth + D2 RLS + E4 fix (2026-05-20 ~ 2026-05-21)
+- ✅ **D1 Auth 인프라** — Supabase JWT (ES256/HS256 분기 + JWKS), `invite_codes` (마이그 017), `JETRAG_AUTH_ENABLED` 토글, `OWNER_USER_ID` admin 게이트, IDOR 차단 (`da5c640` + `2822ca5` + `96ac048` work-log)
+- ✅ **D2 멀티유저 격리** — 7 테이블 RLS 25 정책 (마이그 019, documents/chunks EXISTS join/ingest_jobs/ingest_logs 2-hop/answer_feedback/answer_ragas_evals/invite_codes) + Storage `user/<uid>/` prefix 4 정책 (마이그 020) + RPC `get_chunks_stats_for_user` SECURITY DEFINER + GRANT service_role only (`31f1e9a`)
+- ✅ **D1 Phase 4 데이터 이관** — 018 SQL 17 row legacy→owner UPDATE (documents 12 / answer_feedback 1 / answer_ragas_evals 4) via admin REST API, Railway `OWNER_USER_ID` upsert via GraphQL `variableUpsert` (자동 redeploy 트리거) — 사용자 작업 0건 dashboard, 모든 단계 automation (`96ac048` 종합)
+- ✅ **D2 Phase 5 RLS+Storage** — 019 RLS apply (사용자 SQL Editor) + 020 PART 1 storage_path PATCH (PostgREST) + script native move 12 객체 (~6초) + 020 PART 2 Storage RLS apply
+- ✅ **E4 fix** — `require_authorized_user` dependency 추가 + 4 라우터(`/documents`, `/search`, `/answer`, `/stats`) 적용 → invite redeem 안 한 user 가 backend API 직접 호출로 베타 cap 우회 risk 차단. 단위 테스트 +8 PASS (`378b8db`)
+- ✅ **README 다이어그램 3종 + 데모 GIF 가이드** — 인제스트 9-stage + 검색 파이프라인 (intent + Hybrid RRF) + 어댑터 5 Protocol + DeepInfra↔HF swap path (`e5640c6`)
+
+**누적 검증**: 단위 테스트 1336+ PASS / production smoke 401·200·12 doc inbox / Storage 무인증 GET 400 / Railway deploy SUCCESS.
+
 ---
 
 ## 데모
@@ -296,7 +306,7 @@ Railway (backend) · Vercel (frontend) · Supabase (DB·Storage) · DeepInfra (e
 - **Cloud → Local 전환 경로** — v2 에 Ollama + LanceDB 로 ENV swap 만으로 전환 가능
 - **graceful degrade** — 휴리스틱 fail 시 fallback (HwpxParser → DocxParser → PyMuPDFParser)
 - **두 단계 quota 보호** — Vision cap + fast-fail + class-based + tag_summarize summary skip
-- **RLS + per-user 격리 (예정)** — 멀티유저 D1~D3 sprint 설계 완료 (Auth + RLS + per-user rate cap)
+- **RLS + per-user 격리 ✅ ship 완료** (2026-05-21) — **D1 Auth** (Supabase JWT, ES256 + JWKS 분기, invite_codes 게이트, OWNER_USER_ID admin) + **D2 RLS** (7 테이블 25 정책 + RPC `get_chunks_stats_for_user` SECURITY DEFINER + GRANT service_role only + Storage RLS 4 정책 + user/<uid>/ prefix native move) + **E4 fix** (`require_authorized_user` dependency — 4 라우터 redeem 검증). 베타 30명 공개 게이트 해소 — senior-qa 의 P0/P1 차단 모두 닫힘.
 
 ---
 

@@ -1,18 +1,51 @@
 # Changelog
 
-Jet-Rag MVP — W1 (2026-04-22) ~ v1.5 + Deploy sprint (2026-05-19 production live) 누적 변경 분류.
+Jet-Rag MVP — W1 (2026-04-22) ~ W31 멀티유저 sprint (2026-05-21 D1+D2+E4 ship) 누적 변경 분류.
 
 semver 적용 전 (v0.1 MVP 단계). 본 문서는 W 단위 / sprint 단위 진행 + Conventional Commits prefix 분류.
 
 > **상세 컨텍스트**: 매 W 종합 핸드오프 + sprint work-log (`work-log/`)
-> **commit 누적**: **548** (W1~v1.5 W-2 + Deploy + 도메인 부착)
-> **단위 테스트**: **1229/1229 PASS** (v1.5 W-2 P2 보강까지 누적)
-> **마이그레이션**: **16개** (001~016)
-> **production live**: 2026-05-18 (배포 D 안 = Railway $5 + Vercel + DeepInfra) → 2026-05-19 도메인 부착 (`woong-s.com`)
+> **commit 누적**: **563** (W1~W31 멀티유저 sprint)
+> **단위 테스트**: **1336+ PASS** (W31 D1+D2+E4 누적, baseline flaky 7 동일)
+> **마이그레이션**: **20개** (001~020 — 017 invite_codes / 018 데이터 이관 / 019 RLS / 020 Storage prefix 추가)
+> **production live**: 2026-05-18 (배포 D 안 = Railway $5 + Vercel + DeepInfra) → 2026-05-19 도메인 부착 (`woong-s.com`) → **2026-05-21 D1+D2 멀티유저 활성화 (본인 단독)**
 
 ---
 
-## [Unreleased] — v0.1 MVP + v1.5 sprint
+## [Unreleased] — v0.1 MVP + W31 멀티유저 sprint
+
+### W31 멀티유저 sprint (2026-05-20 ~ 2026-05-21) — D1+D2 ship + E4 fix
+
+- `feat(auth-d2-followup)` invite redeem 게이트 보강 (E4 fix) (`378b8db`)
+  - senior-qa multi-user E2E audit 에서 발견: backend 4 라우터(`/documents`, `/search`, `/answer`, `/stats`) router-level dependency 가 `require_auth` 만 → redeem 안 한 random user 도 통과 → 베타 30 cap 강제 실패 risk
+  - `api/app/auth/dependencies.py` 에 `require_authorized_user` 추가 (60 lines): `invite_codes` `used_by=auth.uid()` SELECT 1회/request (캐시 없음, 1 row per user 가벼움). auth_enabled=false 통과(MVP 보존), DB 조회 실패 시 503 graceful (017 미적용 대응)
+  - 4 라우터 router-level dep 교체, 단위 테스트 +8 PASS, 전체 회귀 0
+  - Railway auto-deploy `a23b629a` SUCCESS, production smoke 401·200 회귀 0, 본인 inbox 12 doc 표시 정상
+- `docs(readme)` 다이어그램 3종(인제스트/검색/어댑터) + 데모 GIF 가이드 (`e5640c6`)
+  - mermaid 인제스트 9-stage + Vision rerouting / 검색 파이프라인 (intent_router + Hybrid RRF + 가드 + MMR) / 어댑터 5 Protocol + DeepInfra↔HF swap path
+  - `docs/demo/README.md` 137줄 — Kap / QuickTime + gifski / ffmpeg / gifsicle 도구 비교, 시나리오 3종, 임베드 형식
+- `docs(work-log)` 2026-05-21 D1 Phase 4 + D2 Phase 5 ship 완료 종합 + API 키 회전 TODO (`96ac048`)
+  - **D1 Phase 4 데이터 이관** — admin REST API PATCH 3건 (`documents` 12 / `answer_feedback` 1 / `answer_ragas_evals` 4 = **17 row** legacy→owner UPDATE), Railway GraphQL `variableUpsert` `OWNER_USER_ID` 등록 (자동 redeploy `e89f34d0` SUCCESS), smoke /search 401·/health 200·본인 inbox 12 doc
+  - **D2 Phase 5** — 019 RLS apply (사용자 SQL Editor) + 020 PART 1 storage_path PATCH 12 row (PostgREST) + `migrate_storage_to_per_user.py` default 모드 12 객체 native move (~6초, errors=0) + 020 PART 2 Storage RLS 4 정책 apply
+  - **API 키 회전 TODO** 별도 문서 — 본 conversation 노출 Supabase service_role + Railway account token 회전 절차 6단계 체크리스트 + production 무중단 보장 + redact 안내
+- `docs(work-log)` 2026-05-21 D1 ship Phase 1~3 + JWKS ES256 보강 sprint 종합 (`1a46a5f`)
+- `feat(auth-d1-jwks)` ES256/RS256 + JWKS 분기 — Supabase 비대칭 signing key 대응 (`2822ca5`)
+  - Phase 1a-4 에서 Supabase JWT signing key 가 이미 ECC(P-256) migration 됨을 발견 — HS256 only 백엔드로는 검증 불가
+  - `api/app/auth/jwt_verify.py` 에 `_ASYMMETRIC_ALGORITHMS = {ES256, ES384, ES512, RS256, RS384, RS512}` + `_resolve_signing_key(token, settings)` 알고리즘 화이트리스트 분기, `PyJWKClient` `@lru_cache` 싱글톤
+  - `api/app/config.py` `supabase_jwks_url` 필드 + `pyproject.toml` `pyjwt[crypto]` extra
+  - 단위 테스트 35 → **40 PASS** (+5 ES256 정상 / JWKS URL 미설정 / PyJWKClientError / OSError / 만료)
+  - Railway ENV `SUPABASE_JWT_ALGORITHM=ES256` + `SUPABASE_JWKS_URL` 추가로 우회
+- `docs(work-log)` D1+D2 ship 단계별 가이드 runbook (Phase 1-5) (`fb1006e`)
+- `docs(work-log)` D2 세션 종합 — D1 push 후 D2 sprint 완수 + 9단계 deploy 가이드 (`f0f4fce`)
+- `feat(rls-d2)` RLS 정책 7테이블 + Storage per-user prefix + stats 누출 차단 + Realtime JWT (`31f1e9a`)
+  - 마이그 019 — 7 테이블 25 RLS 정책 (`documents`/`chunks` EXISTS join/`ingest_jobs`/`ingest_logs` 2-hop/`answer_feedback`/`answer_ragas_evals`/`invite_codes` SELECT only)
+  - 마이그 020 — `documents` 버킷 4 Storage RLS 정책 (`foldername[1]='user' AND [2]=auth.uid()::text`) + `storage_path` `user/<uid>/` prefix UPDATE + `migrate_storage_to_per_user.py` script (default move / `--copy-only` / `--cleanup-only`)
+  - RPC `get_chunks_stats_for_user(UUID)` SECURITY DEFINER + auth.uid() 가드 + GRANT EXECUTE TO service_role only (senior-qa P1#2 누출 차단)
+  - Realtime JWT — frontend `realtimeSetAuth(client)` 호출 (W31 D2 senior-qa P1#3)
+- `feat(auth-d1)` 멀티유저 Auth 인프라 (Phase A+B + P1#1 IDOR 차단) (`da5c640`)
+  - Supabase Auth client (cookie session) + JWT verify HS256 (당시) + `require_auth` / `require_admin` dependency + 마이그 017 `invite_codes`
+  - `/auth/me` / `/auth/redeem-invite` + 4 라우터 router-level `dependencies=[Depends(require_auth)]`
+  - P1#1 IDOR 차단 — `documents` single-doc 엔드포인트(`:815, 905, 1266, 1337`) user_id 가드 추가
 
 ### Deploy + 도메인 sprint (2026-05-18 ~ 2026-05-19) — production live
 
