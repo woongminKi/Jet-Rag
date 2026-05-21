@@ -30,6 +30,8 @@
 
 ## 아키텍처
 
+### 고수준 (4-tier 분리 배포)
+
 ```mermaid
 flowchart TB
     User([User Browser])
@@ -73,6 +75,129 @@ flowchart TB
 
 > **4-tier 분리 배포** — 프론트엔드 (Vercel) / 백엔드 (Railway Singapore) / 데이터 (Supabase Seoul) / AI Provider (DeepInfra + Gemini). 어댑터 계층이 embedding provider 의 swap path 를 ENV 1줄로 추상화 — **HF Inference Providers ↔ DeepInfra production 간 R@10 회귀 0.0000 으로 검증** (W-0 결정성 시험 cosine 0.999984, 호출 사이트 8건 무수정). 총 운영비 **~$5~6/월** + 도메인 ~$10/년.
 
+### 인제스트 파이프라인 (9 stage + Vision rerouting)
+
+```mermaid
+flowchart TB
+    Upload[("📤 Upload<br/>PDF · HWP · HWPX · DOCX ·<br/>PPTX · 이미지 · URL · TXT/MD<br/>(최대 50MB)")]
+
+    Upload --> Detect["1. detect<br/>magic bytes + 확장자 → doc_type"]
+    Detect --> Gate["2. content_gate<br/>빈 / SHA-256 중복 차단"]
+    Gate --> Parser{"3. extract<br/>확장자별 Parser 7종"}
+
+    Parser -->|text 충분| Chunk["4. chunk<br/>target 800자 / min 200자<br/>(page 경계 분리)"]
+    Parser -.->|"이미지 · 스캔 PDF<br/>(text &lt; 5자)"| Vision["Gemini 2.5 Flash Vision<br/>OCR + 표/그림 caption<br/>vision_page_cache (마이그 015)"]
+    Vision --> Chunk
+
+    Chunk --> Filter["5. chunk_filter<br/>extreme_short · table_noise 마킹"]
+    Filter --> Entity["5.5 entity_extract<br/>dates · amounts · ids → metadata.entities"]
+    Entity --> Embed["6. embed (chunk)<br/>BGE-M3 dense 1024<br/>(DeepInfra / HF — ENV 1줄 swap)"]
+    Embed --> Summary["7. tag_summarize<br/>Gemini 2.5 Flash<br/>(태그 + 요약 LLM 1회/doc)"]
+    Summary --> DocEmbed["8. doc_embed<br/>요약 기반 1024-dim<br/>(MMR diversity 용)"]
+    DocEmbed --> Load[("9. load<br/>Supabase Postgres + Storage<br/>documents · chunks · ingest_jobs")]
+
+    classDef vision fill:#475569,stroke:#94a3b8,stroke-dasharray:5 5,color:#f1f5f9
+    classDef terminal fill:#0f172a,stroke:#3b82f6,stroke-width:3px,color:#f8fafc
+    classDef stage fill:#1e293b,stroke:#10b981,stroke-width:2px,color:#f8fafc
+    class Vision vision
+    class Upload,Load terminal
+    class Chunk,Embed,Summary,DocEmbed stage
+```
+
+> **확장자 무관 공통 흐름** — 7 Parser 가 `text` 를 일관 추출, Vision rerouting 은 스캔 PDF / 이미지 / 텍스트 < 5자 PDF 페이지에서만 발화 (`vision_budget` cap). caption prefix (`[표 p.N: cap]`) 가 검색에 직접 노출 — M2 W-3 의 `caption_dependent gap +0.28 → +0.012` 효과 (96% 압축). entity_extract 는 chunk 의 sub-step (검색에서는 default OFF, factor 1.10 mock).
+
+### 검색 파이프라인 (intent routing + Hybrid RRF)
+
+```mermaid
+flowchart TB
+    Q(["🔍 자연어 질문"])
+
+    Q --> Intent["intent_router (룰)<br/>T1 cross_doc · T2 compare · T7 multi_target<br/>+ qtype 분류 (table / numeric / cross_doc / generic)"]
+
+    Intent --> FastPath{"meta-only?<br/>(날짜·#태그·doc-suffix 명사구)"}
+    FastPath -->|Yes — S3 D2| MetaSearch["documents SELECT 1회<br/>(임베딩 0 · RPC 0 · cost 0)"]
+    FastPath -->|No| Embed["embed_query (BGE-M3)<br/>+ embed_query_cache 마이그 016<br/>(HF ↔ DeepInfra 키 공유)"]
+
+    Embed --> Hybrid["RPC search_hybrid_rrf (003)<br/>┌─ PGroonga sparse (Mecab 한국어 어절)<br/>├─ pgvector dense HNSW (1024-dim)<br/>└─ RRF k=60 Python merge"]
+
+    Hybrid --> Guards["가드 다단<br/>① 표지 (W25 D4 — text ≤ 30자 + page=1, ×0.3)<br/>② TOC (목차 패턴 penalty, ENV ON)<br/>③ chunk_id dedupe (dense+sparse 동일 chunk)"]
+    Guards --> MMR{"cross_doc T1<br/>+ 다중 doc?"}
+    MMR -->|Yes — S3 D4| MMRApply["MMR 재정렬<br/>λ=0.7 (relevance vs diversity)<br/>4중 가드 통과 시"]
+    MMR -->|No| Group
+
+    MMRApply --> Group["doc 그룹화<br/>matched_chunks cap:<br/>· 일반 = 3 (chunk_idx asc)<br/>· cross_doc-class (T1/T2/T7) = 8 (RRF score desc)"]
+
+    MetaSearch --> Resp[(응답)]
+    Group --> Resp
+    Resp --> UI(["검색 결과 카드<br/>매칭 강도 % · snippet ±240자 · doc 단위"])
+
+    classDef gate fill:#1e293b,stroke:#10b981,stroke-width:2px,color:#f8fafc
+    classDef fast fill:#475569,stroke:#94a3b8,stroke-dasharray:5 5,color:#f1f5f9
+    classDef core fill:#0f172a,stroke:#3b82f6,stroke-width:3px,color:#f8fafc
+    class Intent,Guards gate
+    class MetaSearch fast
+    class Hybrid core
+```
+
+> **default 경로는 여전히 Hybrid RRF + 표지/TOC 가드 + doc 그룹** — reranker(D6 net-neg 확정), paid query decomposition(S3 D3, /answer 한정 + budget cap), entity_boost(S4-B ablation 결론 OFF) 는 모두 default OFF 또는 좁은 발화 범위. KPI #7 qtype-aware 우세 실증: table top-1 **+0.34** / numeric top-1 **+0.43** / cross_doc R@10 **+0.045**. KPI #10 production P95 **1.705s** (게이트 2.5s 의 32% 여유, 60 warm 호출).
+
+### 어댑터 layer (5 Protocol + impl swap path)
+
+```mermaid
+flowchart LR
+    subgraph Core ["api/app — 핵심 비즈니스 로직<br/>(Protocol 만 import, 구현체 직접 의존 X)"]
+        Routers["routers/<br/>documents · search · answer · stats"]
+        Services["services/<br/>intent_router · query_decomposer · search"]
+        IngestStages["ingest/stages/<br/>detect · extract · chunk · embed · ..."]
+    end
+
+    subgraph Protocols ["api/app/adapters/ — Protocol 5종 + Vision"]
+        PLLM["LLM"]
+        PEmbed["Embedding"]
+        PVS["VectorStore"]
+        PParser["Parser"]
+        PStorage["Storage"]
+        PVision["Vision"]
+    end
+
+    subgraph Impls ["api/app/adapters/impl/ — 교체 가능 구현"]
+        ILLM["GeminiLLM<br/>(v2: OllamaLLM 가능)"]
+        IEmbedDI["BGE-M3 DeepInfra<br/>(production · always-warm)"]
+        IEmbedHF["BGE-M3 HF<br/>(fallback / dev)"]
+        IVS["Supabase pgvector<br/>(v2: LanceDB 가능)"]
+        IParser["7종 Parser<br/>PyMuPDF · Hwpx · Hwp5 ·<br/>Docx · Pptx · Image · Url"]
+        IStorage["Supabase Storage"]
+        IVision["Gemini 2.5 Vision"]
+    end
+
+    Routers --> PLLM
+    Routers --> PEmbed
+    Routers --> PVS
+    Services --> PLLM
+    Services --> PEmbed
+    IngestStages --> PEmbed
+    IngestStages --> PParser
+    IngestStages --> PVision
+    IngestStages --> PStorage
+
+    PLLM --> ILLM
+    PEmbed -.->|"JETRAG_EMBED_PROVIDER=deepinfra<br/>(default production)"| IEmbedDI
+    PEmbed -.->|"=hf (dev / fallback)"| IEmbedHF
+    PVS --> IVS
+    PParser --> IParser
+    PStorage --> IStorage
+    PVision --> IVision
+
+    classDef boundary fill:#1e293b,stroke:#10b981,stroke-width:2px,color:#f8fafc
+    classDef prod fill:#0f172a,stroke:#3b82f6,stroke-width:3px,color:#f8fafc
+    classDef alt fill:#475569,stroke:#94a3b8,stroke-dasharray:5 5,color:#f1f5f9
+    class Protocols boundary
+    class IEmbedDI,ILLM,IVS prod
+    class IEmbedHF alt
+```
+
+> **기획서 §9.4 직교성 실증** — DeepInfra ↔ HF 임베딩 어댑터 swap 시 호출 사이트 **8건 무수정**, R@10 회귀 **0.0000** (115/115 row top-5 ordering 100% 일치, W-0 cosine 0.999984 사전 검증). v2 에서 Ollama LLM + LanceDB VectorStore 로컬 전환도 동일 패턴 — 코어 비즈니스 로직 변경 0 + ENV 1줄.
+
 ## 진척 현황
 
 ### MVP (W1~W21, 2026-04-22 ~ 2026-05-03)
@@ -102,6 +227,32 @@ flowchart TB
 - ✅ Railway Dockerfile + Vercel 배포 + CORS env 화 (`e57c3ec`)
 - ✅ DECISION-13 — 배포 D 안 (Railway + Vercel + DeepInfra) production 도달 (`6361894`)
 - ✅ 도메인 부착 — `woong-s.com` (Cloudflare Registrar) + `jetrag.woong-s.com` + `jetrag-api.woong-s.com`, **코드 변경 0** (`c2c4e26`)
+
+---
+
+## 데모
+
+> 화면 녹화 산출물 — production endpoint <https://jetrag.woong-s.com> 동작 시연.
+> 시나리오 3종 (검색 / 인제스트 / RAG 답변) — 녹화·변환·임베드 가이드는 [`docs/demo/README.md`](docs/demo/README.md) 참조.
+
+<!-- 녹화 후 활성화:
+### 검색
+![검색 데모](docs/demo/search.gif)
+
+> 자연어 질문 → Hybrid RRF (PGroonga sparse + pgvector dense) → doc 그룹 결과 카드 + 매칭 강도 % + snippet ±240자. KPI #10 production P95 **1.705s** (60 warm 호출).
+
+### 인제스트
+![인제스트 데모](docs/demo/ingest.gif)
+
+> PDF/HWP/HWPX/DOCX/PPTX/이미지/URL 5경로 9-stage. 스캔 PDF · 이미지는 Vision rerouting (vision_budget cap). 표/그림 caption 이 검색에 직접 노출.
+
+### RAG 답변
+![RAG 답변 데모](docs/demo/answer.gif)
+
+> Gemini 2.5 Flash + 출처 highlight + Ragas Faithfulness/Answer Relevancy 점수. KPI #4 **0.908** / #5 **0.801**.
+-->
+
+**준비 중** — gif 파일 commit 후 위 placeholder 활성화.
 
 ---
 
