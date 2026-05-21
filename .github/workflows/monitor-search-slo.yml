@@ -20,8 +20,8 @@ on:
         description: "golden 쿼리 8건으로 ring buffer warm 후 측정 (기본 false — 단순 snapshot)"
         type: boolean
         default: false
-  # schedule:
-  #   - cron: "0 2 * * *"  # 매일 02:00 UTC
+  schedule:
+    - cron: "0 2 * * *"  # 매일 02:00 UTC = 11:00 KST
 
 permissions:
   contents: read
