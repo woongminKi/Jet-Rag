@@ -37,7 +37,7 @@ from app.adapters.impl.bgem3_hf_embedding import (
     get_bgem3_provider,
     is_transient_hf_error,
 )
-from app.auth import LEGACY_DEFAULT_USER, CurrentUserDep, require_auth
+from app.auth import LEGACY_DEFAULT_USER, CurrentUserDep, require_authorized_user
 from app.db import get_supabase_client
 from app.services import (
     intent_router,
@@ -50,9 +50,11 @@ from app.services import (
 )
 
 logger = logging.getLogger(__name__)
-# D1 — router-level 인증 게이트. auth_enabled=false 면 require_auth 가 default_user_id
-# fallback 으로 통과 (무중단). true 면 Bearer JWT 필수.
-router = APIRouter(tags=["search"], dependencies=[Depends(require_auth)])
+# D1 — router-level 인증 게이트. auth_enabled=false 면 default_user_id fallback 으로 통과
+# (무중단). true 면 Bearer JWT 필수.
+# D2 follow-up (E4 fix) — require_authorized_user 로 격상: invite redeem 게이트 추가.
+# 베타 30 cap 강제 (random user 의 backend 직접 호출 차단).
+router = APIRouter(tags=["search"], dependencies=[Depends(require_authorized_user)])
 
 _MAX_QUERY_LEN = 200
 # 검색 결과 카드의 본문 미리보기 개수 — list 모드 (doc_id 미지정) 에 적용.

@@ -16,6 +16,7 @@ from app.auth.dependencies import (
     get_current_user,
     require_admin,
     require_auth,
+    require_authorized_user,
 )
 from app.auth.jwt_verify import JWTValidationError, VerifiedToken, verify_jwt
 
@@ -29,6 +30,7 @@ __all__ = [
     "LEGACY_DEFAULT_USER",
     "get_current_user",
     "require_auth",
+    "require_authorized_user",
     "require_admin",
     "JWTValidationError",
     "VerifiedToken",

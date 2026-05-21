@@ -34,7 +34,7 @@ from fastapi import (
 from pydantic import BaseModel, Field
 
 from app.adapters.impl.supabase_storage import SupabaseBlobStorage
-from app.auth import LEGACY_DEFAULT_USER, CurrentUserDep, require_auth
+from app.auth import LEGACY_DEFAULT_USER, CurrentUserDep, require_authorized_user
 from app.config import get_settings
 from app.db import get_supabase_client
 from app.ingest import (
@@ -52,8 +52,12 @@ from app.services.ingest_mode import INGEST_MODES, IngestMode, resolve_page_cap
 logger = logging.getLogger(__name__)
 
 # D1 — router-level 인증 게이트 (auth_enabled=false 면 fallback 통과).
+# D2 follow-up (E4 fix) — require_authorized_user 로 격상: invite redeem 게이트 추가.
+# Supabase signup 만 한 random user 가 backend API 직접 호출로 베타 30 cap 우회 방지.
 router = APIRouter(
-    prefix="/documents", tags=["documents"], dependencies=[Depends(require_auth)]
+    prefix="/documents",
+    tags=["documents"],
+    dependencies=[Depends(require_authorized_user)],
 )
 
 # 기획서 §11.3 단계 A

@@ -14,14 +14,16 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from app.auth import LEGACY_DEFAULT_USER, CurrentUserDep, require_auth
+from app.auth import LEGACY_DEFAULT_USER, CurrentUserDep, require_authorized_user
 from app.db import get_supabase_client
 from app.services import search_metrics, vision_metrics
 
 logger = logging.getLogger(__name__)
 
 # D1 — router-level 인증 게이트 (auth_enabled=false 면 fallback 통과).
-router = APIRouter(tags=["stats"], dependencies=[Depends(require_auth)])
+# D2 follow-up (E4 fix) — require_authorized_user 로 격상: invite redeem 게이트 추가.
+# 베타 30 cap 강제 (random user 의 backend 직접 호출 차단).
+router = APIRouter(tags=["stats"], dependencies=[Depends(require_authorized_user)])
 
 # 한국 시간대 — 단일 사용자 MVP 기준이라 하드코딩
 KST = timezone(timedelta(hours=9))
