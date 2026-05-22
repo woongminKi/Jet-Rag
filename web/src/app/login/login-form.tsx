@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input';
  * D1 Phase B — 로그인 폼 (Email/PW + Google).
  *
  * server action(signInWithPassword) + useActionState 로 에러 표시. Google 버튼은
- * 별도 form action(초대 코드 없이) — 복귀 유저는 콜백의 /auth/me 게이트로 통과.
+ * 별도 form action — 콜백이 code exchange 후 세션 수립.
  */
 const INITIAL: AuthActionState = { error: null };
 

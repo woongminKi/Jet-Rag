@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, patch
 os.environ.setdefault("HF_API_TOKEN", "dummy-test-token")
 
 from app.auth import CurrentUser
-from app.auth.dependencies import get_current_user, require_authorized_user
+from app.auth.dependencies import get_current_user
 from app.config import Settings, get_settings
 
 _AUTH_USER_ID = "22222222-2222-2222-2222-222222222222"
@@ -130,11 +130,8 @@ class ProtectedRoutesTest(unittest.TestCase):
     def test_valid_user_passes_gate(self) -> None:
         # get_current_user override → 인증 게이트 통과. 잘못된 쿼리(q 누락)로 핸들러 본문
         # 진입 전 422 검증 단계에서 종료 → Supabase 호출 0. 401 이 아님을 확인.
-        # D2 follow-up — require_authorized_user 도 override 로 invite redeem 게이트 우회
-        # (실 Supabase 미설정 환경에서 invite_codes SELECT 시도 시 503 변환 risk 차단).
         authed_user = CurrentUser(user_id=_AUTH_USER_ID, email="u@example.com")
         self.app.dependency_overrides[get_current_user] = lambda: authed_user
-        self.app.dependency_overrides[require_authorized_user] = lambda: authed_user
         with self.TestClient(self.app) as client:
             # /search 는 q 필수 — 미전달 시 422 (게이트 통과 후 검증 실패).
             resp = client.get("/search")

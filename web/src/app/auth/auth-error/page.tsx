@@ -11,8 +11,6 @@ interface AuthErrorPageProps {
 }
 
 const REASON_MESSAGES: Record<string, string> = {
-  no_invite: '초대 코드가 필요합니다. 가입 시 발급받은 코드를 입력해 주세요.',
-  invite: '초대 코드 검증에 실패했습니다. 코드가 유효한지 확인해 주세요.',
   exchange: '로그인 처리에 실패했습니다. 다시 시도해 주세요.',
   missing_code: '인증 정보가 올바르지 않습니다. 다시 시도해 주세요.',
   oauth: 'Google 로그인을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.',
@@ -26,7 +24,6 @@ export default async function AuthErrorPage({
 }: AuthErrorPageProps) {
   const { reason } = await searchParams;
   const message = (reason && REASON_MESSAGES[reason]) || DEFAULT_MESSAGE;
-  const needsInvite = reason === 'no_invite' || reason === 'invite';
 
   return (
     <main className="flex flex-1 items-center justify-center px-4 py-12">
@@ -40,11 +37,6 @@ export default async function AuthErrorPage({
         </div>
 
         <div className="flex flex-col gap-2">
-          {needsInvite && (
-            <Button asChild className="w-full">
-              <Link href="/signup">초대 코드로 가입하기</Link>
-            </Button>
-          )}
           <Button asChild variant="outline" className="w-full">
             <Link href="/login">로그인으로 돌아가기</Link>
           </Button>

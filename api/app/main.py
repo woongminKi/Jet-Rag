@@ -158,8 +158,7 @@ app.include_router(search_router)
 app.include_router(stats_router)
 app.include_router(answer_router)
 app.include_router(admin_router)
-# D1 — 가입 게이트 (POST /auth/redeem-invite). get_current_user dependency 내장이라
-# router-level require_auth 불필요 (auth_enabled=true 시 토큰 없으면 401).
+# D1 — /auth/me. get_current_user dependency 내장 (auth_enabled=true 시 토큰 없으면 401).
 app.include_router(auth_router)
 
 

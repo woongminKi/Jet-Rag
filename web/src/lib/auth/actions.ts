@@ -1,26 +1,20 @@
 'use server';
 
-import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
-import { redeemInviteOnServer } from '@/lib/auth/session';
 
 /**
- * D1 Phase B — Auth server actions (plan §1.1·§5).
+ * D1 Phase B — Auth server actions (plan §1.1).
  *
  * 모든 세션 변경은 server action 에서 처리 → `@supabase/ssr` createServerClient 가
  * httpOnly 쿠키를 set (browser client 미사용 — 진짜 httpOnly).
  *
  * useActionState 호환 — { error: string | null } 형태 반환. 성공 시 redirect().
+ *
+ * W31 follow-up — 초대 코드 게이트 제거 (공개 가입 정책).
  */
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3001';
-const IS_PROD = process.env.NODE_ENV === 'production';
-const COOKIE_DOMAIN = process.env.NEXT_PUBLIC_COOKIE_DOMAIN || undefined;
-
-// OAuth 시작 전 초대 코드를 잠시 보관하는 단기 httpOnly 쿠키 (콜백에서 소비).
-const PENDING_INVITE_COOKIE = 'jetrag-pending-invite';
-const PENDING_INVITE_MAX_AGE = 600; // 10분 — OAuth 왕복 동안만 유효.
 
 export interface AuthActionState {
   error: string | null;
@@ -54,30 +48,20 @@ export async function signInWithPassword(
   redirect(returnTo);
 }
 
-/** Email/PW 가입 (Email confirm OFF — 즉시 세션) + 초대 코드 소진 게이트. */
-export async function signUpWithInvite(
+/** Email/PW 가입 (Email confirm OFF — 즉시 세션). 공개 가입. */
+export async function signUp(
   _prev: AuthActionState,
   formData: FormData,
 ): Promise<AuthActionState> {
   const email = String(formData.get('email') ?? '').trim();
   const password = String(formData.get('password') ?? '');
-  const inviteCode = String(formData.get('inviteCode') ?? '').trim();
   if (!email || !password) return fail('이메일과 비밀번호를 입력해 주세요.');
-  if (!inviteCode) return fail('초대 코드를 입력해 주세요.');
 
   const supabase = await createSupabaseServerClient();
   if (!supabase) return configError();
 
   const { error } = await supabase.auth.signUp({ email, password });
   if (error) return fail('가입에 실패했습니다. 이미 가입된 이메일일 수 있습니다.');
-
-  // 가입 직후 초대 코드 소진. 실패 시 즉시 signOut + 안내 (D1-Q5).
-  try {
-    await redeemInviteOnServer(inviteCode);
-  } catch (e) {
-    await supabase.auth.signOut();
-    return fail(e instanceof Error ? e.message : '초대 코드 검증에 실패했습니다.');
-  }
 
   redirect('/');
 }
@@ -90,27 +74,13 @@ export async function signOut(): Promise<void> {
 }
 
 /**
- * Google OAuth 시작. 가입 폼에서 호출되면 inviteCode 를 pending 쿠키에 보관 후
- * Supabase OAuth URL 로 리다이렉트 (콜백이 code exchange + 초대 게이트 수행, plan §1.1).
+ * Google OAuth 시작. 콜백이 code exchange 후 세션 수립 (plan §1.1).
  */
 export async function signInWithGoogle(formData: FormData): Promise<void> {
-  const inviteCode = String(formData.get('inviteCode') ?? '').trim();
   const returnTo = sanitizeReturnTo(formData.get('returnTo'));
 
   const supabase = await createSupabaseServerClient();
   if (!supabase) redirect('/auth/auth-error?reason=config');
-
-  if (inviteCode) {
-    const cookieStore = await cookies();
-    cookieStore.set(PENDING_INVITE_COOKIE, inviteCode, {
-      httpOnly: true,
-      secure: IS_PROD,
-      sameSite: 'lax',
-      path: '/',
-      maxAge: PENDING_INVITE_MAX_AGE,
-      ...(COOKIE_DOMAIN ? { domain: COOKIE_DOMAIN } : {}),
-    });
-  }
 
   const callbackUrl = new URL('/auth/callback', SITE_URL);
   if (returnTo !== '/') callbackUrl.searchParams.set('returnTo', returnTo);

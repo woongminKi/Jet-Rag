@@ -33,7 +33,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
         <LoginForm returnTo={sanitizeReturnTo(returnTo)} />
 
         <p className="text-center text-sm text-muted-foreground">
-          초대 코드가 있으신가요?{' '}
+          계정이 없으신가요?{' '}
           <Link
             href="/signup"
             className="font-medium text-primary underline-offset-4 hover:underline"

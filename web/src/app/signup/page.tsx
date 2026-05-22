@@ -3,7 +3,7 @@ import { Zap } from 'lucide-react';
 import { SignupForm } from './signup-form';
 
 /**
- * D1 Phase B — 가입 페이지 (공개 경로). 초대 코드 게이트.
+ * D1 Phase B — 가입 페이지 (공개 경로). W31 follow-up — 초대 코드 게이트 제거.
  */
 export default function SignupPage() {
   return (
@@ -15,7 +15,7 @@ export default function SignupPage() {
           </div>
           <h1 className="text-lg font-semibold text-foreground">가입하기</h1>
           <p className="text-sm text-muted-foreground">
-            초대 코드로 Jet-Rag 에 가입하세요.
+            Jet-Rag 계정을 만드세요.
           </p>
         </div>
 

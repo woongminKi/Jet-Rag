@@ -40,7 +40,7 @@ from app.adapters.impl.bgem3_hf_embedding import (
     is_transient_hf_error,
 )
 from app.adapters.llm import ChatMessage, LLMProvider
-from app.auth import LEGACY_DEFAULT_USER, CurrentUserDep, require_authorized_user
+from app.auth import LEGACY_DEFAULT_USER, CurrentUserDep, require_auth
 from app.db import get_supabase_client
 from app.routers.search import _build_pgroonga_query
 from app.services import intent_router, query_decomposer
@@ -58,9 +58,7 @@ _LOW_CONFIDENCE_THRESHOLD = 0.75
 
 logger = logging.getLogger(__name__)
 # D1 — router-level 인증 게이트 (auth_enabled=false 면 fallback 통과).
-# D2 follow-up (E4 fix) — require_authorized_user 로 격상: invite redeem 게이트 추가.
-# 베타 30 cap 강제 (random user 의 backend 직접 호출 차단).
-router = APIRouter(tags=["answer"], dependencies=[Depends(require_authorized_user)])
+router = APIRouter(tags=["answer"], dependencies=[Depends(require_auth)])
 
 _MAX_QUERY_LEN = 200
 _DEFAULT_TOP_K = 5

@@ -2,11 +2,10 @@
 
 검증:
 - auth_enabled=false → access_token=None (fallback)
-- auth_enabled=true + authorized=true + Authorization Bearer 토큰 → access_token 노출
-- auth_enabled=true + authorized=false → access_token=None (미승인은 토큰 미반환)
-- 토큰 미존재 (헤더·쿠키 모두 없음) + auth_enabled=false → None
+- auth_enabled=true + Authorization Bearer 토큰 → access_token 노출
+- auth_enabled=true + 토큰 미존재 (헤더·쿠키 모두 없음) → access_token=None
 
-전략: app.auth dependencies 와 invite_codes SELECT 를 mock. external IO 0.
+W31 follow-up — invite 게이트 제거 후 authorized 는 인증된 모든 user 에 대해 true.
 
 실행: `python -m unittest tests.test_realtime_jwt_auth`
 """
@@ -14,7 +13,6 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock, patch
 
 from app.auth import CurrentUser
 from app.config import Settings
@@ -73,52 +71,23 @@ class AuthMeAccessTokenTest(unittest.TestCase):
         self.assertEqual(resp.user_id, _DEFAULT_USER_ID)
         self.assertIsNone(resp.access_token)
 
-    def test_auth_enabled_authorized_returns_bearer_token(self) -> None:
-        """auth_enabled=true + invite_codes 행 존재 → 토큰 반환."""
+    def test_auth_enabled_returns_bearer_token(self) -> None:
+        """auth_enabled=true → authorized=true + 토큰 forward."""
         user = CurrentUser(user_id=_AUTH_USER_ID, email="u@example.com")
         req = _FakeRequest(authorization="Bearer my-jwt-token")
-
-        fake_supabase = MagicMock()
-        # invite_codes select used_by chain — 1 row 반환 = authorized=true.
-        chain = fake_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value
-        chain.execute.return_value = MagicMock(data=[{"code": "BETA-01"}])
-
-        with patch("app.routers.auth.get_supabase_client", return_value=fake_supabase):
-            resp = auth_me(request=req, current_user=user, settings=_settings(auth_enabled=True))
-
+        resp = auth_me(request=req, current_user=user, settings=_settings(auth_enabled=True))
         self.assertTrue(resp.authorized)
         self.assertEqual(resp.access_token, "my-jwt-token")
         self.assertEqual(resp.user_id, _AUTH_USER_ID)
 
-    def test_auth_enabled_not_authorized_returns_null_token(self) -> None:
-        """authorized=false 면 토큰 노출 X (미승인 user 는 Realtime 도 차단)."""
-        user = CurrentUser(user_id=_AUTH_USER_ID)
-        req = _FakeRequest(authorization="Bearer my-jwt-token")
-
-        fake_supabase = MagicMock()
-        chain = fake_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value
-        chain.execute.return_value = MagicMock(data=[])  # 미승인 = 빈 배열
-
-        with patch("app.routers.auth.get_supabase_client", return_value=fake_supabase):
-            resp = auth_me(request=req, current_user=user, settings=_settings(auth_enabled=True))
-
-        self.assertFalse(resp.authorized)
-        self.assertIsNone(resp.access_token)
-
     def test_auth_enabled_no_token_present_returns_null_token(self) -> None:
-        """authorized 가 true 이더라도 요청에 토큰이 전혀 없으면 None."""
-        # 실 경로는 get_current_user 가 401 이지만, 본 단위 테스트는 핸들러 직접 호출.
-        # authorized=true 일 때 토큰 추출 시도가 헤더·쿠키 모두 비어있으면 None 이어야.
+        """authorized=true 이더라도 요청에 토큰이 전혀 없으면 access_token=None.
+
+        실 경로는 get_current_user 가 401 차단하므로 도달 불가. 본 단위 테스트는 핸들러
+        직접 호출 — 토큰 추출이 헤더·쿠키 모두 비어있을 때 None 반환 보장."""
         user = CurrentUser(user_id=_AUTH_USER_ID)
         req = _FakeRequest(authorization=None, cookies={})
-
-        fake_supabase = MagicMock()
-        chain = fake_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value
-        chain.execute.return_value = MagicMock(data=[{"code": "BETA-01"}])
-
-        with patch("app.routers.auth.get_supabase_client", return_value=fake_supabase):
-            resp = auth_me(request=req, current_user=user, settings=_settings(auth_enabled=True))
-
+        resp = auth_me(request=req, current_user=user, settings=_settings(auth_enabled=True))
         self.assertTrue(resp.authorized)
         self.assertIsNone(resp.access_token)
 
