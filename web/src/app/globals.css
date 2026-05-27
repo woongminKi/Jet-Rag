@@ -131,7 +131,50 @@
   * {
     @apply border-border outline-ring/50;
   }
+  /* W26 모바일 Toss-언어 가드 (v2 강화).
+     - text-size-adjust: iOS Safari landscape 자동 폰트 확대 차단.
+     - overflow-x: clip + max-width: 100vw — html 과 body 모두에 걸어 가로 스크롤 100% 차단.
+       (clip 은 hidden 보다 더 강력 — 자식의 position:sticky 도 깨지지 않으면서 scroll context 안 생성)
+     - body 의 flex 자식이 fixed-width 콘텐츠로 overflow 일으키는 케이스를 root 에서 차단. */
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    overflow-x: clip;
+    max-width: 100vw;
+  }
   body {
     @apply bg-background text-foreground;
+    overflow-x: clip;
+    max-width: 100vw;
+  }
+  /* W26 v2 — 모든 image/video/svg/canvas 의 폭이 부모 폭 초과 안 하도록.
+     특히 markdown 본문이나 사용자 첨부 이미지가 모바일에서 viewport 깨는 케이스 방지. */
+  img,
+  video,
+  svg,
+  canvas,
+  iframe {
+    max-width: 100%;
+  }
+  /* W26 v3 — Tailwind v4 preflight 는 ul/ol 에 `list-style: none` 만 적용.
+     브라우저 기본 `padding-inline-start: 40px` 와 `margin-block: 1em` 가 살아남아
+     모바일에서 우측 잘림 root cause. 전역 reset 으로 강제. 필요한 곳만 명시적으로 padding/margin 부여.
+     (markdown 렌더링 컴포넌트가 들어오면 .prose 류 클래스로 별도 부여 — 본 reset 영향 0) */
+  ul,
+  ol,
+  menu {
+    margin-block: 0;
+    padding-inline-start: 0;
+  }
+}
+
+/* W26 chip row 등 의도된 horizontal scroll 영역 전용 utility — 스크롤바만 숨기고 스크롤 자체는 유지. */
+@layer utilities {
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
   }
 }

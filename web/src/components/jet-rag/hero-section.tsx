@@ -35,50 +35,55 @@ export function HeroSection() {
 
   return (
     <section className="relative overflow-hidden bg-gradient-to-b from-primary/5 via-background to-background">
-      <div className="container mx-auto px-4 py-16 md:px-6 md:py-24">
+      {/* W26 — mobile py-10 (기존 py-16 은 모바일 viewport 기준 과함). */}
+      <div className="container mx-auto px-4 py-10 md:px-6 md:py-24">
         <div className="mx-auto max-w-3xl text-center">
-          <div className="mb-6 inline-flex items-center gap-2 rounded-full bg-primary/10 px-4 py-1.5 text-sm font-medium text-primary">
-            <Sparkles className="h-4 w-4" />
-            정리하지 않아도, 기억의 단편으로 꺼내 쓰는
+          <div className="mb-5 inline-flex items-center gap-2 rounded-full bg-primary/10 px-3.5 py-1.5 text-xs font-medium text-primary sm:text-sm">
+            <Sparkles className="h-4 w-4 shrink-0" />
+            <span className="break-keep">정리하지 않아도, 기억의 단편으로 꺼내 쓰는</span>
           </div>
 
-          <h1 className="mb-4 text-balance text-3xl font-bold tracking-tight text-foreground md:text-4xl lg:text-5xl">
+          <h1 className="mb-3 text-balance text-2xl font-bold tracking-tight text-foreground sm:text-3xl md:mb-4 md:text-4xl lg:text-5xl">
             무엇을 찾고 계신가요?
           </h1>
-          <p className="mb-8 text-balance text-lg text-muted-foreground">
+          <p className="mb-6 text-balance text-base text-muted-foreground md:mb-8 md:text-lg">
             자연어로 검색하면 과거에 받았던 문서를 빠르게 찾아드려요.
           </p>
 
+          {/* W26 — mobile hero search: 검색 input + button 동일 row 가 좁은 폰에서 잘림.
+              해결: input pr 축소 + button 작게 + 작은 폰에서 button 별도 line 옵션은 미적용 (Toss 풍 한 줄 유지).
+              h-12 (48px) 로 모바일 터치 타깃 충족, 폰트 base. */}
           <form onSubmit={handleSubmit} className="mx-auto max-w-2xl">
             <div className="relative">
-              <Search className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
+              <Search className="pointer-events-none absolute left-3.5 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground sm:left-4" />
               <Input
                 type="search"
                 name="q"
                 placeholder='예: "지난달 기재부 가이드라인 변경점"'
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                className="h-14 rounded-xl border-2 border-border bg-card pl-12 pr-32 text-base shadow-sm focus:border-primary"
+                className="h-12 rounded-2xl border-2 border-border bg-card pl-11 pr-24 text-base shadow-sm focus:border-primary sm:h-14 sm:rounded-xl sm:pl-12 sm:pr-32"
               />
               <Button
                 type="submit"
-                className="absolute right-2 top-1/2 h-10 -translate-y-1/2 px-6"
+                className="absolute right-1.5 top-1/2 h-9 -translate-y-1/2 px-4 text-sm sm:right-2 sm:h-10 sm:px-6"
               >
                 검색
               </Button>
             </div>
           </form>
 
-          {/* PORTFOLIO MODE C+ — 0클릭 시연 가능한 추천 query 칩.
-              복원 시 SAMPLE_QUERIES 상수 + 본 블록 삭제. */}
-          <div className="mt-6">
-            <div className="flex flex-wrap items-center justify-center gap-2">
+          {/* W26 — 추천 query 칩: mobile 에서 가로 scroll-snap + scrollbar-hide.
+              개수가 5개라 좁은 폰에서 wrap 시 3줄까지 차지 → 부담스러움.
+              chip row 만 의도된 horizontal scroll 허용 (CLAUDE.md 의 예외). */}
+          <div className="mt-5 md:mt-6">
+            <div className="scrollbar-hide -mx-4 flex snap-x snap-mandatory gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:flex-wrap sm:items-center sm:justify-center sm:overflow-visible sm:px-0">
               {SAMPLE_QUERIES.map((s) => (
                 <button
                   key={s.query}
                   type="button"
                   onClick={() => handleSampleClick(s.query)}
-                  className="rounded-full border border-border bg-card px-3 py-1.5 text-xs text-foreground transition hover:border-primary hover:bg-primary/5 hover:text-primary"
+                  className="shrink-0 snap-start whitespace-nowrap rounded-full border border-border bg-card px-3.5 py-1.5 text-xs text-foreground transition hover:border-primary hover:bg-primary/5 hover:text-primary sm:shrink"
                 >
                   {s.label}
                 </button>
@@ -86,7 +91,7 @@ export function HeroSection() {
             </div>
           </div>
 
-          <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-3 md:mt-8">
             {/* PORTFOLIO MODE C+ — 파일 업로드 버튼 비활성. 복원 시 아래 블록 주석 해제. */}
             {/* <Button asChild size="lg" className="gap-2">
               <Link href="/ingest">

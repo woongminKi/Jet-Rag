@@ -18,9 +18,9 @@ export function PopularTagsCard({ tags }: PopularTagsCardProps) {
   const top = tags.slice(0, 10);
 
   return (
-    <Card>
+    <Card className="overflow-hidden rounded-2xl">
       <CardHeader className="pb-3">
-        <CardTitle className="text-base font-semibold">인기 태그</CardTitle>
+        <CardTitle className="text-lg font-semibold">인기 태그</CardTitle>
       </CardHeader>
       <CardContent>
         {top.length === 0 ? (
@@ -38,7 +38,7 @@ export function PopularTagsCard({ tags }: PopularTagsCardProps) {
               >
                 <Badge
                   variant="secondary"
-                  className="cursor-pointer transition-colors hover:bg-primary hover:text-primary-foreground"
+                  className="cursor-pointer break-all transition-colors hover:bg-primary hover:text-primary-foreground"
                 >
                   #{t.tag}
                   <span className="ml-1 text-[10px] opacity-70">{t.count}</span>

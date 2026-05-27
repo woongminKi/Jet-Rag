@@ -24,11 +24,11 @@ export function VisionUsageCard({ stats }: VisionUsageCardProps) {
   const overCap = total_calls > RPD_CAP;
 
   return (
-    <Card>
+    <Card className="overflow-hidden rounded-2xl">
       <CardHeader className="pb-3">
-        <CardTitle className="text-base font-semibold">
-          Vision 사용량
-          <span className="ml-2 text-[10px] font-normal text-muted-foreground">
+        <CardTitle className="flex flex-wrap items-baseline gap-x-2 text-lg font-semibold">
+          <span>Vision 사용량</span>
+          <span className="text-[10px] font-normal text-muted-foreground">
             프로세스 시작 후 누적
           </span>
         </CardTitle>
@@ -108,11 +108,11 @@ function Row({
 }) {
   return (
     <li className="flex items-center justify-between gap-2">
-      <span className="flex items-center gap-1.5 text-muted-foreground">
-        <span className={`h-2 w-2 rounded-full ${dotClass}`} />
-        {label}
+      <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+        <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} />
+        <span className="truncate">{label}</span>
       </span>
-      <span className="font-mono tabular-nums text-foreground">{value}</span>
+      <span className="shrink-0 font-mono tabular-nums text-foreground">{value}</span>
     </li>
   );
 }

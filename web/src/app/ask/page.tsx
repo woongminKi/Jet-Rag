@@ -67,22 +67,22 @@ export default async function AskPage({ searchParams }: AskPageProps) {
 
   return (
     <main className="flex-1">
-      <div className="border-b border-border bg-card/95 backdrop-blur">
-        <div className="container mx-auto flex flex-col gap-2 px-4 py-4 md:px-6 md:flex-row md:items-center md:justify-between">
-          <div className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-primary" />
-            <h1 className="text-base font-semibold text-foreground md:text-lg">
+      <div className="border-b border-border bg-card/95 shadow-sm backdrop-blur">
+        <div className="container mx-auto flex flex-col gap-2 px-4 py-4 md:flex-row md:items-center md:justify-between md:px-6">
+          <div className="flex min-w-0 items-center gap-2">
+            <Sparkles className="h-5 w-5 shrink-0 text-primary" />
+            <h1 className="min-w-0 break-words text-base font-semibold text-foreground md:text-lg">
               {query}
             </h1>
           </div>
-          <div className="flex items-center gap-3 text-xs text-muted-foreground">
-            <span>{response.model}</span>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            <span className="break-all">{response.model}</span>
             <span>·</span>
-            <span>{response.took_ms}ms</span>
+            <span className="tabular-nums">{response.took_ms}ms</span>
             <span>·</span>
             <Link
               href={`/search?q=${encodeURIComponent(query)}${docId ? `&doc_id=${docId}` : ''}`}
-              className="inline-flex items-center gap-1 text-primary hover:underline"
+              className="inline-flex items-center gap-1 whitespace-nowrap text-primary hover:underline"
             >
               <SearchIcon className="h-3.5 w-3.5" />
               검색 결과

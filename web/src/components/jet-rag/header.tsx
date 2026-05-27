@@ -18,14 +18,18 @@ export function Header() {
   // const { user } = useAuth();
 
   return (
-    <header className="sticky top-0 z-50 w-full border-b border-border bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80">
-      <div className="container mx-auto flex h-16 items-center justify-between gap-4 px-4 md:px-6">
+    // W26 — safe-area-inset-top: iOS notch 영역 회피. shadow-sm 으로 sticky 분리감 (Toss 패턴).
+    <header
+      className="sticky top-0 z-50 w-full border-b border-border bg-card/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/80"
+      style={{ paddingTop: 'env(safe-area-inset-top)' }}
+    >
+      <div className="container mx-auto flex h-16 items-center justify-between gap-3 px-4 md:gap-4 md:px-6">
         <Link
           href="/"
-          className="flex items-center gap-2"
+          className="flex shrink-0 items-center gap-2"
           onClick={() => setMobileOpen(false)}
         >
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <Zap className="h-5 w-5" />
           </div>
           <span className="hidden font-semibold text-foreground sm:inline-block">

@@ -159,9 +159,9 @@ export function AnswerView({ query, response, docId }: AnswerViewProps) {
       {/* S5-A — backend meta 기반 의도 안내 (low_confidence + router_signals) */}
       <RouterSignalsBadge meta={response.meta} />
 
-      {/* 답변 본문 */}
-      <article className="rounded-lg border border-border bg-card px-5 py-5 shadow-sm">
-        <p className="whitespace-pre-line text-[15px] leading-relaxed text-foreground">
+      {/* 답변 본문 — W26 Toss-언어: rounded-2xl + p-4 mobile / p-6 desktop + overflow hidden. */}
+      <article className="overflow-hidden rounded-2xl border border-border bg-card p-4 shadow-sm md:p-6">
+        <p className="whitespace-pre-line break-words text-base leading-relaxed text-foreground">
           {renderedAnswer.map((part, i) => {
             if (typeof part === 'string') return <span key={i}>{part}</span>;
             return (
@@ -310,33 +310,34 @@ function SourceCard({ index, source, highlighted, ref }: SourceCardProps) {
     <li
       ref={ref}
       className={cn(
-        'rounded-md border bg-card px-4 py-3 transition-all duration-300',
+        'overflow-hidden rounded-2xl border bg-card p-4 transition-all duration-300 md:p-5',
         highlighted ? 'border-primary ring-2 ring-primary/40' : 'border-border',
       )}
     >
-      <div className="flex flex-wrap items-baseline gap-2">
-        <Badge variant="outline" className="font-mono text-[11px]">
+      {/* W26 — header row: 길어도 wrap. chunk# 는 별도 라인 fallback OK. */}
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <Badge variant="outline" className="shrink-0 font-mono text-[11px]">
           [{index}]
         </Badge>
         <Link
           href={docHref}
-          className="text-sm font-medium text-foreground hover:underline"
+          className="break-words text-sm font-medium text-foreground hover:underline"
         >
           {docTitle}
         </Link>
         {source.page !== null && source.page > 0 && (
-          <span className="text-xs text-muted-foreground">p.{source.page}</span>
+          <span className="shrink-0 text-xs text-muted-foreground">p.{source.page}</span>
         )}
         {source.section_title && (
-          <span className="truncate text-xs text-muted-foreground">
+          <span className="min-w-0 break-words text-xs text-muted-foreground">
             · {source.section_title}
           </span>
         )}
-        <span className="ml-auto text-[11px] font-mono text-muted-foreground/70">
+        <span className="ml-auto shrink-0 font-mono text-[11px] text-muted-foreground/70">
           chunk #{source.chunk_idx}
         </span>
       </div>
-      <p className="mt-2 line-clamp-3 text-xs leading-relaxed text-muted-foreground">
+      <p className="mt-2 line-clamp-3 break-words text-xs leading-relaxed text-muted-foreground">
         {source.snippet}
       </p>
     </li>

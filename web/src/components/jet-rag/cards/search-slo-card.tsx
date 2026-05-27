@@ -31,11 +31,11 @@ export function SearchSloCard({ stats }: SearchSloCardProps) {
   const permanentCount = fallback['permanent_4xx'] ?? 0;
 
   return (
-    <Card>
+    <Card className="overflow-hidden rounded-2xl">
       <CardHeader className="pb-3">
-        <CardTitle className="text-base font-semibold">
-          검색 응답 SLO
-          <span className="ml-2 text-[10px] font-normal text-muted-foreground">
+        <CardTitle className="flex flex-wrap items-baseline gap-x-2 text-lg font-semibold">
+          <span>검색 응답 SLO</span>
+          <span className="text-[10px] font-normal text-muted-foreground">
             최근 500건 (in-memory)
           </span>
         </CardTitle>
@@ -178,9 +178,9 @@ function Metric({
         ? 'font-mono tabular-nums text-muted-foreground'
         : 'font-mono tabular-nums font-semibold text-foreground';
   return (
-    <div className="flex items-center justify-between rounded border border-border bg-background/40 px-2 py-1.5">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span className={valueClass}>{value}</span>
+    <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-background/40 px-2 py-1.5">
+      <span className="min-w-0 truncate text-xs text-muted-foreground">{label}</span>
+      <span className={`shrink-0 ${valueClass}`}>{value}</span>
     </div>
   );
 }

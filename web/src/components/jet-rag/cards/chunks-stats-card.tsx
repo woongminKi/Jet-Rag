@@ -23,14 +23,14 @@ export function ChunksStatsCard({ stats }: ChunksStatsCardProps) {
   );
 
   return (
-    <Card>
+    <Card className="overflow-hidden rounded-2xl">
       <CardHeader className="pb-3">
-        <CardTitle className="text-base font-semibold">청크 분포</CardTitle>
+        <CardTitle className="text-lg font-semibold">청크 분포</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex items-center gap-4">
           <Donut effectivePct={effectivePct} />
-          <div className="flex-1 space-y-1.5 text-sm">
+          <div className="min-w-0 flex-1 space-y-1.5 text-sm">
             <Row
               dotClass="bg-primary"
               label="검색 대상"
@@ -133,11 +133,11 @@ function Row({
 }) {
   return (
     <div className="flex items-center justify-between gap-2">
-      <span className="flex items-center gap-1.5 text-muted-foreground">
-        <span className={`h-2 w-2 rounded-full ${dotClass}`} />
-        {label}
+      <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+        <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} />
+        <span className="truncate">{label}</span>
       </span>
-      <span className="font-medium tabular-nums text-foreground">{value}</span>
+      <span className="shrink-0 font-medium tabular-nums text-foreground">{value}</span>
     </div>
   );
 }

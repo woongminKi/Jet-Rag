@@ -26,23 +26,23 @@ export function MyDocStatsCard({ stats }: MyDocStatsCardProps) {
   ];
 
   return (
-    <Card>
+    <Card className="overflow-hidden rounded-2xl">
       <CardHeader className="pb-3">
-        <CardTitle className="text-base font-semibold">내 문서 현황</CardTitle>
+        <CardTitle className="text-lg font-semibold">내 문서 현황</CardTitle>
       </CardHeader>
       <CardContent>
         <ul className="space-y-3">
           {rows.map((row) => (
             <li
               key={row.label}
-              className="flex items-center justify-between text-sm"
+              className="flex items-center justify-between gap-3 text-sm"
             >
-              <span className="text-muted-foreground">{row.label}</span>
+              <span className="min-w-0 truncate text-muted-foreground">{row.label}</span>
               <span
                 className={
                   row.accent
-                    ? 'font-semibold text-primary'
-                    : 'font-semibold text-foreground'
+                    ? 'shrink-0 font-semibold tabular-nums text-primary'
+                    : 'shrink-0 font-semibold tabular-nums text-foreground'
                 }
               >
                 {row.value}

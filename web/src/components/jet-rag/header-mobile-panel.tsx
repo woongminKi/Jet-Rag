@@ -39,7 +39,7 @@ export function HeaderMobilePanel({ onClose }: HeaderMobilePanelProps) {
             placeholder="검색어를 입력하세요"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="h-10 pl-9"
+            className="h-11 pl-9 text-base"
           />
         </form>
         {/* PORTFOLIO MODE C+ — 모바일 업로드 버튼 비활성. 복원 시 아래 블록 주석 해제. */}

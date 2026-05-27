@@ -142,7 +142,7 @@ function FilterPanel({
   filteredCount,
 }: FilterPanelProps) {
   return (
-    <Card>
+    <Card className="overflow-hidden rounded-2xl">
       <CardContent className="space-y-4 py-5">
         <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
           <span>
@@ -259,11 +259,19 @@ function DocRow({ doc }: { doc: Document }) {
   return (
     <Link
       href={`/doc/${doc.id}`}
-      className="block rounded-lg border border-border bg-card p-4 transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="block overflow-hidden rounded-2xl border border-border bg-card p-4 transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1 space-y-1.5">
-          <p className="truncate text-sm font-semibold text-foreground">{doc.title}</p>
+          <div className="flex items-center gap-2">
+            <p className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">{doc.title}</p>
+            <time
+              className="shrink-0 whitespace-nowrap text-xs tabular-nums text-muted-foreground"
+              dateTime={doc.created_at}
+            >
+              {formatRelativeTime(doc.created_at)}
+            </time>
+          </div>
           <div className="flex flex-wrap items-center gap-1.5">
             <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
               {docTypeLabel(doc.doc_type)}
@@ -279,12 +287,9 @@ function DocRow({ doc }: { doc: Document }) {
             ))}
           </div>
           {doc.summary && (
-            <p className="line-clamp-2 text-xs text-muted-foreground">{doc.summary}</p>
+            <p className="line-clamp-2 break-words text-xs text-muted-foreground">{doc.summary}</p>
           )}
         </div>
-        <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">
-          {formatRelativeTime(doc.created_at)}
-        </span>
       </div>
     </Link>
   );

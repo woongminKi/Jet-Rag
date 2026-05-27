@@ -120,18 +120,18 @@ export function RagasEvalCard({ query, answer, docId, sources }: RagasEvalCardPr
 
   if (loading) {
     return (
-      <div className="rounded-md border border-border bg-card px-4 py-3 text-xs text-muted-foreground">
+      <div className="overflow-hidden rounded-2xl border border-border bg-card px-4 py-3 text-xs text-muted-foreground">
         <Loader2 className="mr-1.5 inline-block h-3 w-3 animate-spin" /> 정량 평가 캐시 확인 중…
       </div>
     );
   }
 
   return (
-    <div className="rounded-lg border border-border bg-card px-5 py-4">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="flex items-center gap-2 text-sm font-medium text-foreground">
-          <BarChart3 className="h-4 w-4 text-primary" />
-          정량 평가 (RAGAS)
+    <div className="overflow-hidden rounded-2xl border border-border bg-card p-4 md:p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="flex min-w-0 items-center gap-2 text-sm font-medium text-foreground">
+          <BarChart3 className="h-4 w-4 shrink-0 text-primary" />
+          <span className="break-words">정량 평가 (RAGAS)</span>
         </h3>
         <Button
           type="button"
@@ -139,7 +139,7 @@ export function RagasEvalCard({ query, answer, docId, sources }: RagasEvalCardPr
           variant="outline"
           onClick={runEvaluation}
           disabled={evaluating}
-          className="h-7 gap-1 px-2 text-xs"
+          className="h-9 shrink-0 gap-1 px-3 text-xs sm:h-8 sm:px-2.5"
           title={
             hasMetrics
               ? '같은 질문 다시 평가 (LLM judge 호출, ~5~10초 + 비용)'
@@ -224,11 +224,11 @@ function MetricRow({
   const pct = score !== null ? Math.round(score * 100) : 0;
   return (
     <div>
-      <div className="flex items-baseline justify-between gap-2 text-xs">
-        <span className="font-medium text-foreground" title={description}>
+      <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
+        <span className="min-w-0 break-words font-medium text-foreground" title={description}>
           {label}
         </span>
-        <span className={cn('rounded px-1.5 py-0.5 text-[11px] font-mono', scoreToTone(score))}>
+        <span className={cn('shrink-0 rounded px-1.5 py-0.5 font-mono text-[11px]', scoreToTone(score))}>
           {scoreLabel(score)}
         </span>
       </div>

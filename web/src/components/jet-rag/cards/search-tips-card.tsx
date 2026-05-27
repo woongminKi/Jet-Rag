@@ -3,13 +3,13 @@ import { Card, CardContent } from '@/components/ui/card';
 
 export function SearchTipsCard() {
   return (
-    <Card className="bg-secondary/30">
+    <Card className="overflow-hidden rounded-2xl bg-secondary/30">
       <CardContent>
-        <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
-          <Lightbulb className="h-4 w-4 text-warning" />
-          검색 팁
+        <h3 className="mb-2 flex items-center gap-1.5 text-base font-semibold">
+          <Lightbulb className="h-4 w-4 shrink-0 text-warning" />
+          <span className="break-words">검색 팁</span>
         </h3>
-        <ul className="space-y-1.5 text-sm text-muted-foreground">
+        <ul className="space-y-1.5 break-words text-sm text-muted-foreground">
           <li>
             • 자연어로 물어보세요. 예) <em>&quot;지난달 반도체 보고서&quot;</em>
           </li>

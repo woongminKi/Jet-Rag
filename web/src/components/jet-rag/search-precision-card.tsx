@@ -114,17 +114,19 @@ export function SearchPrecisionCard({ query, docId, hits }: SearchPrecisionCardP
 
   if (phase === 'cache' || phase === 'measuring') {
     return (
-      <div className="mb-4 flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-3 text-xs text-muted-foreground">
-        <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-        {phase === 'cache' ? 'RAGAS 캐시 확인 중…' : '검색 적합도 측정 중 (LLM judge ~5초)…'}
+      <div className="mb-4 flex items-center gap-2 overflow-hidden rounded-2xl border border-border bg-card px-4 py-3 text-xs text-muted-foreground">
+        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+        <span className="break-words">
+          {phase === 'cache' ? 'RAGAS 캐시 확인 중…' : '검색 적합도 측정 중 (LLM judge ~5초)…'}
+        </span>
       </div>
     );
   }
 
   if (phase === 'error') {
     return (
-      <div className="mb-4 rounded-lg border border-border bg-card px-4 py-3 text-xs text-muted-foreground">
-        검색 적합도 측정 일시 실패: {error}
+      <div className="mb-4 overflow-hidden rounded-2xl border border-border bg-card px-4 py-3 text-xs text-muted-foreground">
+        <p className="break-words">검색 적합도 측정 일시 실패: {error}</p>
       </div>
     );
   }
@@ -132,14 +134,13 @@ export function SearchPrecisionCard({ query, docId, hits }: SearchPrecisionCardP
   if (phase === 'idle') {
     const noContexts = contexts.length === 0;
     return (
-      <div className="mb-4 rounded-lg border border-border bg-card px-4 py-3">
+      <div className="mb-4 overflow-hidden rounded-2xl border border-border bg-card px-4 py-3 md:px-5 md:py-4">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <h3 className="flex items-center gap-2 text-sm font-medium text-foreground">
-            <BarChart3 className="h-4 w-4 text-primary" />
-            검색 적합도 (RAGAS Context Precision)
+          <h3 className="flex min-w-0 items-center gap-2 break-words text-sm font-medium text-foreground">
+            <BarChart3 className="h-4 w-4 shrink-0 text-primary" />
+            <span className="break-words">검색 적합도 (RAGAS Context Precision)</span>
           </h3>
-          {/* P2 Issue #1 — Label-in-Name: aria-label 은 가시 텍스트 "측정" 만 사용.
-              비용·시간 보조 정보는 sr-only span 으로 aria-describedby 연결 (KRW 표기). */}
+          {/* aria-label 은 가시 텍스트 "측정" 만 사용. 비용·시간은 sr-only. */}
           <span id="measure-cost-hint" className="sr-only">
             약 5초, 약 4원 (Gemini judge 1회)
           </span>
@@ -150,12 +151,12 @@ export function SearchPrecisionCard({ query, docId, hits }: SearchPrecisionCardP
             onClick={handleMeasure}
             disabled={noContexts}
             aria-describedby="measure-cost-hint"
-            className="h-7 gap-1 px-2 text-xs"
+            className="h-9 shrink-0 gap-1 px-3 text-xs sm:h-8 sm:px-2.5"
           >
             측정
           </Button>
         </div>
-        <p className="mt-1 text-[11px] text-muted-foreground">
+        <p className="mt-1.5 break-words text-xs leading-relaxed text-muted-foreground">
           {noContexts
             ? '측정할 검색 결과 텍스트가 없어요.'
             : '아직 측정 전 — 클릭 시 LLM judge 1회 호출 (~5초, 약 4원).'}
@@ -166,8 +167,8 @@ export function SearchPrecisionCard({ query, docId, hits }: SearchPrecisionCardP
 
   if (data?.skipped) {
     return (
-      <div className="mb-4 rounded-lg border border-border bg-card px-4 py-3 text-xs text-muted-foreground">
-        {data.note ?? 'RAGAS 평가 비활성'}
+      <div className="mb-4 overflow-hidden rounded-2xl border border-border bg-card px-4 py-3 text-xs text-muted-foreground">
+        <p className="break-words">{data.note ?? 'RAGAS 평가 비활성'}</p>
       </div>
     );
   }
@@ -176,22 +177,22 @@ export function SearchPrecisionCard({ query, docId, hits }: SearchPrecisionCardP
   const pct = score !== null ? Math.round(score * 100) : 0;
 
   return (
-    <div className="mb-4 rounded-lg border border-border bg-card px-4 py-3">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="flex items-center gap-2 text-sm font-medium text-foreground">
-          <BarChart3 className="h-4 w-4 text-primary" />
-          검색 적합도 (RAGAS Context Precision)
+    <div className="mb-4 overflow-hidden rounded-2xl border border-border bg-card px-4 py-3 md:px-5 md:py-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="flex min-w-0 items-center gap-2 text-sm font-medium text-foreground">
+          <BarChart3 className="h-4 w-4 shrink-0 text-primary" />
+          <span className="break-words">검색 적합도 (RAGAS Context Precision)</span>
         </h3>
         <span
           className={cn(
-            'rounded px-1.5 py-0.5 text-[11px] font-mono',
+            'shrink-0 rounded px-1.5 py-0.5 font-mono text-[11px]',
             scoreToTone(score),
           )}
         >
           {score !== null ? `${pct}점` : '—'}
         </span>
       </div>
-      <p className="mt-1 text-[11px] text-muted-foreground" title="BGE-M3 dense embedding cosine similarity (DCG-weighted)">
+      <p className="mt-1.5 break-words text-xs leading-relaxed text-muted-foreground" title="BGE-M3 dense embedding cosine similarity (DCG-weighted)">
         검색된 chunks 가 질문에 얼마나 잘 맞는가 — BGE-M3 임베딩 cosine + ranking 가중 평균
       </p>
       <div className="mt-2 h-1.5 overflow-hidden rounded-sm bg-muted">
@@ -201,7 +202,7 @@ export function SearchPrecisionCard({ query, docId, hits }: SearchPrecisionCardP
         />
       </div>
       {data && (
-        <p className="mt-2 text-[11px] text-muted-foreground/70">
+        <p className="mt-2 break-words text-[11px] text-muted-foreground/70">
           judge: {data.judge_model ?? '?'} · {data.cached ? '캐시' : `측정 ${data.took_ms ?? '?'}ms`}
           {data.created_at && ` · ${new Date(data.created_at).toLocaleString('ko')}`}
         </p>

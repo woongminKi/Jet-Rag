@@ -71,25 +71,25 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
             )}
 
             {/* W25 D14 — 검색 결과 위 prominent AI 답변 진입 카드.
-                sub-header 의 작은 버튼만으로 진입점이 약하다는 사용자 피드백 반영. */}
+                W26 — mobile: 설명문 break-words, rounded-2xl. */}
             <Link
               href={`/ask?q=${encodeURIComponent(query)}${docId ? `&doc_id=${docId}` : ''}`}
-              className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 transition-colors hover:bg-primary/10"
+              className="mb-4 flex items-center justify-between gap-3 overflow-hidden rounded-2xl border border-primary/30 bg-primary/5 p-4 transition-colors hover:bg-primary/10"
             >
-              <div className="flex items-center gap-3">
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/15">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/15">
                   <Sparkles className="h-5 w-5 text-primary" />
                 </div>
-                <div>
-                  <p className="text-sm font-semibold text-foreground">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-foreground md:text-base">
                     AI 답변 보기
                   </p>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="break-words text-xs text-muted-foreground md:text-sm">
                     Gemini 가 검색 결과를 정리해 답변 + 출처 인용 + RAGAS 정량 평가
                   </p>
                 </div>
               </div>
-              <ArrowRight className="h-4 w-4 text-primary" aria-hidden />
+              <ArrowRight className="h-4 w-4 shrink-0 text-primary" aria-hidden />
             </Link>
 
             {response.items.length === 0 ? (

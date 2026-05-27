@@ -431,27 +431,32 @@ function MatchedChunksSection({
           return (
             <li
               key={chunk.chunk_id}
-              className="rounded-md border border-border bg-muted/30 p-3 text-sm"
+              className="rounded-xl border border-border bg-muted/30 p-3 text-sm md:p-4"
             >
-              <div className="mb-1 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-muted-foreground">
-                <div className="flex min-w-0 items-center gap-2">
-                  {chunk.page !== null && <span>p.{chunk.page}</span>}
-                  {chunk.section_title && (
-                    <>
-                      <span className="text-border">·</span>
-                      <span className="truncate">{chunk.section_title}</span>
-                    </>
-                  )}
-                  <span className="text-border">·</span>
-                  <span>idx {chunk.chunk_idx}</span>
-                </div>
+              {/* W26 — 인용 메타 row: flex-wrap 으로 좁은 폭에서 줄바꿈. */}
+              <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                {chunk.page !== null && (
+                  <span className="shrink-0">p.{chunk.page}</span>
+                )}
+                {chunk.section_title && (
+                  <>
+                    {chunk.page !== null && (
+                      <span className="shrink-0 text-border">·</span>
+                    )}
+                    <span className="min-w-0 break-words normal-case tracking-normal">
+                      {chunk.section_title}
+                    </span>
+                  </>
+                )}
+                <span className="shrink-0 text-border">·</span>
+                <span className="shrink-0">idx {chunk.chunk_idx}</span>
                 {matchPct !== null && (
-                  <span className="shrink-0 normal-case tracking-normal tabular-nums text-muted-foreground/80">
+                  <span className="ml-auto shrink-0 normal-case tracking-normal tabular-nums text-muted-foreground/80">
                     매칭 강도 {matchPct}%
                   </span>
                 )}
               </div>
-              <p className="leading-relaxed text-foreground/90">
+              <p className="break-words leading-relaxed text-foreground/90">
                 <Highlighted text={chunk.text} ranges={chunk.highlight} />
               </p>
             </li>

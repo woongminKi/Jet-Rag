@@ -36,7 +36,9 @@ export default async function RootLayout({
 
   return (
     <html lang="ko" className={cn('h-full antialiased', notoSansKr.variable)}>
-      <body className="min-h-full flex flex-col font-sans">
+      {/* W26 — min-h-dvh: iOS Safari 100vh 부정확 회피 (dvh = dynamic viewport height).
+          safe-area inset: notch / home-indicator 영역 회피. */}
+      <body className="flex min-h-dvh flex-col font-sans">
         {/* PORTFOLIO MODE — AuthProvider 미주입. 복원 시 <AuthProvider user={authUser}> 로 wrap. */}
         <ActiveDocsProvider>
           <Header />

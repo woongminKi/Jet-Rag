@@ -145,10 +145,10 @@ export function MetricsTrendCard({
   const seriesLabel = metric === 'search' ? 'p95 (ms)' : '호출 수';
 
   return (
-    <Card>
+    <Card className="overflow-hidden rounded-2xl">
       <CardHeader className="pb-3">
-        <CardTitle className="flex items-center justify-between text-base font-semibold">
-          <span>{titleText}</span>
+        <CardTitle className="flex flex-wrap items-center justify-between gap-2 text-lg font-semibold">
+          <span className="break-words">{titleText}</span>
           <RangeToggle
             value={range}
             onChange={handleRangeChange}

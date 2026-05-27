@@ -20,11 +20,11 @@ export function ResultCard({ hit, debug = false, query }: ResultCardProps) {
   const relevancePct = Math.round(hit.relevance * 100);
 
   return (
-    <Card>
+    <Card className="overflow-hidden rounded-2xl">
       <CardHeader className="space-y-3 pb-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0 flex-1 space-y-1">
-            <h3 className="text-base font-semibold text-foreground">
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <h3 className="break-words text-base font-semibold text-foreground md:text-lg">
               {hit.doc_title}
             </h3>
             <div className="flex flex-wrap items-center gap-1.5">
@@ -44,52 +44,57 @@ export function ResultCard({ hit, debug = false, query }: ResultCardProps) {
           </div>
           {/*
             W25 D3 (D-2 + D-3) — 사용자 멘탈 모델 보정.
-            "관련도" → "매칭 강도" + ⓘ 툴팁: 정답 신뢰도와 분리 명시.
-            W25 D3 hydration fix — Radix Tooltip SSR mismatch 회피 위해
-            라벨/막대 영역 통째로 client island 분리 (RelevanceLabel).
-            S5-C — `?debug=1` 시만 노출 (Q-S5-4: 정답 신뢰도와 멘탈 모델 혼동 회피).
+            S5-C — `?debug=1` 시만 노출.
           */}
           {debug && <RelevanceLabel relevancePct={relevancePct} />}
         </div>
         {hit.summary ? (
-          <p className="line-clamp-2 text-sm text-muted-foreground">{hit.summary}</p>
+          <p className="line-clamp-2 break-words text-sm text-muted-foreground">{hit.summary}</p>
         ) : (
           <p className="text-xs italic text-muted-foreground">요약 미생성</p>
         )}
       </CardHeader>
       <CardContent className="space-y-3 pb-4">
-        <ul className="space-y-2">
+        {/* W26 v2 — snippet 간 vertical 간격 확대 (사람이 읽기 편한 호흡). */}
+        <ul className="m-0 list-none space-y-3 pl-0">
           {hit.matched_chunks.map((chunk) => {
             const overlapIdx = chunk.metadata?.['overlap_with_prev_chunk_idx'];
             const hasOverlap = typeof overlapIdx === 'number';
             return (
               <li
                 key={chunk.chunk_id}
-                className="rounded-md border border-border bg-muted/30 p-3 text-sm"
+                className="rounded-xl border border-border bg-muted/30 p-3.5 md:p-4"
               >
-                <div className="mb-1 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-muted-foreground">
-                  <div className="flex items-center gap-2 min-w-0">
-                    {chunk.page !== null && <span>p.{chunk.page}</span>}
-                    {chunk.section_title && (
-                      <>
-                        <span className="text-border">·</span>
-                        <span className="truncate">{chunk.section_title}</span>
-                      </>
-                    )}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5 normal-case tracking-normal">
+                {/* W26 — 인용 메타 row: page · section 이 좁은 폭에서 잘리지 않도록 flex-wrap.
+                    overlap/rrf badge 는 별도 라인 fallback 허용.
+                    W26 v2 — text-[11px] 로 미세 가독성 ↑ (text-[10px] → text-[11px]). */}
+                <div className="mb-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+                  {chunk.page !== null && (
+                    <span className="shrink-0 font-medium">p.{chunk.page}</span>
+                  )}
+                  {chunk.section_title && (
+                    <>
+                      {chunk.page !== null && (
+                        <span className="shrink-0 text-border">·</span>
+                      )}
+                      <span className="min-w-0 flex-1 break-words normal-case tracking-normal">
+                        {chunk.section_title}
+                      </span>
+                    </>
+                  )}
+                  <div className="ml-auto flex shrink-0 items-center gap-1.5 normal-case tracking-normal">
                     {hasOverlap && (
                       <span
-                        className="rounded bg-muted px-1 py-0.5 text-[9px] font-medium text-muted-foreground"
+                        className="rounded bg-muted px-1 py-0.5 text-[10px] font-medium text-muted-foreground"
                         title={`이전 청크 idx ${overlapIdx} 와 100자 prefix overlap`}
                       >
                         ↻ overlap
                       </span>
                     )}
-                    {/* S5-C — `?debug=1` 시만 노출. raw RRF 점수는 운영 사용자에게 노이즈. */}
+                    {/* S5-C — `?debug=1` 시만 노출. */}
                     {debug && typeof chunk.rrf_score === 'number' && (
                       <span
-                        className="font-mono tabular-nums text-[9px] text-muted-foreground"
+                        className="font-mono tabular-nums text-[10px] text-muted-foreground"
                         title="RRF score (검색 ranking 근거)"
                       >
                         rrf {chunk.rrf_score.toFixed(4)}
@@ -97,19 +102,20 @@ export function ResultCard({ hit, debug = false, query }: ResultCardProps) {
                     )}
                   </div>
                 </div>
-                <p className="leading-relaxed text-foreground/90">
-                  <Highlighted text={chunk.text} ranges={chunk.highlight} />
-                </p>
+                {/* W26 v3 — Toss 풍 quote 표현: 좌측 정주황색 vertical bar + indent.
+                    인용임을 시각적으로 명확히. text-[15px] leading-7 break-keep 유지. */}
+                <div className="border-l-2 border-primary/30 pl-3">
+                  <p className="break-keep break-words text-[15px] leading-7 text-foreground">
+                    <Highlighted text={chunk.text} ranges={chunk.highlight} />
+                  </p>
+                </div>
                 {debug && <ChunkDebugPanel chunk={chunk} />}
               </li>
             );
           })}
         </ul>
-        <div className="flex items-center justify-between text-xs text-muted-foreground">
-          {/*
-            W25 D3 (C-3) — moreCount > 0 일 때 doc 페이지로 wrap + ?q= propagate.
-            W25 D5 — doc 페이지가 ?q= 받아 매칭 청크 모두 표시 (cap 우회). 의도 완결.
-          */}
+        {/* W26 — footer row: mobile 에서 link 가 길면 자동 wrap, 시간은 별도 라인 fallback. */}
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-muted-foreground">
           {moreCount > 0 ? (
             <Link
               href={
@@ -117,14 +123,14 @@ export function ResultCard({ hit, debug = false, query }: ResultCardProps) {
                   ? `/doc/${hit.doc_id}?q=${encodeURIComponent(query)}`
                   : `/doc/${hit.doc_id}`
               }
-              className="text-foreground/80 hover:text-foreground hover:underline"
+              className="break-words text-foreground/80 hover:text-foreground hover:underline"
             >
               +{moreCount}개 더 매칭 (이 문서에서 모두 보기 →)
             </Link>
           ) : (
             <span>매칭 {hit.matched_chunk_count}개</span>
           )}
-          <span>{formatRelativeTime(hit.created_at)}</span>
+          <span className="shrink-0 tabular-nums">{formatRelativeTime(hit.created_at)}</span>
         </div>
       </CardContent>
     </Card>
