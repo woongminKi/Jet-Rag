@@ -281,6 +281,10 @@ class VerifyJwtAsymmetricTest(unittest.TestCase):
         self.assertIn("만료", str(ctx.exception))
 
 
+@unittest.skip(
+    "PORTFOLIO MODE — get_current_user 강제 fallback (dependencies.py early-return). "
+    "복원 시 early-return 1줄 주석 처리 후 skip 제거. test_auth_disabled_returns_default_fallback 도 동일 결과지만 일괄 skip 으로 묶음."
+)
 class GetCurrentUserTest(unittest.TestCase):
     def test_auth_disabled_returns_default_fallback(self) -> None:
         settings = _make_settings(auth_enabled=False)

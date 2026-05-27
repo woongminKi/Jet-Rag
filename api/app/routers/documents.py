@@ -34,7 +34,12 @@ from fastapi import (
 from pydantic import BaseModel, Field
 
 from app.adapters.impl.supabase_storage import SupabaseBlobStorage
-from app.auth import LEGACY_DEFAULT_USER, CurrentUserDep, require_auth
+from app.auth import (
+    LEGACY_DEFAULT_USER,
+    CurrentUserDep,
+    forbid_demo_writes,
+    require_auth,
+)
 from app.config import get_settings
 from app.db import get_supabase_client
 from app.ingest import (
@@ -51,11 +56,12 @@ from app.services.ingest_mode import INGEST_MODES, IngestMode, resolve_page_cap
 
 logger = logging.getLogger(__name__)
 
+# PORTFOLIO MODE — 로그인 우회. 복원 시 dependencies 줄 주석 해제.
 # D1 — router-level 인증 게이트 (auth_enabled=false 면 fallback 통과).
 router = APIRouter(
     prefix="/documents",
     tags=["documents"],
-    dependencies=[Depends(require_auth)],
+    # dependencies=[Depends(require_auth)],
 )
 
 # 기획서 §11.3 단계 A
@@ -390,6 +396,7 @@ def list_documents(
     "",
     response_model=UploadResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(forbid_demo_writes)],  # PORTFOLIO MODE C+
 )
 async def upload_document(
     background_tasks: BackgroundTasks,
@@ -574,6 +581,7 @@ async def upload_document(
     "/url",
     response_model=UploadResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(forbid_demo_writes)],  # PORTFOLIO MODE C+
 )
 async def upload_url(
     background_tasks: BackgroundTasks,
@@ -774,6 +782,7 @@ async def upload_url(
     "/{doc_id}/reingest",
     response_model=ReingestResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(forbid_demo_writes)],  # PORTFOLIO MODE C+
 )
 def reingest_document(
     doc_id: str,
@@ -862,6 +871,7 @@ def reingest_document(
     "/{doc_id}/reingest-missing",
     response_model=ReingestMissingResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(forbid_demo_writes)],  # PORTFOLIO MODE C+
 )
 def reingest_missing_vision(
     doc_id: str,

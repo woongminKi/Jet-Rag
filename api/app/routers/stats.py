@@ -20,8 +20,9 @@ from app.services import search_metrics, vision_metrics
 
 logger = logging.getLogger(__name__)
 
+# PORTFOLIO MODE — 로그인 우회. 복원 시 dependencies=[Depends(require_auth)] 재추가.
 # D1 — router-level 인증 게이트 (auth_enabled=false 면 fallback 통과).
-router = APIRouter(tags=["stats"], dependencies=[Depends(require_auth)])
+router = APIRouter(tags=["stats"])
 
 # 한국 시간대 — 단일 사용자 MVP 기준이라 하드코딩
 KST = timezone(timedelta(hours=9))

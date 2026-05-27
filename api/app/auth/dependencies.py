@@ -81,28 +81,37 @@ def get_current_user(
     1. `Authorization: Bearer <jwt>` — 서버 컴포넌트 forward / 명시 헤더.
     2. Supabase auth 쿠키 — 브라우저 직접 데이터 콜(`credentials: 'include'`).
     """
-    if not settings.auth_enabled:
-        # production 무중단 fallback — 기존 단일-유저 동작 보존.
-        return CurrentUser(user_id=settings.default_user_id, email=None)
+    # PORTFOLIO MODE C+ — 모든 anonymous 방문자를 owner_user_id 로 매핑 → owner 의
+    # 인덱싱된 docs(12건) 가 그대로 노출, 검색·답변 시연 가능. owner_user_id ENV 미설정
+    # 환경 (로컬 dev 기본) 에서는 default_user_id (빈 inbox) fallback.
+    # 복원 시 본 early-return 블록 주석 처리 후 아래 JWT 분기 주석 해제.
+    return CurrentUser(
+        user_id=settings.owner_user_id or settings.default_user_id,
+        email=None,
+    )
 
-    token = _extract_bearer_token(request) or _extract_cookie_token(request, settings)
-    if token is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="인증이 필요합니다.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    try:
-        verified = verify_jwt(token, settings)
-    except JWTValidationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="인증이 필요합니다.",
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
-
-    return CurrentUser(user_id=verified.user_id, email=verified.email)
+    # if not settings.auth_enabled:
+    #     # production 무중단 fallback — 기존 단일-유저 동작 보존.
+    #     return CurrentUser(user_id=settings.default_user_id, email=None)
+    #
+    # token = _extract_bearer_token(request) or _extract_cookie_token(request, settings)
+    # if token is None:
+    #     raise HTTPException(
+    #         status_code=status.HTTP_401_UNAUTHORIZED,
+    #         detail="인증이 필요합니다.",
+    #         headers={"WWW-Authenticate": "Bearer"},
+    #     )
+    #
+    # try:
+    #     verified = verify_jwt(token, settings)
+    # except JWTValidationError as exc:
+    #     raise HTTPException(
+    #         status_code=status.HTTP_401_UNAUTHORIZED,
+    #         detail="인증이 필요합니다.",
+    #         headers={"WWW-Authenticate": "Bearer"},
+    #     ) from exc
+    #
+    # return CurrentUser(user_id=verified.user_id, email=verified.email)
 
 
 # 핸들러 시그니처용 dependency alias.
@@ -117,6 +126,24 @@ def require_auth(
 ) -> CurrentUser:
     """router-level 인증 게이트. get_current_user 가 이미 401 처리 — 값만 전달."""
     return current_user
+
+
+def forbid_demo_writes(
+    settings: Settings = Depends(get_settings),
+) -> None:
+    """PORTFOLIO MODE C+ — 데모 readonly 가드.
+
+    `JETRAG_DEMO_READONLY=true` 일 때 업로드/이관/feedback/eval 등 모든 write
+    엔드포인트에서 503. 채용 담당자 데모는 검색·답변 GET 만 허용 → 데이터 오염
+    + LLM 비용 burn 차단.
+
+    복원 시 본 함수 + 라우터 7곳의 Depends(forbid_demo_writes) 일괄 주석.
+    """
+    if getattr(settings, "demo_readonly", False):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="포트폴리오 데모 모드 — 업로드/쓰기 작업이 일시 비활성입니다.",
+        )
 
 
 def require_admin(

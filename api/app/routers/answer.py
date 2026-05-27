@@ -40,7 +40,12 @@ from app.adapters.impl.bgem3_hf_embedding import (
     is_transient_hf_error,
 )
 from app.adapters.llm import ChatMessage, LLMProvider
-from app.auth import LEGACY_DEFAULT_USER, CurrentUserDep, require_auth
+from app.auth import (
+    LEGACY_DEFAULT_USER,
+    CurrentUserDep,
+    forbid_demo_writes,
+    require_auth,
+)
 from app.db import get_supabase_client
 from app.routers.search import _build_pgroonga_query
 from app.services import intent_router, query_decomposer
@@ -57,8 +62,9 @@ from app.services.quota import is_quota_exhausted
 _LOW_CONFIDENCE_THRESHOLD = 0.75
 
 logger = logging.getLogger(__name__)
+# PORTFOLIO MODE — 로그인 우회. 복원 시 dependencies=[Depends(require_auth)] 재추가.
 # D1 — router-level 인증 게이트 (auth_enabled=false 면 fallback 통과).
-router = APIRouter(tags=["answer"], dependencies=[Depends(require_auth)])
+router = APIRouter(tags=["answer"])
 
 _MAX_QUERY_LEN = 200
 _DEFAULT_TOP_K = 5
@@ -583,7 +589,11 @@ def reset_feedback_disabled() -> None:
     _feedback_disabled = False
 
 
-@router.post("/answer/feedback", response_model=AnswerFeedbackResponse)
+@router.post(
+    "/answer/feedback",
+    response_model=AnswerFeedbackResponse,
+    dependencies=[Depends(forbid_demo_writes)],  # PORTFOLIO MODE C+
+)
 def submit_answer_feedback(
     payload: AnswerFeedbackRequest,
     current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
@@ -736,7 +746,11 @@ def get_ragas_eval(
     )
 
 
-@router.post("/answer/eval-ragas", response_model=RagasEvalResponse)
+@router.post(
+    "/answer/eval-ragas",
+    response_model=RagasEvalResponse,
+    dependencies=[Depends(forbid_demo_writes)],  # PORTFOLIO MODE C+
+)
 def submit_ragas_eval(
     payload: RagasEvalRequest,
     current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
@@ -882,7 +896,11 @@ def get_search_precision(
     )
 
 
-@router.post("/search/eval-precision", response_model=RagasEvalResponse)
+@router.post(
+    "/search/eval-precision",
+    response_model=RagasEvalResponse,
+    dependencies=[Depends(forbid_demo_writes)],  # PORTFOLIO MODE C+
+)
 def submit_search_precision(
     payload: SearchPrecisionRequest,
     current_user: CurrentUserDep = LEGACY_DEFAULT_USER,

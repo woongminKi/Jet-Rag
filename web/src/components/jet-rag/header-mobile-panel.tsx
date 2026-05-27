@@ -1,10 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
+// PORTFOLIO MODE C+ — 업로드 비활성. 복원 시 Link/Upload import 복구.
+// import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Search, Upload } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Search } from 'lucide-react';
+// import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
 interface HeaderMobilePanelProps {
@@ -41,12 +42,13 @@ export function HeaderMobilePanel({ onClose }: HeaderMobilePanelProps) {
             className="h-10 pl-9"
           />
         </form>
-        <Button asChild size="sm" className="w-full gap-2" onClick={onClose}>
+        {/* PORTFOLIO MODE C+ — 모바일 업로드 버튼 비활성. 복원 시 아래 블록 주석 해제. */}
+        {/* <Button asChild size="sm" className="w-full gap-2" onClick={onClose}>
           <Link href="/ingest">
             <Upload className="h-4 w-4" />
             파일 업로드
           </Link>
-        </Button>
+        </Button> */}
       </div>
     </div>
   );

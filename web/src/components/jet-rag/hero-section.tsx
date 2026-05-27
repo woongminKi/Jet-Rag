@@ -3,9 +3,20 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { FileText, Search, Sparkles, Upload } from 'lucide-react';
+// PORTFOLIO MODE C+ — 업로드 버튼 비활성. 복원 시 Upload import 복구.
+import { FileText, Search, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+
+// PORTFOLIO MODE C+ — owner 인덱싱 12 docs 기반 추천 query (다양성: 경제/기업공시/법률/정책/본인 이력서).
+// 채용 담당자가 0클릭 검색 시연 가능. 복원 시 본 배열 + 칩 렌더 블록 삭제 가능.
+const SAMPLE_QUERIES: ReadonlyArray<{ label: string; query: string }> = [
+  { label: '2026 한국 경제 성장률', query: '2026 한국 경제 성장률 전망' },
+  { label: 'SK 사업보고서 매출', query: 'SK 사업보고서 매출 흐름' },
+  { label: '하도급 직접지급 묵시적 해지', query: '하도급 직접지급합의 묵시적 해지 요건' },
+  { label: '데이터센터 지원사업', query: '데이터센터 산업 활성화 지원 사업 내용' },
+  { label: '기웅민 이력서', query: '기웅민 이력서 프로젝트 경험' },
+];
 
 export function HeroSection() {
   const router = useRouter();
@@ -16,6 +27,10 @@ export function HeroSection() {
     const trimmed = query.trim();
     if (!trimmed) return;
     router.push(`/search?q=${encodeURIComponent(trimmed)}`);
+  };
+
+  const handleSampleClick = (q: string) => {
+    router.push(`/search?q=${encodeURIComponent(q)}`);
   };
 
   return (
@@ -54,13 +69,31 @@ export function HeroSection() {
             </div>
           </form>
 
+          {/* PORTFOLIO MODE C+ — 0클릭 시연 가능한 추천 query 칩.
+              복원 시 SAMPLE_QUERIES 상수 + 본 블록 삭제. */}
+          <div className="mt-6">
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              {SAMPLE_QUERIES.map((s) => (
+                <button
+                  key={s.query}
+                  type="button"
+                  onClick={() => handleSampleClick(s.query)}
+                  className="rounded-full border border-border bg-card px-3 py-1.5 text-xs text-foreground transition hover:border-primary hover:bg-primary/5 hover:text-primary"
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
-            <Button asChild size="lg" className="gap-2">
+            {/* PORTFOLIO MODE C+ — 파일 업로드 버튼 비활성. 복원 시 아래 블록 주석 해제. */}
+            {/* <Button asChild size="lg" className="gap-2">
               <Link href="/ingest">
                 <Upload className="h-5 w-5" />
                 파일 업로드
               </Link>
-            </Button>
+            </Button> */}
             <Button asChild variant="outline" size="lg" className="gap-2">
               <Link href="/docs">
                 <FileText className="h-5 w-5" />

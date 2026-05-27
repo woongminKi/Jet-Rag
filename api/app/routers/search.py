@@ -50,9 +50,10 @@ from app.services import (
 )
 
 logger = logging.getLogger(__name__)
+# PORTFOLIO MODE — 로그인 우회. 복원 시 dependencies=[Depends(require_auth)] 재추가.
 # D1 — router-level 인증 게이트. auth_enabled=false 면 default_user_id fallback 으로 통과
 # (무중단). true 면 Bearer JWT 필수.
-router = APIRouter(tags=["search"], dependencies=[Depends(require_auth)])
+router = APIRouter(tags=["search"])
 
 _MAX_QUERY_LEN = 200
 # 검색 결과 카드의 본문 미리보기 개수 — list 모드 (doc_id 미지정) 에 적용.

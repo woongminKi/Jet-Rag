@@ -109,8 +109,9 @@ export function ActiveDocsIndicator() {
             })}
           </ul>
           <div className="border-t border-border px-3 py-2 text-right">
+            {/* PORTFOLIO MODE C+ — /ingest 비활성. /docs 로 redirect. */}
             <Link
-              href="/ingest"
+              href="/docs"
               onClick={() => setOpen(false)}
               className="text-xs text-primary hover:underline"
             >

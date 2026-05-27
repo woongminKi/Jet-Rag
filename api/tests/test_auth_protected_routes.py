@@ -62,6 +62,10 @@ def _auth_enabled_settings() -> Settings:
     )
 
 
+@unittest.skip(
+    "PORTFOLIO MODE — 로그인 우회 (get_current_user 강제 fallback). "
+    "복원 시 dependencies.py 의 early-return 1줄 + 4 router 의 require_auth dep 주석 해제 후 skip 제거."
+)
 class ProtectedRoutesTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
