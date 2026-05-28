@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Noto_Sans_KR } from 'next/font/google';
 import { Toaster } from 'sonner';
 import './globals.css';
@@ -19,6 +19,27 @@ const notoSansKr = Noto_Sans_KR({
 export const metadata: Metadata = {
   title: 'Jet-Rag',
   description: '한국어 멀티포맷 RAG 개인 지식 에이전트',
+  // W28 — PWA manifest + iOS A2HS + share_target (Android PDF 공유 진입점).
+  // Next.js 16: themeColor / viewportFit 은 별도 `viewport` export 로 이동 (deprecation 회피).
+  manifest: '/manifest.json',
+  icons: {
+    icon: '/icon-192.png',
+    apple: '/icon-192.png',
+  },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black-translucent',
+    title: 'Jet-Rag',
+  },
+};
+
+// W28 — viewport-fit=cover: iOS notch / home-indicator safe-area 대응 (CSS 의 env(safe-area-inset-*) 활성화 조건).
+// themeColor: standalone PWA 의 상태바 / Android Chrome 의 주소창 색상.
+export const viewport: Viewport = {
+  themeColor: '#0B0B0F',
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
 };
 
 export default async function RootLayout({
