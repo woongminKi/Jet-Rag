@@ -32,6 +32,24 @@
 - **격리 코드 path 보존**: 로그인 복원 시 RLS 정책(마이그 019) 즉시 재활성, 모든 격리 로직 주석 only
 - **복원 절차**: `api/app/auth/dependencies.py` early-return 1줄 + 7 endpoint `Depends(forbid_demo_writes)` + 프론트 4 파일 주석 해제 → 멀티유저 격리 모드 복귀
 
+### 📱 모바일에서 설치하기 (PWA)
+
+App Store / Play Store 등록 **없이** 폰 브라우저로 직접 설치 가능 — PWA (Progressive Web App) 방식:
+
+- **Android (Chrome)**: `jetrag.woong-s.com` → 우상단 ⋮ → **"앱 설치"** → 홈 화면 아이콘 생성
+- **iOS (Safari)**: `jetrag.woong-s.com` → 하단 공유 ↑ → **"홈 화면에 추가"** → 홈 화면 아이콘 생성
+
+설치 후 standalone (주소창 없는 풀스크린) 모드로 동작. PDF 를 다른 앱에서 Jet-Rag 로 직접 공유하는 진입점도 지원:
+- **Android**: Acrobat·Drive·파일 앱의 공유 시트에서 "Jet-Rag" 한 번 탭 (PWA `share_target` 자동 등록)
+- **iOS**: 단축어 앱 1회 설정 (~3분) 으로 공유 시트 진입점 추가
+
+(현재 데모 모드라 업로드 시 503 한국어 wrap 응답 — 멀티유저 D1 Auth 진입 후 본인 user_id 격리 업로드 활성화 예정)
+
+**관련 문서**:
+- 비개발자 사용 가이드: [`work-log/2026-05-28 베타테스터 안내문 — Jet-Rag 설치·사용법.md`](./work-log/2026-05-28%20베타테스터%20안내문%20—%20Jet-Rag%20설치·사용법.md)
+- iOS Shortcuts 설정: [`work-log/2026-05-28 iOS Shortcuts PDF 공유 가이드.md`](./work-log/2026-05-28%20iOS%20Shortcuts%20PDF%20공유%20가이드.md)
+- 개발자/QA 실기기 검증: [`work-log/2026-05-28 실기기 검증 가이드 — iOS + Android.md`](./work-log/2026-05-28%20실기기%20검증%20가이드%20—%20iOS%20+%20Android.md)
+
 ## Production (live)
 
 | 컴포넌트 | URL | 호스팅 | 월 비용 |
