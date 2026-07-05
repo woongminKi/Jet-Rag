@@ -23,6 +23,17 @@ function isProtectedPath(pathname: string): boolean {
   );
 }
 
+// 리다이렉트 응답은 새 NextResponse 라 setAll 이 pass-through 응답에 써둔
+// 리프레시 쿠키가 유실된다 — 반드시 복사해서 내보낸다 (+ 캐시 금지).
+function redirectWithSession(url: URL, from: NextResponse): NextResponse {
+  const redirect = NextResponse.redirect(url);
+  for (const cookie of from.cookies.getAll()) {
+    redirect.cookies.set(cookie);
+  }
+  redirect.headers.set('Cache-Control', 'private, no-store');
+  return redirect;
+}
+
 export async function proxy(request: NextRequest): Promise<NextResponse> {
   // request 쿠키를 그대로 이어받는 기본 통과 응답. 세션 리프레시 결과 쿠키가 여기 쌓인다.
   const response = NextResponse.next({ request });
@@ -48,7 +59,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     const url = request.nextUrl.clone();
     url.pathname = '/';
     url.search = '';
-    return NextResponse.redirect(url);
+    return redirectWithSession(url, response);
   }
 
   // 보호 경로 미인증 → /login (원래 목적지 returnTo 로 보존). 그 외 경로는 익명 데모 통과.
@@ -57,7 +68,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     url.pathname = '/login';
     url.search = '';
     url.searchParams.set('returnTo', pathname);
-    return NextResponse.redirect(url);
+    return redirectWithSession(url, response);
   }
 
   // auth 쿠키를 set 한 응답은 캐시 금지 (사용자 간 세션 누수 방지).
