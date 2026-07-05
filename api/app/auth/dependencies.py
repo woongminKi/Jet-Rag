@@ -1,9 +1,14 @@
-"""FastAPI auth dependency (D1, plan §1·§3).
+"""FastAPI auth dependency (D1, plan §1·§3 / 수익화 W1 3-way 분기).
 
-핵심 — production 무중단 (plan §4):
-- `auth_enabled=false` (default): JWT 검증 skip → `CurrentUser(user_id=default_user_id)`
-  fallback. 프론트가 토큰을 안 보내도 기존 단일-유저 동작 100% 보존.
-- `auth_enabled=true`: `Authorization: Bearer <jwt>` 필수. 누락·검증 실패 → 401.
+핵심 — 데모 병행 모드 (수익화 W1):
+- `auth_enabled=false` (로컬 dev): default_user_id fallback + is_authenticated=True.
+  프론트가 토큰을 안 보내도 기존 단일-유저 개발 동작 100% 보존.
+- `auth_enabled=true` + 토큰 없음: owner_user_id(없으면 default_user_id) fallback +
+  is_authenticated=False. 익명 데모 방문자 — owner 문서 read-only 시연 허용.
+  쓰기는 후속 태스크의 require_authenticated_user 가 is_authenticated=False 로 차단.
+- `auth_enabled=true` + 유효 JWT: 본인 user_id + is_authenticated=True.
+  완전 격리 컨텍스트 — 로그인 사용자는 자기 문서만 접근.
+- `auth_enabled=true` + 무효 JWT: 401. 조용한 데모 강등 금지 (잘못된 토큰 = 명시적 실패).
 
 제공:
 - `get_current_user`: 호출자 user_id 를 주입하는 dependency. 핸들러가 user_id 값이 필요하면
@@ -37,12 +42,13 @@ _LEGACY_DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001"
 class CurrentUser:
     """요청 호출자. user_id 는 격리 키 (RPC user_id_arg / documents.user_id 필터).
 
-    - auth_enabled=false: user_id = settings.default_user_id, email = None.
-    - auth_enabled=true: JWT `sub` / `email`.
+    - is_authenticated=False: 익명 데모 방문자 (owner read-only fallback) — 쓰기 불가.
+    - is_authenticated=True: JWT 검증 통과 또는 auth_enabled=false 로컬 dev.
     """
 
     user_id: str
     email: str | None = None
+    is_authenticated: bool = True
 
 
 def _extract_bearer_token(request: Request) -> str | None:
@@ -75,43 +81,35 @@ def get_current_user(
     request: Request,
     settings: Settings = Depends(get_settings),
 ) -> CurrentUser:
-    """호출자 식별. auth_enabled=false 면 default_user_id fallback (무중단).
+    """호출자 식별 — 데모 병행 3-way 분기 (수익화 W1).
 
-    토큰 소스 우선순위 (plan §1.1):
-    1. `Authorization: Bearer <jwt>` — 서버 컴포넌트 forward / 명시 헤더.
-    2. Supabase auth 쿠키 — 브라우저 직접 데이터 콜(`credentials: 'include'`).
+    - auth_enabled=false: 로컬 dev / single-user — default_user 로 쓰기 포함 전체 허용.
+    - 토큰 없음: 익명 데모 — owner 문서 read-only (쓰기는 require_authenticated_user 가 차단).
+    - 토큰 있음: JWT 검증 → 본인 격리 컨텍스트. 무효 토큰은 401 (조용한 데모 강등 금지).
     """
-    # PORTFOLIO MODE C+ — 모든 anonymous 방문자를 owner_user_id 로 매핑 → owner 의
-    # 인덱싱된 docs(12건) 가 그대로 노출, 검색·답변 시연 가능. owner_user_id ENV 미설정
-    # 환경 (로컬 dev 기본) 에서는 default_user_id (빈 inbox) fallback.
-    # 복원 시 본 early-return 블록 주석 처리 후 아래 JWT 분기 주석 해제.
-    return CurrentUser(
-        user_id=settings.owner_user_id or settings.default_user_id,
-        email=None,
-    )
+    if not settings.auth_enabled:
+        # 로컬 dev 무중단 — 기존 단일-유저 동작 보존. is_authenticated=True (쓰기 허용).
+        return CurrentUser(user_id=settings.default_user_id, email=None)
 
-    # if not settings.auth_enabled:
-    #     # production 무중단 fallback — 기존 단일-유저 동작 보존.
-    #     return CurrentUser(user_id=settings.default_user_id, email=None)
-    #
-    # token = _extract_bearer_token(request) or _extract_cookie_token(request, settings)
-    # if token is None:
-    #     raise HTTPException(
-    #         status_code=status.HTTP_401_UNAUTHORIZED,
-    #         detail="인증이 필요합니다.",
-    #         headers={"WWW-Authenticate": "Bearer"},
-    #     )
-    #
-    # try:
-    #     verified = verify_jwt(token, settings)
-    # except JWTValidationError as exc:
-    #     raise HTTPException(
-    #         status_code=status.HTTP_401_UNAUTHORIZED,
-    #         detail="인증이 필요합니다.",
-    #         headers={"WWW-Authenticate": "Bearer"},
-    #     ) from exc
-    #
-    # return CurrentUser(user_id=verified.user_id, email=verified.email)
+    token = _extract_bearer_token(request) or _extract_cookie_token(request, settings)
+    if token is None:
+        # 익명 데모 방문자 — owner 문서 read-only. 쓰기 게이트는 후속 태스크에서 차단.
+        return CurrentUser(
+            user_id=settings.owner_user_id or settings.default_user_id,
+            email=None,
+            is_authenticated=False,
+        )
+
+    try:
+        verified = verify_jwt(token, settings)
+    except JWTValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="인증이 필요합니다.",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+    return CurrentUser(user_id=verified.user_id, email=verified.email)
 
 
 # 핸들러 시그니처용 dependency alias.
