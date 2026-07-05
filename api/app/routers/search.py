@@ -37,7 +37,7 @@ from app.adapters.impl.bgem3_hf_embedding import (
     get_bgem3_provider,
     is_transient_hf_error,
 )
-from app.auth import LEGACY_DEFAULT_USER, CurrentUserDep, require_auth
+from app.auth import LEGACY_DEFAULT_USER, CurrentUserDep
 from app.db import get_supabase_client
 from app.services import (
     intent_router,
@@ -50,9 +50,7 @@ from app.services import (
 )
 
 logger = logging.getLogger(__name__)
-# PORTFOLIO MODE — 로그인 우회. 복원 시 dependencies=[Depends(require_auth)] 재추가.
-# D1 — router-level 인증 게이트. auth_enabled=false 면 default_user_id fallback 으로 통과
-# (무중단). true 면 Bearer JWT 필수.
+# W1 데모 병행 — read 는 익명 fallback 허용 (owner 데모), write 는 endpoint 별 게이트.
 router = APIRouter(tags=["search"])
 
 _MAX_QUERY_LEN = 200

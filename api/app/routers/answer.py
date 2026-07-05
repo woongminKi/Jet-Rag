@@ -43,7 +43,6 @@ from app.adapters.llm import ChatMessage, LLMProvider
 from app.auth import (
     LEGACY_DEFAULT_USER,
     CurrentUserDep,
-    require_auth,
     require_authenticated_user,
 )
 from app.db import get_supabase_client
@@ -62,8 +61,7 @@ from app.services.quota import is_quota_exhausted
 _LOW_CONFIDENCE_THRESHOLD = 0.75
 
 logger = logging.getLogger(__name__)
-# PORTFOLIO MODE — 로그인 우회. 복원 시 dependencies=[Depends(require_auth)] 재추가.
-# D1 — router-level 인증 게이트 (auth_enabled=false 면 fallback 통과).
+# W1 데모 병행 — read 는 익명 fallback 허용, write 는 endpoint 별 require_authenticated_user 게이트.
 router = APIRouter(tags=["answer"])
 
 _MAX_QUERY_LEN = 200

@@ -37,7 +37,6 @@ from app.adapters.impl.supabase_storage import SupabaseBlobStorage
 from app.auth import (
     LEGACY_DEFAULT_USER,
     CurrentUserDep,
-    require_auth,
     require_authenticated_user,
 )
 from app.config import get_settings
@@ -56,12 +55,10 @@ from app.services.ingest_mode import INGEST_MODES, IngestMode, resolve_page_cap
 
 logger = logging.getLogger(__name__)
 
-# PORTFOLIO MODE — 로그인 우회. 복원 시 dependencies 줄 주석 해제.
-# D1 — router-level 인증 게이트 (auth_enabled=false 면 fallback 통과).
+# W1 데모 병행 — read 는 익명 fallback 허용, write 는 endpoint 별 require_authenticated_user 게이트.
 router = APIRouter(
     prefix="/documents",
     tags=["documents"],
-    # dependencies=[Depends(require_auth)],
 )
 
 # 기획서 §11.3 단계 A

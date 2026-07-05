@@ -14,14 +14,13 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from app.auth import LEGACY_DEFAULT_USER, CurrentUserDep, require_auth
+from app.auth import LEGACY_DEFAULT_USER, CurrentUserDep
 from app.db import get_supabase_client
 from app.services import search_metrics, vision_metrics
 
 logger = logging.getLogger(__name__)
 
-# PORTFOLIO MODE — 로그인 우회. 복원 시 dependencies=[Depends(require_auth)] 재추가.
-# D1 — router-level 인증 게이트 (auth_enabled=false 면 fallback 통과).
+# W1 데모 병행 — read 는 익명 fallback 허용 (owner 데모).
 router = APIRouter(tags=["stats"])
 
 # 한국 시간대 — 단일 사용자 MVP 기준이라 하드코딩

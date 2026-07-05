@@ -16,10 +16,9 @@
  *   - iOS Safari 는 PWA share_target 미지원 (2026-05 기준 ITP 정책 유지).
  *   - iOS 사용자는 단축어 앱(/work-log/2026-05-28 iOS Shortcuts PDF 공유 가이드.md) 으로 우회.
  *
- * Portfolio Mode:
- *   - 현재 백엔드 ENV `JETRAG_DEMO_READONLY=true` 일 때 /documents POST 는 503 응답.
- *   - 본 route 는 503 을 그대로 client 로 전달하되, 본문 message 를 한국어로 wrap.
- *   - 추후 로그인 모드 복원 시 cookie forward 만 추가하면 됨 (아래 NOTE 참고).
+ * 인증 (수익화 W1 데모 병행):
+ *   - 로그인 세션은 `getServerForwardToken()` 으로 access_token 추출 → Authorization 헤더 첨부.
+ *   - 익명 공유 업로드는 백엔드가 401 — 본 route 가 한국어 안내로 wrap.
  */
 
 import { NextResponse } from 'next/server';
@@ -96,11 +95,11 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  // Portfolio Mode (503) — 사용자에게 친절한 한국어 메시지로 wrap.
-  if (upstream.status === 503) {
+  // 익명 공유 업로드 (401) — 사용자에게 친절한 한국어 메시지로 wrap.
+  if (upstream.status === 401) {
     return jsonError(
-      503,
-      '현재 데모 모드입니다. 본인 로그인 후 다시 시도하세요.',
+      401,
+      '업로드하려면 로그인이 필요합니다. 로그인 후 다시 공유해 주세요.',
     );
   }
 
