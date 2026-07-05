@@ -17,7 +17,7 @@ os.environ.setdefault("HF_API_TOKEN", "dummy-test-token")
 
 from fastapi import HTTPException
 
-from app.auth.dependencies import CurrentUser, get_current_user
+from app.auth.dependencies import CurrentUser, get_current_user, require_admin, require_authenticated_user
 from app.auth.jwt_verify import JWTValidationError, VerifiedToken
 from app.config import Settings
 
@@ -93,6 +93,34 @@ class DemoFallbackTest(unittest.TestCase):
                     _FakeRequest(bearer="bad-token"), _settings(auth_enabled=True)
                 )
         self.assertEqual(ctx.exception.status_code, 401)
+
+
+class RequireAuthenticatedUserTest(unittest.TestCase):
+    def test_anonymous_demo_user_rejected_401(self) -> None:
+        anon = CurrentUser(user_id=_OWNER_ID, is_authenticated=False)
+        with self.assertRaises(HTTPException) as ctx:
+            require_authenticated_user(current_user=anon)
+        self.assertEqual(ctx.exception.status_code, 401)
+
+    def test_authenticated_user_passes(self) -> None:
+        user = CurrentUser(user_id=_JWT_USER_ID, is_authenticated=True)
+        self.assertEqual(require_authenticated_user(current_user=user), user)
+
+
+class RequireAdminAnonymousTest(unittest.TestCase):
+    def test_anonymous_owner_fallback_rejected_403(self) -> None:
+        # 익명 fallback 은 user_id 가 owner 와 같아도 admin 불가 (보안 핵심).
+        anon = CurrentUser(user_id=_OWNER_ID, is_authenticated=False)
+        with self.assertRaises(HTTPException) as ctx:
+            require_admin(current_user=anon, settings=_settings(auth_enabled=True))
+        self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_authenticated_owner_passes(self) -> None:
+        owner = CurrentUser(user_id=_OWNER_ID, is_authenticated=True)
+        result = require_admin(
+            current_user=owner, settings=_settings(auth_enabled=True)
+        )
+        self.assertEqual(result.user_id, _OWNER_ID)
 
 
 if __name__ == "__main__":

@@ -126,6 +126,23 @@ def require_auth(
     return current_user
 
 
+def require_authenticated_user(
+    current_user: CurrentUser = Depends(get_current_user),
+) -> CurrentUser:
+    """쓰기 엔드포인트 게이트 (수익화 W1) — 익명 데모 방문자 401.
+
+    익명 fallback 은 owner_user_id 컨텍스트라 이 게이트 없이는 owner 데이터에
+    쓰기가 가능해진다 — 반드시 모든 write 엔드포인트에 걸 것.
+    """
+    if not current_user.is_authenticated:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="로그인이 필요합니다.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return current_user
+
+
 def forbid_demo_writes(
     settings: Settings = Depends(get_settings),
 ) -> None:
@@ -136,6 +153,7 @@ def forbid_demo_writes(
     + LLM 비용 burn 차단.
 
     복원 시 본 함수 + 라우터 7곳의 Depends(forbid_demo_writes) 일괄 주석.
+    Task 4 에서 require_authenticated_user 로 교체 예정.
     """
     if getattr(settings, "demo_readonly", False):
         raise HTTPException(
@@ -158,7 +176,11 @@ def require_admin(
     if not settings.auth_enabled:
         return current_user
 
-    if not settings.owner_user_id or current_user.user_id != settings.owner_user_id:
+    if (
+        not current_user.is_authenticated
+        or not settings.owner_user_id
+        or current_user.user_id != settings.owner_user_id
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="운영자 권한이 필요합니다.",

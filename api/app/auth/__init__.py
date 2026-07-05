@@ -17,6 +17,7 @@ from app.auth.dependencies import (
     get_current_user,
     require_admin,
     require_auth,
+    require_authenticated_user,
 )
 from app.auth.jwt_verify import JWTValidationError, VerifiedToken, verify_jwt
 
@@ -32,6 +33,7 @@ __all__ = [
     "get_current_user",
     "require_auth",
     "require_admin",
+    "require_authenticated_user",
     "JWTValidationError",
     "VerifiedToken",
     "verify_jwt",
