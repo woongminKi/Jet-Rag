@@ -3,13 +3,12 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-// PORTFOLIO MODE C+ — 업로드 버튼 비활성. 복원 시 Upload import 복구.
-import { FileText, Search, Sparkles } from 'lucide-react';
+import { FileText, Search, Sparkles, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
-// PORTFOLIO MODE C+ — owner 인덱싱 12 docs 기반 추천 query (다양성: 경제/기업공시/법률/정책/본인 이력서).
-// 채용 담당자가 0클릭 검색 시연 가능. 복원 시 본 배열 + 칩 렌더 블록 삭제 가능.
+// 익명 데모용 추천 query — owner 인덱싱 12 docs 기반 (다양성: 경제/기업공시/법률/정책/본인 이력서).
+// 수익화 W1 결정: 로그인 병행 후에도 익명 데모(0클릭 검색 시연)를 위해 유지.
 const SAMPLE_QUERIES: ReadonlyArray<{ label: string; query: string }> = [
   { label: '2026 한국 경제 성장률', query: '2026 한국 경제 성장률 전망' },
   { label: 'SK 사업보고서 매출', query: 'SK 사업보고서 매출 흐름' },
@@ -92,13 +91,12 @@ export function HeroSection() {
           </div>
 
           <div className="mt-6 flex flex-wrap items-center justify-center gap-3 md:mt-8">
-            {/* PORTFOLIO MODE C+ — 파일 업로드 버튼 비활성. 복원 시 아래 블록 주석 해제. */}
-            {/* <Button asChild size="lg" className="gap-2">
+            <Button asChild size="lg" className="gap-2">
               <Link href="/ingest">
                 <Upload className="h-5 w-5" />
                 파일 업로드
               </Link>
-            </Button> */}
+            </Button>
             <Button asChild variant="outline" size="lg" className="gap-2">
               <Link href="/docs">
                 <FileText className="h-5 w-5" />

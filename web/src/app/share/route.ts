@@ -67,18 +67,25 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  // NOTE — Portfolio Mode 라 auth 헤더 미주입. 로그인 모드 복원 시:
-  //   1) next/headers 의 cookies() 로 sb-access-token 추출
-  //   2) `Authorization: Bearer ${token}` 헤더 추가
-  // 본 route 는 server component context 라 next/headers 사용 가능.
+  // 로그인 사용자의 세션 토큰을 백엔드로 forward (PWA share_target 업로드 인증).
+  // 실제 쿠키는 `sb-<ref>-auth-token` 청크 분할 JSON — 추출은 기존 헬퍼 재사용.
+  const { getServerForwardToken } = await import('@/lib/api/server-token');
+  const accessToken = await getServerForwardToken();
+
   const forwardForm = new FormData();
   forwardForm.append('file', file, file.name || 'shared.pdf');
+
+  const fetchHeaders: HeadersInit = {};
+  if (accessToken) {
+    fetchHeaders['Authorization'] = `Bearer ${accessToken}`;
+  }
 
   let upstream: Response;
   try {
     upstream = await fetch(`${API_BASE_URL}/documents`, {
       method: 'POST',
       body: forwardForm,
+      headers: fetchHeaders,
       cache: 'no-store',
     });
   } catch (err) {

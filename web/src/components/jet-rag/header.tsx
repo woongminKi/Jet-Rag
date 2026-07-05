@@ -2,11 +2,10 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-// PORTFOLIO MODE C+ — 업로드/로그인 비활성 (Upload, LogIn, LogOut 미사용 + Button 미사용).
-import { Zap } from 'lucide-react';
-// import { Button } from '@/components/ui/button';
-// import { useAuth } from '@/lib/auth/auth-context';
-// import { signOut } from '@/lib/auth/actions';
+import { LogIn, LogOut, Upload, Zap } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { useAuth } from '@/lib/auth/auth-context';
+import { signOut } from '@/lib/auth/actions';
 import { ActiveDocsIndicator } from './active-docs-indicator';
 import { HeaderSearch } from './header-search';
 import { HeaderMobileToggle } from './header-mobile-toggle';
@@ -14,8 +13,7 @@ import { HeaderMobilePanel } from './header-mobile-panel';
 
 export function Header() {
   const [mobileOpen, setMobileOpen] = useState(false);
-  // PORTFOLIO MODE — Auth context 미주입(layout 에서 AuthProvider 주석). 복원 시 useAuth() 재활성.
-  // const { user } = useAuth();
+  const { user } = useAuth();
 
   return (
     // W26 — safe-area-inset-top: iOS notch 영역 회피. shadow-sm 으로 sticky 분리감 (Toss 패턴).
@@ -42,17 +40,14 @@ export function Header() {
         <div className="flex items-center gap-2">
           <ActiveDocsIndicator />
 
-          {/* PORTFOLIO MODE C+ — 업로드 버튼 비활성. 데모는 owner 인덱싱 12 docs read-only.
-              복원 시 아래 블록 주석 해제 + 위 Upload import 복구. */}
-          {/* <Button asChild size="sm" className="hidden gap-2 sm:flex">
+          <Button asChild size="sm" className="hidden gap-2 sm:flex">
             <Link href="/ingest">
               <Upload className="h-4 w-4" />
               <span className="hidden lg:inline">업로드</span>
             </Link>
-          </Button> */}
+          </Button>
 
-          {/* PORTFOLIO MODE — 로그인/로그아웃 버튼 비활성. 복원 시 아래 블록 주석 해제. */}
-          {/* {user ? (
+          {user ? (
             <form action={signOut} className="hidden sm:block">
               <Button
                 type="submit"
@@ -77,7 +72,7 @@ export function Header() {
                 <span className="hidden lg:inline">로그인</span>
               </Link>
             </Button>
-          )} */}
+          )}
 
           <HeaderMobileToggle
             open={mobileOpen}
