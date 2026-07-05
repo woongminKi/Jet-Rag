@@ -86,7 +86,6 @@ class Settings:
     owner_user_id: str | None = None
 
 
-
 # 잠정값 — 데이터 누적 부족 시 fallback. master plan §7.5 default 채택.
 # avg ~$0.0045/page (S0 D2 시점 실측) × avg 22p/doc × 0.5 × 1.5 ≈ $0.075 → 안전 0.10.
 _DOC_BUDGET_USD_DEFAULT = 0.10
