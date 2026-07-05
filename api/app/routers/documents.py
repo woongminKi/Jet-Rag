@@ -37,8 +37,8 @@ from app.adapters.impl.supabase_storage import SupabaseBlobStorage
 from app.auth import (
     LEGACY_DEFAULT_USER,
     CurrentUserDep,
-    forbid_demo_writes,
     require_auth,
+    require_authenticated_user,
 )
 from app.config import get_settings
 from app.db import get_supabase_client
@@ -396,7 +396,7 @@ def list_documents(
     "",
     response_model=UploadResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(forbid_demo_writes)],  # PORTFOLIO MODE C+
+    dependencies=[Depends(require_authenticated_user)],  # 쓰기 = 로그인 필수 (수익화 W1)
 )
 async def upload_document(
     background_tasks: BackgroundTasks,
@@ -581,7 +581,7 @@ async def upload_document(
     "/url",
     response_model=UploadResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(forbid_demo_writes)],  # PORTFOLIO MODE C+
+    dependencies=[Depends(require_authenticated_user)],  # 쓰기 = 로그인 필수 (수익화 W1)
 )
 async def upload_url(
     background_tasks: BackgroundTasks,
@@ -782,7 +782,7 @@ async def upload_url(
     "/{doc_id}/reingest",
     response_model=ReingestResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(forbid_demo_writes)],  # PORTFOLIO MODE C+
+    dependencies=[Depends(require_authenticated_user)],  # 쓰기 = 로그인 필수 (수익화 W1)
 )
 def reingest_document(
     doc_id: str,
@@ -871,7 +871,7 @@ def reingest_document(
     "/{doc_id}/reingest-missing",
     response_model=ReingestMissingResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(forbid_demo_writes)],  # PORTFOLIO MODE C+
+    dependencies=[Depends(require_authenticated_user)],  # 쓰기 = 로그인 필수 (수익화 W1)
 )
 def reingest_missing_vision(
     doc_id: str,

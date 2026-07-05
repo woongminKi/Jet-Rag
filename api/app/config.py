@@ -85,9 +85,6 @@ class Settings:
     # None + auth_enabled=true 면 admin 전면 차단(안전). auth_enabled=false 면 게이트 통과.
     owner_user_id: str | None = None
 
-    # PORTFOLIO MODE C+ — true 시 forbid_demo_writes dep 가 모든 write 엔드포인트 503.
-    # 복원 시 본 필드 + dependencies.py 의 forbid_demo_writes + 라우터 7곳 Depends 일괄 주석.
-    demo_readonly: bool = False
 
 
 # 잠정값 — 데이터 누적 부족 시 fallback. master plan §7.5 default 채택.
@@ -200,6 +197,4 @@ def get_settings() -> Settings:
         # D1-JWKS — 비대칭 알고리즘 사용 시 필수. 미설정/빈 문자열 = None (대칭에는 무관).
         supabase_jwks_url=os.environ.get("SUPABASE_JWKS_URL") or None,
         owner_user_id=os.environ.get("OWNER_USER_ID") or None,
-        # PORTFOLIO MODE C+ — 데모 readonly 게이트. 복원 시 ENV 제거 + 본 줄 주석.
-        demo_readonly=_parse_bool("JETRAG_DEMO_READONLY", False),
     )

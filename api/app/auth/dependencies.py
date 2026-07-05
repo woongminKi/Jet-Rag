@@ -143,25 +143,6 @@ def require_authenticated_user(
     return current_user
 
 
-def forbid_demo_writes(
-    settings: Settings = Depends(get_settings),
-) -> None:
-    """PORTFOLIO MODE C+ — 데모 readonly 가드.
-
-    `JETRAG_DEMO_READONLY=true` 일 때 업로드/이관/feedback/eval 등 모든 write
-    엔드포인트에서 503. 채용 담당자 데모는 검색·답변 GET 만 허용 → 데이터 오염
-    + LLM 비용 burn 차단.
-
-    복원 시 본 함수 + 라우터 7곳의 Depends(forbid_demo_writes) 일괄 주석.
-    Task 4 에서 require_authenticated_user 로 교체 예정.
-    """
-    if getattr(settings, "demo_readonly", False):
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="포트폴리오 데모 모드 — 업로드/쓰기 작업이 일시 비활성입니다.",
-        )
-
-
 def require_admin(
     current_user: CurrentUser = Depends(get_current_user),
     settings: Settings = Depends(get_settings),

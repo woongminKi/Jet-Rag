@@ -43,8 +43,8 @@ from app.adapters.llm import ChatMessage, LLMProvider
 from app.auth import (
     LEGACY_DEFAULT_USER,
     CurrentUserDep,
-    forbid_demo_writes,
     require_auth,
+    require_authenticated_user,
 )
 from app.db import get_supabase_client
 from app.routers.search import _build_pgroonga_query
@@ -592,7 +592,7 @@ def reset_feedback_disabled() -> None:
 @router.post(
     "/answer/feedback",
     response_model=AnswerFeedbackResponse,
-    dependencies=[Depends(forbid_demo_writes)],  # PORTFOLIO MODE C+
+    dependencies=[Depends(require_authenticated_user)],  # 쓰기 = 로그인 필수 (수익화 W1)
 )
 def submit_answer_feedback(
     payload: AnswerFeedbackRequest,
@@ -749,7 +749,7 @@ def get_ragas_eval(
 @router.post(
     "/answer/eval-ragas",
     response_model=RagasEvalResponse,
-    dependencies=[Depends(forbid_demo_writes)],  # PORTFOLIO MODE C+
+    dependencies=[Depends(require_authenticated_user)],  # 쓰기 = 로그인 필수 (수익화 W1)
 )
 def submit_ragas_eval(
     payload: RagasEvalRequest,
@@ -899,7 +899,7 @@ def get_search_precision(
 @router.post(
     "/search/eval-precision",
     response_model=RagasEvalResponse,
-    dependencies=[Depends(forbid_demo_writes)],  # PORTFOLIO MODE C+
+    dependencies=[Depends(require_authenticated_user)],  # 쓰기 = 로그인 필수 (수익화 W1)
 )
 def submit_search_precision(
     payload: SearchPrecisionRequest,
