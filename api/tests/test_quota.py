@@ -1,16 +1,37 @@
-"""W9 Day 7 — `app.services.quota.is_quota_exhausted` 감지 정확도 단위 테스트.
+"""quota 모듈 단위 테스트.
 
-배경
-- W9 Day 4·6 의 fast-fail 은 메시지 휴리스틱 ("RESOURCE_EXHAUSTED" / "429" / "QUOTA").
-- 한계 #50: SDK 메시지 형식 변경 시 false negative 가능 → class-based catch 보강.
-- 본 테스트는 class name 화이트리스트 + status code attribute + 메시지 fallback 3 단계 검증.
-
-stdlib unittest only.
+- W9 Day 7: is_quota_exhausted 감지 정확도 (class name / status code / message fallback)
+- W3 수익화: get_effective_plan / count_active_documents / get_todays_count (MagicMock Supabase, 외부 I/O 0)
 """
 
 from __future__ import annotations
 
+import os
 import unittest
+from unittest.mock import MagicMock, patch
+
+os.environ.setdefault("GEMINI_API_KEY", "dummy-test-token")
+
+
+def _table_client(tables: dict[str, list[dict]]) -> MagicMock:
+    """table(name) 별로 지정된 data 를 반환하는 mock. 체이닝 전부 흡수."""
+    client = MagicMock()
+
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        resp = MagicMock()
+        resp.data = tables.get(name, [])
+        resp.count = len(tables.get(name, []))
+        # select().eq()...execute() 어떤 체인이든 마지막 execute 가 resp 반환
+        t.select.return_value = t
+        t.eq.return_value = t
+        t.is_.return_value = t
+        t.limit.return_value = t
+        t.execute.return_value = resp
+        return t
+
+    client.table.side_effect = _table
+    return client
 
 
 class QuotaClassNameTest(unittest.TestCase):
@@ -92,6 +113,102 @@ class QuotaMessageFallbackTest(unittest.TestCase):
         self.assertTrue(
             is_quota_exhausted(GenericError("429 RESOURCE_EXHAUSTED detail"))
         )
+
+
+class GetEffectivePlanTest(unittest.TestCase):
+    def test_no_subscription_falls_back_to_free(self) -> None:
+        from app.services import quota
+
+        client = _table_client({
+            "subscriptions": [],
+            "plans": [{"code": "free", "max_documents": 10, "answers_per_day": 5}],
+        })
+        with patch.object(quota, "get_supabase_client", return_value=client):
+            plan = quota.get_effective_plan("uid-1")
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.code, "free")
+        self.assertEqual(plan.max_documents, 10)
+        self.assertEqual(plan.answers_per_day, 5)
+
+    def test_active_pro_subscription(self) -> None:
+        from app.services import quota
+
+        client = _table_client({
+            "subscriptions": [{"plan_code": "pro", "status": "active"}],
+            "plans": [{"code": "pro", "max_documents": 200, "answers_per_day": 50}],
+        })
+        with patch.object(quota, "get_supabase_client", return_value=client):
+            plan = quota.get_effective_plan("uid-1")
+        self.assertEqual(plan.code, "pro")
+
+    def test_past_due_still_effective(self) -> None:
+        # W5-6 grace period 예약 — past_due 는 아직 유효 플랜.
+        from app.services import quota
+
+        client = _table_client({
+            "subscriptions": [{"plan_code": "pro", "status": "past_due"}],
+            "plans": [{"code": "pro", "max_documents": 200, "answers_per_day": 50}],
+        })
+        with patch.object(quota, "get_supabase_client", return_value=client):
+            self.assertEqual(quota.get_effective_plan("uid-1").code, "pro")
+
+    def test_canceled_falls_back_to_free(self) -> None:
+        from app.services import quota
+
+        client = _table_client({
+            "subscriptions": [{"plan_code": "pro", "status": "canceled"}],
+            "plans": [{"code": "free", "max_documents": 10, "answers_per_day": 5}],
+        })
+        with patch.object(quota, "get_supabase_client", return_value=client):
+            self.assertEqual(quota.get_effective_plan("uid-1").code, "free")
+
+    def test_db_error_fails_open_none(self) -> None:
+        from app.services import quota
+
+        client = MagicMock()
+        client.table.side_effect = RuntimeError("db down")
+        with patch.object(quota, "get_supabase_client", return_value=client):
+            self.assertIsNone(quota.get_effective_plan("uid-1"))
+
+    def test_missing_plan_row_returns_none(self) -> None:
+        from app.services import quota
+
+        client = _table_client({"subscriptions": [], "plans": []})
+        with patch.object(quota, "get_supabase_client", return_value=client):
+            self.assertIsNone(quota.get_effective_plan("uid-1"))
+
+
+class CountActiveDocumentsTest(unittest.TestCase):
+    def test_returns_count(self) -> None:
+        from app.services import quota
+
+        client = _table_client({"documents": [{"id": "a"}, {"id": "b"}]})
+        with patch.object(quota, "get_supabase_client", return_value=client):
+            self.assertEqual(quota.count_active_documents("uid-1"), 2)
+
+    def test_db_error_returns_none(self) -> None:
+        from app.services import quota
+
+        client = MagicMock()
+        client.table.side_effect = RuntimeError("db down")
+        with patch.object(quota, "get_supabase_client", return_value=client):
+            self.assertIsNone(quota.count_active_documents("uid-1"))
+
+
+class GetTodaysCountTest(unittest.TestCase):
+    def test_returns_zero_when_no_row(self) -> None:
+        from app.services import quota
+
+        client = _table_client({"usage_counters": []})
+        with patch.object(quota, "get_supabase_client", return_value=client):
+            self.assertEqual(quota.get_todays_count("uid-1", "answers"), 0)
+
+    def test_returns_count_value(self) -> None:
+        from app.services import quota
+
+        client = _table_client({"usage_counters": [{"count": 7}]})
+        with patch.object(quota, "get_supabase_client", return_value=client):
+            self.assertEqual(quota.get_todays_count("uid-1", "answers"), 7)
 
 
 if __name__ == "__main__":

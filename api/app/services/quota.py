@@ -1,16 +1,23 @@
-"""W9 — Gemini API quota 초과 감지 유틸리티.
+"""quota 모듈 — Gemini API quota 초과 감지 + 수익화 W3 플랜/사용량 조회.
 
-배경
-- W9 Day 4 PptxParser 가 Vision RESOURCE_EXHAUSTED 시 fast-fail 도입.
-- W9 Day 6 tag_summarize 도 동일 패턴 적용 — 두 stage 가 같은 휴리스틱 공유.
-- pptx_parser 에 두지 않고 별도 모듈로 분리 — 의존성 방향 정석화 (stage → util).
-- W9 Day 7 (한계 #50) — class name + status code 직접 검사로 정확도↑.
+W9 Day 4·6·7: is_quota_exhausted — Gemini API 초과 감지 유틸리티.
+  - class name 화이트리스트 + status code attribute + 메시지 fallback 3단계.
+  - stdlib only, google SDK 직접 import 없이 type name 검사로 우회.
 
-설계 — stdlib only. google.api_core / google.genai SDK 직접 import 회피
-(의존성 방향 + 패키지 변경 시 회귀 risk 회피) → type name 검사로 우회.
+W3 수익화: plans/subscriptions(마이그 022) 를 읽어 유효 플랜 한도 산출 (read-only).
+  - enforcement 는 rate_limit.py 통합 게이트(Task 4) 담당.
+  - 어떤 DB 실패든 None 반환 (fail-open — 호출측이 quota skip + warning).
 """
 
 from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from app.db import get_supabase_client
+
+logger = logging.getLogger(__name__)
 
 # 알려진 quota 초과 exception class name 화이트리스트.
 # - ResourceExhausted: google.api_core.exceptions (gRPC 표준)
@@ -54,3 +61,100 @@ def is_quota_exhausted(error_or_msg) -> bool:
         or "429" in msg
         or "QUOTA" in upper
     )
+
+
+# ---------------------------------------------------------------------------
+# W3 수익화 — 플랜(Free/Pro) 해석 + 사용량 카운트 조회
+# ---------------------------------------------------------------------------
+
+_EFFECTIVE_STATUSES = ("active", "past_due")
+
+
+@dataclass(frozen=True)
+class PlanLimits:
+    code: str
+    max_documents: int
+    answers_per_day: int
+
+
+def get_effective_plan(user_id: str) -> PlanLimits | None:
+    """유저의 유효 플랜 한도. 실패 시 None (fail-open).
+
+    정책
+    - 구독 행 없음 / status='canceled' → free.
+    - status IN ('active', 'past_due') → 해당 plan_code (past_due = grace, W5-6 예약).
+    - 어떤 DB 실패든 None 반환 (fail-open — 호출측이 quota skip + warning).
+    """
+    try:
+        client = get_supabase_client()
+        sub_rows = (
+            client.table("subscriptions")
+            .select("plan_code, status")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+            .data
+        ) or []
+        code = "free"
+        if sub_rows and sub_rows[0].get("status") in _EFFECTIVE_STATUSES:
+            code = sub_rows[0]["plan_code"]
+
+        plan_rows = (
+            client.table("plans")
+            .select("code, max_documents, answers_per_day")
+            .eq("code", code)
+            .limit(1)
+            .execute()
+            .data
+        ) or []
+        if not plan_rows:
+            logger.warning("plans 테이블에 code=%s 없음 — quota fail-open", code)
+            return None
+        row = plan_rows[0]
+        return PlanLimits(
+            code=row["code"],
+            max_documents=int(row["max_documents"]),
+            answers_per_day=int(row["answers_per_day"]),
+        )
+    except Exception as exc:  # noqa: BLE001 — 조회 실패는 fail-open
+        logger.warning("플랜 조회 실패 — quota fail-open (user=%s): %s", user_id, exc)
+        return None
+
+
+def count_active_documents(user_id: str) -> int | None:
+    """보유 문서 수 (deleted_at IS NULL). 실패 시 None (fail-open)."""
+    try:
+        resp = (
+            get_supabase_client()
+            .table("documents")
+            .select("id", count="exact")
+            .eq("user_id", user_id)
+            .is_("deleted_at", "null")
+            .limit(1)
+            .execute()
+        )
+        return int(resp.count or 0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("문서 수 카운트 실패 — quota fail-open (user=%s): %s", user_id, exc)
+        return None
+
+
+def get_todays_count(user_key: str, metric: str) -> int:
+    """usage_counters 의 금일 카운트 (표시용 — /me/plan). 실패 시 0."""
+    try:
+        today = datetime.now(timezone.utc).date().isoformat()
+        rows = (
+            get_supabase_client()
+            .table("usage_counters")
+            .select("count")
+            .eq("user_key", user_key)
+            .eq("metric", metric)
+            .eq("period_date", today)
+            .limit(1)
+            .execute()
+            .data
+        ) or []
+        return int(rows[0]["count"]) if rows else 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("금일 사용량 조회 실패 — 0 반환 (key=%s): %s", user_key, exc)
+        return 0
