@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 #   sweep × retry 곱셈 제거 (sweep 2 × retry 1 = worst case 페이지당 2 호출, 50p PDF
 #   기준 450 → 100 으로 4.5x 절감). 503 random 은 sweep 2 가 페이지 단위로 재시도
 #   보장 → retry 1 로 충분. 회귀 발생 시 ENV `JETRAG_GEMINI_RETRY=3` 으로 즉시 회복.
+# 수익화 W2 (2026-07-06) — 유료 pay-as-you-go 키 전환 후 무료 tier RPD 20/일 상한 소멸.
+#   RESOURCE_EXHAUSTED(429) 는 계정 quota 가 아닌 순간 rate 만 남아 retry 1 로 충분.
 _MAX_ATTEMPTS = int(os.environ.get("JETRAG_GEMINI_RETRY", "1"))
 _BASE_BACKOFF_SECONDS = 1.0
 

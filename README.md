@@ -31,6 +31,7 @@
 - **로그인 유저**: `/ingest` 업로드 → 본인 user_id 격리 컨텍스트 (RLS 마이그 019/020) 에서 인제스트·검색·답변
 - **쓰기 게이트**: 업로드·재인제스트·feedback·eval 7 endpoint 는 `require_authenticated_user` — 익명 시 401
 - **admin 게이트**: `require_admin` — 익명 fallback 은 user_id 가 owner 와 같아도 403 (is_authenticated 체크)
+- **일일 rate limit (W2)**: 익명 데모(IP 기준)·로그인 사용자(user_id 기준) 모두 일일 답변 50회 / 업로드 30회 상한 — 초과 시 429. `JETRAG_RATE_LIMIT_*` ENV 로 조정(0=무제한).
 
 ### 📱 모바일에서 설치하기 (PWA)
 
