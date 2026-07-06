@@ -140,5 +140,34 @@ class QuotaSettingsTest(unittest.TestCase):
             self._clear()
 
 
+class EmailIngestSettingsTest(unittest.TestCase):
+    """수익화 W4 — 이메일 인제스트 ENV parse."""
+
+    def _clear(self) -> None:
+        for k in ("JETRAG_EMAIL_WEBHOOK_SECRET", "JETRAG_EMAIL_INGEST_DOMAIN"):
+            os.environ.pop(k, None)
+        get_settings.cache_clear()
+
+    def test_defaults(self) -> None:
+        self._clear()
+        try:
+            s = get_settings()
+            self.assertEqual(s.email_webhook_secret, "")
+            self.assertEqual(s.email_ingest_domain, "in.woong-s.com")
+        finally:
+            self._clear()
+
+    def test_env_override(self) -> None:
+        self._clear()
+        os.environ["JETRAG_EMAIL_WEBHOOK_SECRET"] = "s3cret"
+        os.environ["JETRAG_EMAIL_INGEST_DOMAIN"] = "mail.example.com"
+        try:
+            s = get_settings()
+            self.assertEqual(s.email_webhook_secret, "s3cret")
+            self.assertEqual(s.email_ingest_domain, "mail.example.com")
+        finally:
+            self._clear()
+
+
 if __name__ == "__main__":
     unittest.main()

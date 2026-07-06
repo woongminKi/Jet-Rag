@@ -92,6 +92,9 @@ class Settings:
     # 수익화 W3 (2026-07-06) — 플랜 quota(402) 회복 토글. false 면 플랜 한도 전면 skip
     # (W2 abuse rate limit 429 는 별개로 유지). plans/subscriptions 장애 시 즉시 회복용.
     quota_enforcement_enabled: bool = True
+    # 수익화 W4 (2026-07-06) — 이메일 인제스트. secret 빈값 = 기능 비활성 (webhook 503).
+    email_webhook_secret: str = ""
+    email_ingest_domain: str = "in.woong-s.com"
 
 
 # 잠정값 — 데이터 누적 부족 시 fallback. master plan §7.5 default 채택.
@@ -208,4 +211,6 @@ def get_settings() -> Settings:
         rate_limit_answers_per_day=_parse_int("JETRAG_RATE_LIMIT_ANSWERS_PER_DAY", 50),
         rate_limit_docs_per_day=_parse_int("JETRAG_RATE_LIMIT_DOCS_PER_DAY", 30),
         quota_enforcement_enabled=_parse_bool("JETRAG_QUOTA_ENFORCEMENT_ENABLED", True),
+        email_webhook_secret=os.environ.get("JETRAG_EMAIL_WEBHOOK_SECRET", ""),
+        email_ingest_domain=os.environ.get("JETRAG_EMAIL_INGEST_DOMAIN", "in.woong-s.com"),
     )
