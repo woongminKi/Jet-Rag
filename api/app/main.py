@@ -32,6 +32,7 @@ from app.routers import (  # noqa: E402 — logger 부트스트랩 후 import (i
     answer_router,
     auth_router,
     documents_router,
+    me_router,
     search_router,
     stats_router,
 )
@@ -160,6 +161,8 @@ app.include_router(answer_router)
 app.include_router(admin_router)
 # D1 — /auth/me. get_current_user dependency 내장 (auth_enabled=true 시 토큰 없으면 401).
 app.include_router(auth_router)
+# 수익화 W3 — /me/plan. 로그인 필수 (require_authenticated_user 라우터 게이트).
+app.include_router(me_router)
 
 
 @app.get("/", include_in_schema=False)
