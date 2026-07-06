@@ -84,6 +84,11 @@ class Settings:
     # admin 라우트 게이트 (D1-Q7) — 본인 Supabase UUID. Railway ENV `OWNER_USER_ID`.
     # None + auth_enabled=true 면 admin 전면 차단(안전). auth_enabled=false 면 게이트 통과.
     owner_user_id: str | None = None
+    # 수익화 W2 (2026-07-06) — per-user 일일 rate limit 상한. 남용/비용 방어.
+    # 0 또는 음수 = 무제한 (회복 토글 — vision_page_cap_per_doc 패턴 계승).
+    # auth_enabled=false(로컬 dev) 면 enforce 단계에서 전면 skip.
+    rate_limit_answers_per_day: int = 50
+    rate_limit_docs_per_day: int = 30
 
 
 # 잠정값 — 데이터 누적 부족 시 fallback. master plan §7.5 default 채택.
@@ -196,4 +201,7 @@ def get_settings() -> Settings:
         # D1-JWKS — 비대칭 알고리즘 사용 시 필수. 미설정/빈 문자열 = None (대칭에는 무관).
         supabase_jwks_url=os.environ.get("SUPABASE_JWKS_URL") or None,
         owner_user_id=os.environ.get("OWNER_USER_ID") or None,
+        # 수익화 W2 — rate limit 상한. invalid ENV 는 default. 0/음수 그대로(무제한 토글).
+        rate_limit_answers_per_day=_parse_int("JETRAG_RATE_LIMIT_ANSWERS_PER_DAY", 50),
+        rate_limit_docs_per_day=_parse_int("JETRAG_RATE_LIMIT_DOCS_PER_DAY", 30),
     )

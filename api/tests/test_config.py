@@ -78,5 +78,44 @@ class TestSettingsBackwardCompat(unittest.TestCase):
             get_settings.cache_clear()
 
 
+class RateLimitSettingsTest(unittest.TestCase):
+    """수익화 W2 — rate limit 상한 ENV parse."""
+
+    def _clear(self) -> None:
+        for k in ("JETRAG_RATE_LIMIT_ANSWERS_PER_DAY", "JETRAG_RATE_LIMIT_DOCS_PER_DAY"):
+            os.environ.pop(k, None)
+        get_settings.cache_clear()
+
+    def test_defaults(self) -> None:
+        self._clear()
+        try:
+            s = get_settings()
+            self.assertEqual(s.rate_limit_answers_per_day, 50)
+            self.assertEqual(s.rate_limit_docs_per_day, 30)
+        finally:
+            self._clear()
+
+    def test_env_override(self) -> None:
+        self._clear()
+        os.environ["JETRAG_RATE_LIMIT_ANSWERS_PER_DAY"] = "5"
+        os.environ["JETRAG_RATE_LIMIT_DOCS_PER_DAY"] = "3"
+        try:
+            s = get_settings()
+            self.assertEqual(s.rate_limit_answers_per_day, 5)
+            self.assertEqual(s.rate_limit_docs_per_day, 3)
+        finally:
+            self._clear()
+
+    def test_zero_means_unlimited_passthrough(self) -> None:
+        # 0/음수는 그대로 저장 — enforce 단계가 무제한으로 해석 (회복 토글).
+        self._clear()
+        os.environ["JETRAG_RATE_LIMIT_ANSWERS_PER_DAY"] = "0"
+        try:
+            s = get_settings()
+            self.assertEqual(s.rate_limit_answers_per_day, 0)
+        finally:
+            self._clear()
+
+
 if __name__ == "__main__":
     unittest.main()
