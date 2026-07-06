@@ -32,6 +32,7 @@
 - **쓰기 게이트**: 업로드·재인제스트·feedback·eval 7 endpoint 는 `require_authenticated_user` — 익명 시 401
 - **admin 게이트**: `require_admin` — 익명 fallback 은 user_id 가 owner 와 같아도 403 (is_authenticated 체크)
 - **일일 rate limit (W2)**: 익명 데모(IP 기준)·로그인 사용자(user_id 기준) 모두 일일 답변 50회 / 업로드 30회 상한 — 초과 시 429. `JETRAG_RATE_LIMIT_*` ENV 로 조정(0=무제한).
+- **플랜 quota (W3)**: 로그인 사용자는 Free(보유 문서 10 · 답변 일 5회) / Pro(200 · 50회) 한도 — 초과 시 402 + 업그레이드 안내. 한도는 `plans` 테이블 seed(UPDATE 로 조정). 익명 데모는 W2 rate limit(429)만 적용.
 
 ### 📱 모바일에서 설치하기 (PWA)
 
