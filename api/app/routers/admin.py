@@ -520,3 +520,76 @@ def _build_comment_analysis(
                 )
             )
     return categories, comments
+
+
+# ============================================================
+# 수익화 W3 — 구독 수동 관리 (W5-6 결제 연동 전 베타 Pro 부여)
+# ============================================================
+class SubscriptionUpsertRequest(BaseModel):
+    user_id: str
+    plan_code: Literal["free", "pro"]
+    status: Literal["active", "past_due", "canceled"] = "active"
+    current_period_end: str | None = None  # ISO8601. 수동 부여는 보통 None(무기한).
+
+
+class SubscriptionItem(BaseModel):
+    user_id: str
+    plan_code: str
+    status: str
+    current_period_end: str | None = None
+    updated_at: str | None = None
+
+
+class SubscriptionListResponse(BaseModel):
+    items: list[SubscriptionItem]
+
+
+@router.post("/subscriptions", response_model=SubscriptionItem)
+def admin_upsert_subscription(payload: SubscriptionUpsertRequest) -> SubscriptionItem:
+    """유저 구독 수동 upsert. 결제 연동(W5-6) 전 베타 Pro 체험 부여·회수용."""
+    row = {
+        "user_id": payload.user_id,
+        "plan_code": payload.plan_code,
+        "status": payload.status,
+        "current_period_end": payload.current_period_end,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    resp = (
+        get_supabase_client()
+        .table("subscriptions")
+        .upsert(row, on_conflict="user_id")
+        .execute()
+    )
+    saved = (resp.data or [row])[0]
+    return SubscriptionItem(
+        user_id=str(saved["user_id"]),
+        plan_code=saved["plan_code"],
+        status=saved["status"],
+        current_period_end=saved.get("current_period_end"),
+        updated_at=saved.get("updated_at"),
+    )
+
+
+@router.get("/subscriptions", response_model=SubscriptionListResponse)
+def admin_list_subscriptions() -> SubscriptionListResponse:
+    rows = (
+        get_supabase_client()
+        .table("subscriptions")
+        .select("user_id, plan_code, status, current_period_end, updated_at")
+        .order("updated_at", desc=True)
+        .limit(100)
+        .execute()
+        .data
+    ) or []
+    return SubscriptionListResponse(
+        items=[
+            SubscriptionItem(
+                user_id=str(r["user_id"]),
+                plan_code=r["plan_code"],
+                status=r["status"],
+                current_period_end=r.get("current_period_end"),
+                updated_at=r.get("updated_at"),
+            )
+            for r in rows
+        ]
+    )
