@@ -32,6 +32,7 @@ from app.routers import (  # noqa: E402 — logger 부트스트랩 후 import (i
     answer_router,
     auth_router,
     documents_router,
+    email_ingest_router,
     me_router,
     search_router,
     stats_router,
@@ -163,6 +164,8 @@ app.include_router(admin_router)
 app.include_router(auth_router)
 # 수익화 W3 — /me/plan. 로그인 필수 (require_authenticated_user 라우터 게이트).
 app.include_router(me_router)
+# 수익화 W4 — 이메일 인제스트 webhook (Cloudflare Email Worker 전용, shared secret 인증).
+app.include_router(email_ingest_router)
 
 
 @app.get("/", include_in_schema=False)
