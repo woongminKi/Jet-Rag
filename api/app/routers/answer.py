@@ -54,6 +54,7 @@ from app.services.multi_query_search import (
     rrf_merge_pools as _rrf_merge_pools,
 )
 from app.services.quota import is_quota_exhausted
+from app.services.rate_limit import check_rate_limit
 
 # S3 D2 — confidence 안전망 임계 (planner v0.1 §A).
 # 룰 confidence_score 가 본 임계 미만이면 응답 meta.low_confidence=true 마킹.
@@ -429,7 +430,11 @@ def _build_messages(query: str, chunks: list[dict]) -> list[ChatMessage]:
     ]
 
 
-@router.get("/answer", response_model=AnswerResponse)
+@router.get(
+    "/answer",
+    response_model=AnswerResponse,
+    dependencies=[Depends(check_rate_limit("answers"))],  # 수익화 W2 — 일일 답변 상한
+)
 def answer(
     q: str = Query(..., min_length=1, max_length=_MAX_QUERY_LEN, description="질문 (한국어)"),
     top_k: int = Query(_DEFAULT_TOP_K, ge=1, le=_MAX_TOP_K, description="LLM 에 전달할 검색 결과 chunks 수"),
