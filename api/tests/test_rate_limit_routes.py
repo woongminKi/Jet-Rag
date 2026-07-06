@@ -66,5 +66,30 @@ class AnswerRateLimitTest(unittest.TestCase):
         self.assertIn("한도", resp.json()["detail"])
 
 
+class UploadRateLimitTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.authed = CurrentUser(user_id="uid-1", is_authenticated=True)
+        app.dependency_overrides[get_current_user] = lambda: self.authed
+        app.dependency_overrides[get_settings] = lambda: _settings()
+        self.client = TestClient(app, raise_server_exceptions=False)
+
+    def tearDown(self) -> None:
+        app.dependency_overrides.clear()
+
+    def test_upload_over_cap_returns_429(self) -> None:
+        files = {"file": ("t.pdf", b"%PDF-1.4 test", "application/pdf")}
+        with patch("app.services.rate_limit.get_supabase_client", return_value=_over_cap_client()):
+            resp = self.client.post("/documents", files=files)
+        self.assertEqual(resp.status_code, 429)
+        self.assertIn("한도", resp.json()["detail"])
+
+    def test_upload_url_over_cap_returns_429(self) -> None:
+        payload = {"url": "https://example.com/doc.pdf"}
+        with patch("app.services.rate_limit.get_supabase_client", return_value=_over_cap_client()):
+            resp = self.client.post("/documents/url", json=payload)
+        self.assertEqual(resp.status_code, 429)
+        self.assertIn("한도", resp.json()["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()

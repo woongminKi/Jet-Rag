@@ -52,6 +52,7 @@ from app.ingest.eta import compute_remaining_ms
 from app.routers._input_gate import HEAD_BYTES, validate_magic
 from app.routers._url_gate import recheck_dns_consistency, validate_url_safety
 from app.services.ingest_mode import INGEST_MODES, IngestMode, resolve_page_cap
+from app.services.rate_limit import check_rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -393,7 +394,10 @@ def list_documents(
     "",
     response_model=UploadResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_authenticated_user)],  # 쓰기 = 로그인 필수 (수익화 W1)
+    dependencies=[
+        Depends(require_authenticated_user),  # 쓰기 = 로그인 필수 (수익화 W1)
+        Depends(check_rate_limit("docs")),  # 수익화 W2 — 일일 업로드 상한
+    ],
 )
 async def upload_document(
     background_tasks: BackgroundTasks,
@@ -578,7 +582,10 @@ async def upload_document(
     "/url",
     response_model=UploadResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_authenticated_user)],  # 쓰기 = 로그인 필수 (수익화 W1)
+    dependencies=[
+        Depends(require_authenticated_user),  # 쓰기 = 로그인 필수 (수익화 W1)
+        Depends(check_rate_limit("docs")),  # 수익화 W2 — 일일 업로드 상한
+    ],
 )
 async def upload_url(
     background_tasks: BackgroundTasks,
