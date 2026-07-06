@@ -83,6 +83,16 @@ class SenderAllowedTest(unittest.TestCase):
 
         self.assertFalse(sender_allowed("user@gmail.com", None))
 
+    def test_bare_address_in_display_name_rejected(self) -> None:
+        from app.services.email_ingest import sender_allowed
+
+        self.assertFalse(sender_allowed("Kim owner@example.com", "owner@example.com"))
+
+    def test_embedded_newline_injection_rejected(self) -> None:
+        from app.services.email_ingest import sender_allowed
+
+        self.assertFalse(sender_allowed("attacker@evil.com\nowner@example.com", "owner@example.com"))
+
 
 class IngestAttachmentTest(unittest.TestCase):
     def test_disallowed_extension_skipped(self) -> None:
@@ -178,6 +188,24 @@ class IngestAttachmentTest(unittest.TestCase):
         cj.assert_called_once_with(doc_id="doc-new")
         bg.add_task.assert_called_once()
         self.assertIs(bg.add_task.call_args.args[0], rfi)
+
+
+    def test_db_error_returns_skipped(self) -> None:
+        from app.services import email_ingest
+
+        client = MagicMock()
+        client.table.side_effect = Exception("boom")
+        bg = MagicMock()
+        with patch.object(email_ingest, "get_supabase_client", return_value=client):
+            result = email_ingest.ingest_email_attachment(
+                user_id="uid-1",
+                filename="doc.pdf",
+                content_type="application/pdf",
+                raw=b"%PDF-1.4 test",
+                background_tasks=bg,
+            )
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "내부 오류")
 
 
 if __name__ == "__main__":

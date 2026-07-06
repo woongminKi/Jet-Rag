@@ -18,6 +18,7 @@ import re
 import secrets
 import string
 import unicodedata
+import uuid
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
 
@@ -46,7 +47,7 @@ _EMAIL_ALLOWED_EXTENSIONS: dict[str, str] = {
     ".heic": "image",
 }
 _MAX_SIZE_BYTES = 50 * 1024 * 1024  # 업로드와 동일 (documents.py:79)
-_EMAIL_RE = re.compile(r"<?([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+)>?\s*$")
+_EMAIL_RE = re.compile(r"^(?:[^<]*<)?([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+)>?\s*$")
 
 
 def generate_token() -> str:
@@ -181,54 +182,56 @@ def ingest_email_attachment(
     settings = get_settings()
     supabase = get_supabase_client()
 
-    # Tier 1 dedup (upload_document 와 동일 — 실패 문서 재시도 분기는 웹 UI 전용)
-    existing = (
-        supabase.table("documents")
-        .select("id, flags")
-        .eq("user_id", user_id)
-        .eq("sha256", sha256)
-        .is_("deleted_at", "null")
-        .limit(1)
-        .execute()
-    )
-    if existing.data:
-        return {"status": "duplicated", "filename": filename, "doc_id": existing.data[0]["id"]}
-
-    import uuid as _uuid
-
-    pending_path = SupabaseBlobStorage.build_pending_path(
-        user_id=user_id, doc_uuid=_uuid.uuid4().hex, ext=ext
-    )
-    doc_title = unicodedata.normalize("NFC", PurePosixPath(filename).stem)
-    page_cap_override = resolve_page_cap("default", settings)
-    doc_row = (
-        supabase.table("documents")
-        .insert(
-            {
-                "user_id": user_id,
-                "title": doc_title,
-                "doc_type": doc_type,
-                "source_channel": "email",
-                "storage_path": pending_path,
-                "sha256": sha256,
-                "size_bytes": len(raw),
-                "content_type": content_type or "application/octet-stream",
-                "flags": {"ingest_mode": "default"},
-            }
+    try:
+        # Tier 1 dedup (upload_document 와 동일 — 실패 문서 재시도 분기는 웹 UI 전용)
+        existing = (
+            supabase.table("documents")
+            .select("id, flags")
+            .eq("user_id", user_id)
+            .eq("sha256", sha256)
+            .is_("deleted_at", "null")
+            .limit(1)
+            .execute()
         )
-        .execute()
-    )
-    doc_id = doc_row.data[0]["id"]
-    job = create_job(doc_id=doc_id)
-    background_tasks.add_task(
-        run_full_ingest,
-        job_id=job.id,
-        doc_id=doc_id,
-        raw=raw,
-        sha256=sha256,
-        ext=ext,
-        content_type=content_type or "application/octet-stream",
-        page_cap_override=page_cap_override,
-        user_id=user_id,
-    )
-    return {"status": "accepted", "filename": filename, "doc_id": doc_id, "job_id": job.id}
+        if existing.data:
+            return {"status": "duplicated", "filename": filename, "doc_id": existing.data[0]["id"]}
+
+        pending_path = SupabaseBlobStorage.build_pending_path(
+            user_id=user_id, doc_uuid=uuid.uuid4().hex, ext=ext
+        )
+        doc_title = unicodedata.normalize("NFC", PurePosixPath(filename).stem)
+        page_cap_override = resolve_page_cap("default", settings)
+        doc_row = (
+            supabase.table("documents")
+            .insert(
+                {
+                    "user_id": user_id,
+                    "title": doc_title,
+                    "doc_type": doc_type,
+                    "source_channel": "email",
+                    "storage_path": pending_path,
+                    "sha256": sha256,
+                    "size_bytes": len(raw),
+                    "content_type": content_type or "application/octet-stream",
+                    "flags": {"ingest_mode": "default"},
+                }
+            )
+            .execute()
+        )
+        doc_id = doc_row.data[0]["id"]
+        job = create_job(doc_id=doc_id)
+        background_tasks.add_task(
+            run_full_ingest,
+            job_id=job.id,
+            doc_id=doc_id,
+            raw=raw,
+            sha256=sha256,
+            ext=ext,
+            content_type=content_type or "application/octet-stream",
+            page_cap_override=page_cap_override,
+            user_id=user_id,
+        )
+        return {"status": "accepted", "filename": filename, "doc_id": doc_id, "job_id": job.id}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("email_ingest skip — 내부 오류 (user=%s, %s): %s", user_id, filename, exc)
+        return {"status": "skipped", "filename": filename, "reason": "내부 오류"}
