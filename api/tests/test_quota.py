@@ -180,11 +180,23 @@ class GetEffectivePlanTest(unittest.TestCase):
 
 class CountActiveDocumentsTest(unittest.TestCase):
     def test_returns_count(self) -> None:
+        # resp.count(=5) 와 len(resp.data)(=1) 를 다르게 두어, 구현이 resp.count 를
+        # 읽는지 실증 — limit(1) 로 data 는 잘려도 count="exact" 는 전체 건수.
         from app.services import quota
 
-        client = _table_client({"documents": [{"id": "a"}, {"id": "b"}]})
+        client = MagicMock()
+        t = MagicMock()
+        resp = MagicMock()
+        resp.data = [{"id": "a"}]
+        resp.count = 5
+        t.select.return_value = t
+        t.eq.return_value = t
+        t.is_.return_value = t
+        t.limit.return_value = t
+        t.execute.return_value = resp
+        client.table.return_value = t
         with patch.object(quota, "get_supabase_client", return_value=client):
-            self.assertEqual(quota.count_active_documents("uid-1"), 2)
+            self.assertEqual(quota.count_active_documents("uid-1"), 5)
 
     def test_db_error_returns_none(self) -> None:
         from app.services import quota
@@ -209,6 +221,14 @@ class GetTodaysCountTest(unittest.TestCase):
         client = _table_client({"usage_counters": [{"count": 7}]})
         with patch.object(quota, "get_supabase_client", return_value=client):
             self.assertEqual(quota.get_todays_count("uid-1", "answers"), 7)
+
+    def test_db_error_returns_zero(self) -> None:
+        from app.services import quota
+
+        client = MagicMock()
+        client.table.side_effect = RuntimeError("db down")
+        with patch.object(quota, "get_supabase_client", return_value=client):
+            self.assertEqual(quota.get_todays_count("uid-1", "answers"), 0)
 
 
 if __name__ == "__main__":

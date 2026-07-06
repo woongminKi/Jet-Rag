@@ -124,6 +124,7 @@ def get_effective_plan(user_id: str) -> PlanLimits | None:
 def count_active_documents(user_id: str) -> int | None:
     """보유 문서 수 (deleted_at IS NULL). 실패 시 None (fail-open)."""
     try:
+        # limit(1) = payload 최소화. count="exact" 는 limit 과 무관하게 전체 건수를 resp.count 로 반환.
         resp = (
             get_supabase_client()
             .table("documents")
@@ -140,7 +141,10 @@ def count_active_documents(user_id: str) -> int | None:
 
 
 def get_todays_count(user_key: str, metric: str) -> int:
-    """usage_counters 의 금일 카운트 (표시용 — /me/plan). 실패 시 0."""
+    """usage_counters 의 금일 카운트 (표시용 — /me/plan). 실패 시 0.
+
+    enforcement 에 사용 금지 — 실패 시 0 이라 장애가 '사용량 없음' 으로 보인다.
+    """
     try:
         today = datetime.now(timezone.utc).date().isoformat()
         rows = (
