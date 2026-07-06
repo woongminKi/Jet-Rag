@@ -117,5 +117,28 @@ class RateLimitSettingsTest(unittest.TestCase):
             self._clear()
 
 
+class QuotaSettingsTest(unittest.TestCase):
+    """수익화 W3 — quota enforcement 토글 parse."""
+
+    def _clear(self) -> None:
+        os.environ.pop("JETRAG_QUOTA_ENFORCEMENT_ENABLED", None)
+        get_settings.cache_clear()
+
+    def test_default_true(self) -> None:
+        self._clear()
+        try:
+            self.assertTrue(get_settings().quota_enforcement_enabled)
+        finally:
+            self._clear()
+
+    def test_env_false(self) -> None:
+        self._clear()
+        os.environ["JETRAG_QUOTA_ENFORCEMENT_ENABLED"] = "false"
+        try:
+            self.assertFalse(get_settings().quota_enforcement_enabled)
+        finally:
+            self._clear()
+
+
 if __name__ == "__main__":
     unittest.main()

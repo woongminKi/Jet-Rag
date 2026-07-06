@@ -89,6 +89,9 @@ class Settings:
     # auth_enabled=false(로컬 dev) 면 enforce 단계에서 전면 skip.
     rate_limit_answers_per_day: int = 50
     rate_limit_docs_per_day: int = 30
+    # 수익화 W3 (2026-07-06) — 플랜 quota(402) 회복 토글. false 면 플랜 한도 전면 skip
+    # (W2 abuse rate limit 429 는 별개로 유지). plans/subscriptions 장애 시 즉시 회복용.
+    quota_enforcement_enabled: bool = True
 
 
 # 잠정값 — 데이터 누적 부족 시 fallback. master plan §7.5 default 채택.
@@ -204,4 +207,5 @@ def get_settings() -> Settings:
         # 수익화 W2 — rate limit 상한. invalid ENV 는 default. 0/음수 그대로(무제한 토글).
         rate_limit_answers_per_day=_parse_int("JETRAG_RATE_LIMIT_ANSWERS_PER_DAY", 50),
         rate_limit_docs_per_day=_parse_int("JETRAG_RATE_LIMIT_DOCS_PER_DAY", 30),
+        quota_enforcement_enabled=_parse_bool("JETRAG_QUOTA_ENFORCEMENT_ENABLED", True),
     )
