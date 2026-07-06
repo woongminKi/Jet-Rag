@@ -35,6 +35,7 @@ def _make_settings(**over) -> Settings:
         owner_user_id="00000000-0000-0000-0000-0000000000ff",
         rate_limit_answers_per_day=5,
         rate_limit_docs_per_day=3,
+        quota_enforcement_enabled=True,
     )
     base.update(over)
     return Settings(**base)
@@ -75,6 +76,13 @@ class BuildUserKeyTest(unittest.TestCase):
 
 
 class EnforceRateLimitTest(unittest.TestCase):
+    def setUp(self) -> None:
+        from app.services import rate_limit
+
+        patcher = patch.object(rate_limit.quota, "get_effective_plan", return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _mock_client(self, returned_count: int) -> MagicMock:
         client = MagicMock()
         client.rpc.return_value.execute.return_value.data = returned_count
@@ -89,10 +97,12 @@ class EnforceRateLimitTest(unittest.TestCase):
             rate_limit.enforce_rate_limit("answers", _FakeRequest(), user, settings)
             gc.assert_not_called()  # RPC 호출 자체가 없어야 함
 
-    def test_unlimited_when_cap_zero(self) -> None:
+    def test_unlimited_when_cap_zero_and_quota_off(self) -> None:
         from app.services import rate_limit
 
-        settings = _make_settings(rate_limit_answers_per_day=0)
+        settings = _make_settings(
+            rate_limit_answers_per_day=0, quota_enforcement_enabled=False
+        )
         user = CurrentUser(user_id="u", is_authenticated=True)
         with patch.object(rate_limit, "get_supabase_client") as gc:
             rate_limit.enforce_rate_limit("answers", _FakeRequest(), user, settings)
@@ -137,6 +147,117 @@ class EnforceRateLimitTest(unittest.TestCase):
             with self.assertRaises(HTTPException) as ctx:
                 rate_limit.enforce_rate_limit("docs", _FakeRequest(), user, settings)
             self.assertEqual(ctx.exception.status_code, 429)
+
+
+class QuotaGateTest(unittest.TestCase):
+    """수익화 W3 — 통합 게이트의 플랜 quota(402) 판정."""
+
+    def _mock_client(self, returned_count: int) -> MagicMock:
+        client = MagicMock()
+        client.rpc.return_value.execute.return_value.data = returned_count
+        return client
+
+    def _free_plan(self):
+        from app.services.quota import PlanLimits
+
+        return PlanLimits(code="free", max_documents=10, answers_per_day=5)
+
+    def test_answers_over_plan_cap_raises_402(self) -> None:
+        from app.services import rate_limit
+
+        settings = _make_settings(rate_limit_answers_per_day=50)
+        user = CurrentUser(user_id="u", is_authenticated=True)
+        with patch.object(rate_limit, "get_supabase_client", return_value=self._mock_client(6)), \
+             patch.object(rate_limit.quota, "get_effective_plan", return_value=self._free_plan()):
+            with self.assertRaises(HTTPException) as ctx:
+                rate_limit.enforce_rate_limit("answers", _FakeRequest(), user, settings)
+        self.assertEqual(ctx.exception.status_code, 402)
+
+    def test_answers_at_plan_cap_passes(self) -> None:
+        from app.services import rate_limit
+
+        settings = _make_settings(rate_limit_answers_per_day=50)
+        user = CurrentUser(user_id="u", is_authenticated=True)
+        with patch.object(rate_limit, "get_supabase_client", return_value=self._mock_client(5)), \
+             patch.object(rate_limit.quota, "get_effective_plan", return_value=self._free_plan()):
+            rate_limit.enforce_rate_limit("answers", _FakeRequest(), user, settings)
+
+    def test_anonymous_skips_quota_but_keeps_abuse_cap(self) -> None:
+        from app.services import rate_limit
+
+        settings = _make_settings(rate_limit_answers_per_day=5)
+        anon = CurrentUser(user_id="owner", is_authenticated=False)
+        with patch.object(rate_limit, "get_supabase_client", return_value=self._mock_client(6)), \
+             patch.object(rate_limit.quota, "get_effective_plan") as gp:
+            with self.assertRaises(HTTPException) as ctx:
+                rate_limit.enforce_rate_limit("answers", _FakeRequest(), anon, settings)
+            gp.assert_not_called()
+        self.assertEqual(ctx.exception.status_code, 429)
+
+    def test_owner_bypasses_quota(self) -> None:
+        from app.services import rate_limit
+
+        settings = _make_settings(rate_limit_answers_per_day=50)
+        owner = CurrentUser(
+            user_id="00000000-0000-0000-0000-0000000000ff", is_authenticated=True
+        )
+        with patch.object(rate_limit, "get_supabase_client", return_value=self._mock_client(6)), \
+             patch.object(rate_limit.quota, "get_effective_plan") as gp:
+            rate_limit.enforce_rate_limit("answers", _FakeRequest(), owner, settings)
+            gp.assert_not_called()
+
+    def test_quota_toggle_off_skips_plan_check(self) -> None:
+        from app.services import rate_limit
+
+        settings = _make_settings(
+            rate_limit_answers_per_day=50, quota_enforcement_enabled=False
+        )
+        user = CurrentUser(user_id="u", is_authenticated=True)
+        with patch.object(rate_limit, "get_supabase_client", return_value=self._mock_client(6)), \
+             patch.object(rate_limit.quota, "get_effective_plan") as gp:
+            rate_limit.enforce_rate_limit("answers", _FakeRequest(), user, settings)
+            gp.assert_not_called()
+
+    def test_plan_lookup_failure_fails_open(self) -> None:
+        from app.services import rate_limit
+
+        settings = _make_settings(rate_limit_answers_per_day=50)
+        user = CurrentUser(user_id="u", is_authenticated=True)
+        with patch.object(rate_limit, "get_supabase_client", return_value=self._mock_client(6)), \
+             patch.object(rate_limit.quota, "get_effective_plan", return_value=None):
+            rate_limit.enforce_rate_limit("answers", _FakeRequest(), user, settings)
+
+    def test_docs_retention_cap_raises_402(self) -> None:
+        from app.services import rate_limit
+
+        settings = _make_settings(rate_limit_docs_per_day=30)
+        user = CurrentUser(user_id="u", is_authenticated=True)
+        with patch.object(rate_limit, "get_supabase_client", return_value=self._mock_client(1)), \
+             patch.object(rate_limit.quota, "get_effective_plan", return_value=self._free_plan()), \
+             patch.object(rate_limit.quota, "count_active_documents", return_value=10):
+            with self.assertRaises(HTTPException) as ctx:
+                rate_limit.enforce_rate_limit("docs", _FakeRequest(), user, settings)
+        self.assertEqual(ctx.exception.status_code, 402)
+
+    def test_docs_under_retention_cap_passes(self) -> None:
+        from app.services import rate_limit
+
+        settings = _make_settings(rate_limit_docs_per_day=30)
+        user = CurrentUser(user_id="u", is_authenticated=True)
+        with patch.object(rate_limit, "get_supabase_client", return_value=self._mock_client(1)), \
+             patch.object(rate_limit.quota, "get_effective_plan", return_value=self._free_plan()), \
+             patch.object(rate_limit.quota, "count_active_documents", return_value=9):
+            rate_limit.enforce_rate_limit("docs", _FakeRequest(), user, settings)
+
+    def test_doc_count_failure_fails_open(self) -> None:
+        from app.services import rate_limit
+
+        settings = _make_settings(rate_limit_docs_per_day=30)
+        user = CurrentUser(user_id="u", is_authenticated=True)
+        with patch.object(rate_limit, "get_supabase_client", return_value=self._mock_client(1)), \
+             patch.object(rate_limit.quota, "get_effective_plan", return_value=self._free_plan()), \
+             patch.object(rate_limit.quota, "count_active_documents", return_value=None):
+            rate_limit.enforce_rate_limit("docs", _FakeRequest(), user, settings)
 
 
 if __name__ == "__main__":

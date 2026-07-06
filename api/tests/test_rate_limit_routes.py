@@ -55,6 +55,11 @@ class AnswerRateLimitTest(unittest.TestCase):
         app.dependency_overrides[get_current_user] = lambda: self.authed
         app.dependency_overrides[get_settings] = lambda: _settings()
         self.client = TestClient(app, raise_server_exceptions=False)
+        quota_patcher = patch(
+            "app.services.quota.get_effective_plan", return_value=None
+        )
+        quota_patcher.start()
+        self.addCleanup(quota_patcher.stop)
 
     def tearDown(self) -> None:
         app.dependency_overrides.clear()
@@ -72,6 +77,11 @@ class UploadRateLimitTest(unittest.TestCase):
         app.dependency_overrides[get_current_user] = lambda: self.authed
         app.dependency_overrides[get_settings] = lambda: _settings()
         self.client = TestClient(app, raise_server_exceptions=False)
+        quota_patcher = patch(
+            "app.services.quota.get_effective_plan", return_value=None
+        )
+        quota_patcher.start()
+        self.addCleanup(quota_patcher.stop)
 
     def tearDown(self) -> None:
         app.dependency_overrides.clear()

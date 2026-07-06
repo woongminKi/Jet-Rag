@@ -9,6 +9,7 @@ Gemini 유료 키 전환 후 비용 폭주·남용을 방어한다. 카운터는
 - cap<=0: 무제한 (회복 토글).
 - increment-then-check: RPC 가 +1 후 새 count 반환, count>cap 이면 429.
 - fail-open: RPC/DB 실패 시 통과(로그 warning). DB blip 으로 정상 사용자 차단 회피.
+- W3 통합 게이트: increment 1회로 플랜 quota(402, 로그인 유저)·abuse cap(429) 순차 판정. OWNER 는 quota bypass.
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ from fastapi import Depends, HTTPException, Request, status
 from app.auth.dependencies import CurrentUser, get_current_user
 from app.config import Settings, get_settings
 from app.db import get_supabase_client
+from app.services import quota
 
 logger = logging.getLogger(__name__)
 
@@ -67,15 +69,24 @@ def enforce_rate_limit(
     current_user: CurrentUser,
     settings: Settings,
 ) -> None:
-    """metric 의 일일 카운터를 1 증가시키고 상한 초과 시 429.
+    """metric 의 일일 카운터를 1 증가시키고 상한 초과 시 402/429.
 
-    부수효과: usage_counters 카운터 +1 (auth_enabled=true & cap>0 일 때만).
+    통합 게이트 (수익화 W3) — increment 1회 결과로 두 상한을 순차 판정:
+      ① 플랜 quota (로그인 유저만, OWNER 제외) → 402 + 업그레이드 안내
+      ② abuse cap (ENV, 익명 포함 전체) → 429
+    부수효과: usage_counters +1 (auth_enabled=true & 게이트 활성 시).
     """
     if not settings.auth_enabled:
         return  # 로컬 dev — 기존 동작 보존.
-    cap = _cap_for_metric(metric, settings)
-    if cap <= 0:
-        return  # 무제한 (회복 토글).
+
+    abuse_cap = _cap_for_metric(metric, settings)
+    quota_active = (
+        settings.quota_enforcement_enabled
+        and current_user.is_authenticated
+        and current_user.user_id != (settings.owner_user_id or "")
+    )
+    if abuse_cap <= 0 and not quota_active:
+        return  # 완전 무제한 (회복 토글).
 
     user_key = build_user_key(current_user, request)
     period_date = datetime.now(timezone.utc).date().isoformat()
@@ -93,11 +104,40 @@ def enforce_rate_limit(
         logger.warning("rate_limit RPC 실패 — fail-open (metric=%s): %s", metric, exc)
         return
 
-    if isinstance(new_count, int) and new_count > cap:
+    # ---- ① 플랜 quota (W3, 402) ----
+    if quota_active:
+        plan = quota.get_effective_plan(current_user.user_id)
+        if plan is not None:
+            if (
+                metric == _METRIC_ANSWERS
+                and plan.answers_per_day > 0
+                and isinstance(new_count, int)
+                and new_count > plan.answers_per_day
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail=(
+                        f"{plan.code} 플랜의 일일 답변 한도({plan.answers_per_day}회)를 "
+                        "초과했습니다. 내일 다시 이용하시거나 Pro 로 업그레이드해 주세요."
+                    ),
+                )
+            if metric == _METRIC_DOCS and plan.max_documents > 0:
+                doc_count = quota.count_active_documents(current_user.user_id)
+                if doc_count is not None and doc_count >= plan.max_documents:
+                    raise HTTPException(
+                        status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                        detail=(
+                            f"{plan.code} 플랜의 보유 문서 한도({plan.max_documents}개)에 "
+                            "도달했습니다. 기존 문서를 삭제하시거나 Pro 로 업그레이드해 주세요."
+                        ),
+                    )
+
+    # ---- ② abuse cap (W2, 429) ----
+    if isinstance(new_count, int) and abuse_cap > 0 and new_count > abuse_cap:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=(
-                f"일일 사용 한도({cap}회)를 초과했습니다. "
+                f"일일 사용 한도({abuse_cap}회)를 초과했습니다. "
                 "내일 다시 시도하시거나 Pro 로 업그레이드해 주세요."
             ),
         )
