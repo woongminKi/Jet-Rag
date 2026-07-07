@@ -31,9 +31,11 @@ from app.routers import (  # noqa: E402 — logger 부트스트랩 후 import (i
     admin_router,
     answer_router,
     auth_router,
+    billing_cron_router,
     documents_router,
     email_ingest_router,
     me_router,
+    payments_router,
     search_router,
     stats_router,
 )
@@ -166,6 +168,9 @@ app.include_router(auth_router)
 app.include_router(me_router)
 # 수익화 W4 — 이메일 인제스트 webhook (Cloudflare Email Worker 전용, shared secret 인증).
 app.include_router(email_ingest_router)
+# 수익화 W5-6 — 카카오페이 정기결제(로그인 유저) + 배치 cron endpoint(shared secret).
+app.include_router(payments_router)
+app.include_router(billing_cron_router)
 
 
 @app.get("/", include_in_schema=False)
