@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { LogIn, LogOut, Upload, Zap } from 'lucide-react';
+import { LogIn, LogOut, Settings, Upload, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/lib/auth/auth-context';
 import { signOut } from '@/lib/auth/actions';
@@ -48,18 +48,26 @@ export function Header() {
           </Button>
 
           {user ? (
-            <form action={signOut} className="hidden sm:block">
-              <Button
-                type="submit"
-                size="sm"
-                variant="ghost"
-                className="gap-2"
-                title={user.email ?? '로그아웃'}
-              >
-                <LogOut className="h-4 w-4" />
-                <span className="hidden lg:inline">로그아웃</span>
+            <>
+              <Button asChild size="sm" variant="ghost" className="hidden gap-2 sm:flex">
+                <Link href="/settings">
+                  <Settings className="h-4 w-4" />
+                  <span className="hidden lg:inline">설정</span>
+                </Link>
               </Button>
-            </form>
+              <form action={signOut} className="hidden sm:block">
+                <Button
+                  type="submit"
+                  size="sm"
+                  variant="ghost"
+                  className="gap-2"
+                  title={user.email ?? '로그아웃'}
+                >
+                  <LogOut className="h-4 w-4" />
+                  <span className="hidden lg:inline">로그아웃</span>
+                </Button>
+              </form>
+            </>
           ) : (
             <Button
               asChild

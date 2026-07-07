@@ -3,9 +3,10 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Search, Upload } from 'lucide-react';
+import { Search, Settings, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { useAuth } from '@/lib/auth/auth-context';
 
 interface HeaderMobilePanelProps {
   onClose: () => void;
@@ -14,6 +15,7 @@ interface HeaderMobilePanelProps {
 export function HeaderMobilePanel({ onClose }: HeaderMobilePanelProps) {
   const router = useRouter();
   const [query, setQuery] = useState('');
+  const { user } = useAuth();
 
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -47,6 +49,14 @@ export function HeaderMobilePanel({ onClose }: HeaderMobilePanelProps) {
             파일 업로드
           </Link>
         </Button>
+        {user && (
+          <Button asChild size="sm" variant="ghost" className="w-full gap-2" onClick={onClose}>
+            <Link href="/settings">
+              <Settings className="h-4 w-4" />
+              설정
+            </Link>
+          </Button>
+        )}
       </div>
     </div>
   );
