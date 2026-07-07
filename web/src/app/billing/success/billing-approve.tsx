@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { apiPost } from '@/lib/api/client';
+import { apiGet, apiPost } from '@/lib/api/client';
 
 type Phase = 'processing' | 'done' | 'error';
 
@@ -16,8 +16,17 @@ export function BillingApprove({ pgToken }: { pgToken: string | null }) {
       .then(() => {
         if (!cancelled) setPhase('done');
       })
-      .catch(() => {
-        if (!cancelled) setPhase('error');
+      .catch(async () => {
+        // 새로고침 등으로 approve 가 실패(예: 409 pending 없음)해도 이미 구독됐을 수 있다.
+        // /me/subscription 을 재확인해 active/past_due 면 성공으로 처리.
+        try {
+          const sub = await apiGet<{ status: string }>('/me/subscription');
+          if (!cancelled) {
+            setPhase(sub.status === 'active' || sub.status === 'past_due' ? 'done' : 'error');
+          }
+        } catch {
+          if (!cancelled) setPhase('error');
+        }
       });
     return () => {
       cancelled = true;
