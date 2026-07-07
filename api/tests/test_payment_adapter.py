@@ -85,6 +85,42 @@ class KakaoPayImplTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             KakaoPayImpl(secret_key="", cid="TCSUBSCRIP")
 
+    def test_network_error_raises_payment_error(self) -> None:
+        import httpx
+        with patch("app.adapters.impl.kakaopay.httpx.Client") as MockClient:
+            client = MockClient.return_value.__enter__.return_value
+            client.post.side_effect = httpx.ConnectTimeout("boom")
+            with self.assertRaises(PaymentError):
+                self._impl().inactivate(sid="S1")
+
+    def test_ready_incomplete_response_raises(self) -> None:
+        with patch("app.adapters.impl.kakaopay.httpx.Client") as MockClient:
+            client = MockClient.return_value.__enter__.return_value
+            client.post.return_value = _resp(200, {"tid": "T1"})  # redirect 없음
+            with self.assertRaises(PaymentError):
+                self._impl().ready(
+                    partner_order_id="u1", partner_user_id="u1",
+                    approval_url="https://a", cancel_url="https://c", fail_url="https://f",
+                )
+
+    def test_non_dict_json_raises(self) -> None:
+        with patch("app.adapters.impl.kakaopay.httpx.Client") as MockClient:
+            client = MockClient.return_value.__enter__.return_value
+            client.post.return_value = _resp(200, ["unexpected"])
+            with self.assertRaises(PaymentError):
+                self._impl().inactivate(sid="S1")
+
+    def test_subscribe_sends_correct_body(self) -> None:
+        with patch("app.adapters.impl.kakaopay.httpx.Client") as MockClient:
+            client = MockClient.return_value.__enter__.return_value
+            client.post.return_value = _resp(200, {"aid": "A1"})
+            self._impl().subscribe(sid="S9", partner_order_id="u1-20260707", partner_user_id="u1")
+            _, kwargs = client.post.call_args
+            self.assertEqual(kwargs["json"]["sid"], "S9")
+            self.assertEqual(kwargs["json"]["cid"], "TCSUBSCRIP")
+            self.assertEqual(kwargs["json"]["total_amount"], 6900)
+            self.assertEqual(kwargs["json"]["partner_order_id"], "u1-20260707")
+
 
 if __name__ == "__main__":
     unittest.main()

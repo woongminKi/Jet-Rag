@@ -44,15 +44,28 @@ class KakaoPayImpl:
                     f"{self._base_url}{path}", headers=self._headers, json=body
                 )
         except httpx.HTTPError as exc:
+            logger.warning("KakaoPay 네트워크 오류 (%s): %s", path, exc)
             raise PaymentError(f"KakaoPay 네트워크 오류 ({path}): {exc}") from exc
         if resp.status_code >= 400:
+            logger.warning("KakaoPay %s 오류 (%s)", resp.status_code, path)
             raise PaymentError(
                 f"KakaoPay {resp.status_code} ({path}): {resp.text[:200]}"
             )
-        return resp.json()
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise PaymentError(
+                f"KakaoPay 응답 파싱 실패 ({path}): {resp.text[:200]}"
+            ) from exc
+        if not isinstance(data, dict):
+            raise PaymentError(
+                f"KakaoPay 예상치 못한 응답 타입 ({path}): {type(data).__name__}"
+            )
+        return data
 
     def ready(
-        self, *, partner_order_id, partner_user_id, approval_url, cancel_url, fail_url
+        self, *, partner_order_id: str, partner_user_id: str,
+        approval_url: str, cancel_url: str, fail_url: str,
     ) -> ReadyResult:
         data = self._post(
             "/online/v1/payment/ready",
@@ -75,7 +88,7 @@ class KakaoPayImpl:
         return ReadyResult(tid=data["tid"], redirect_url=redirect)
 
     def approve(
-        self, *, tid, partner_order_id, partner_user_id, pg_token
+        self, *, tid: str, partner_order_id: str, partner_user_id: str, pg_token: str,
     ) -> ApproveResult:
         data = self._post(
             "/online/v1/payment/approve",
@@ -94,7 +107,7 @@ class KakaoPayImpl:
             )
         return ApproveResult(sid=sid, tid=tid)
 
-    def subscribe(self, *, sid, partner_order_id, partner_user_id) -> None:
+    def subscribe(self, *, sid: str, partner_order_id: str, partner_user_id: str) -> None:
         self._post(
             "/online/v1/payment/subscription",
             {
@@ -109,7 +122,7 @@ class KakaoPayImpl:
             },
         )
 
-    def inactivate(self, *, sid) -> None:
+    def inactivate(self, *, sid: str) -> None:
         self._post(
             "/online/v1/payment/manage/subscription/inactive",
             {"cid": self._cid, "sid": sid},
