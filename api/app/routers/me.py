@@ -13,7 +13,8 @@ from app.auth import (
     CurrentUserDep,
     require_authenticated_user,
 )
-from app.services import quota
+from app.config import Settings, get_settings
+from app.services import email_ingest, quota
 
 router = APIRouter(
     prefix="/me",
@@ -45,3 +46,39 @@ def me_plan(current_user: CurrentUserDep = LEGACY_DEFAULT_USER) -> MePlanRespons
         answers_used_today=quota.get_todays_count(current_user.user_id, "answers"),
         documents_count=quota.count_active_documents(current_user.user_id) or 0,
     )
+
+
+class EmailIngestAddressResponse(BaseModel):
+    address: str
+    pro: bool
+    plan_code: str
+
+
+def _address_response(row: dict, user_id: str, settings: Settings) -> EmailIngestAddressResponse:
+    plan = quota.get_effective_plan(user_id)
+    return EmailIngestAddressResponse(
+        address=email_ingest.build_address(row["token"], settings.email_ingest_domain),
+        pro=plan is not None and plan.code == "pro",
+        plan_code=plan.code if plan is not None else "unknown",
+    )
+
+
+@router.get("/email-ingest", response_model=EmailIngestAddressResponse)
+def me_email_ingest(
+    current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
+    settings: Settings = Depends(get_settings),
+) -> EmailIngestAddressResponse:
+    """본인 이메일 인제스트 주소 (없으면 발급). 수신 처리 자체는 Pro 전용 —
+    Free 유저에게도 주소는 보여주되 pro=false 로 업그레이드 안내를 띄운다."""
+    row = email_ingest.get_or_create_address(current_user.user_id, current_user.email)
+    return _address_response(row, current_user.user_id, settings)
+
+
+@router.post("/email-ingest/rotate", response_model=EmailIngestAddressResponse)
+def me_email_ingest_rotate(
+    current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
+    settings: Settings = Depends(get_settings),
+) -> EmailIngestAddressResponse:
+    """토큰 재발급 — 스팸·유출 대응. 구 주소 즉시 무효."""
+    row = email_ingest.rotate_address(current_user.user_id, current_user.email)
+    return _address_response(row, current_user.user_id, settings)

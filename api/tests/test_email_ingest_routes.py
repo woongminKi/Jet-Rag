@@ -10,6 +10,7 @@ os.environ.setdefault("GEMINI_API_KEY", "dummy-test-token")
 
 from fastapi.testclient import TestClient
 
+from app.auth.dependencies import CurrentUser, get_current_user
 from app.config import Settings, get_settings
 from app.main import app
 from app.services.quota import PlanLimits
@@ -143,6 +144,53 @@ class EmailWebhookTest(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["status"], "ignored")
+
+
+class MeEmailIngestTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.authed = CurrentUser(
+            user_id="uid-1", email="user@gmail.com", is_authenticated=True
+        )
+        app.dependency_overrides[get_current_user] = lambda: self.authed
+        app.dependency_overrides[get_settings] = lambda: _settings()
+        self.client = TestClient(app, raise_server_exceptions=False)
+
+    def tearDown(self) -> None:
+        app.dependency_overrides.clear()
+
+    def test_get_returns_address_and_plan(self) -> None:
+        with patch(
+            "app.routers.me.email_ingest.get_or_create_address", return_value=_ADDR
+        ), patch("app.routers.me.quota.get_effective_plan", return_value=_PRO):
+            resp = self.client.get("/me/email-ingest")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["address"], "u-abc12345@in.woong-s.com")
+        self.assertTrue(body["pro"])
+
+    def test_get_free_user_sees_pro_false(self) -> None:
+        with patch(
+            "app.routers.me.email_ingest.get_or_create_address", return_value=_ADDR
+        ), patch("app.routers.me.quota.get_effective_plan", return_value=_FREE):
+            resp = self.client.get("/me/email-ingest")
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.json()["pro"])
+
+    def test_rotate_returns_new_address(self) -> None:
+        new_addr = {"user_id": "uid-1", "token": "zzz99999", "owner_email": "user@gmail.com"}
+        with patch(
+            "app.routers.me.email_ingest.rotate_address", return_value=new_addr
+        ), patch("app.routers.me.quota.get_effective_plan", return_value=_PRO):
+            resp = self.client.post("/me/email-ingest/rotate")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["address"], "u-zzz99999@in.woong-s.com")
+
+    def test_anonymous_401(self) -> None:
+        app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+            user_id="owner", is_authenticated=False
+        )
+        resp = self.client.get("/me/email-ingest")
+        self.assertEqual(resp.status_code, 401)
 
 
 if __name__ == "__main__":
