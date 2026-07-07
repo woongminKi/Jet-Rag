@@ -137,6 +137,13 @@ class EmailWebhookTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["status"], "ignored")
 
+    def test_invalid_to_address_ignored(self) -> None:
+        resp = self.client.post(
+            "/ingest/email", json=_payload(to="noreply@example.com"), headers=self.headers
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["status"], "ignored")
+
 
 if __name__ == "__main__":
     unittest.main()
