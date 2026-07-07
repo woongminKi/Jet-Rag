@@ -95,6 +95,21 @@ class Settings:
     # 수익화 W4 (2026-07-06) — 이메일 인제스트. secret 빈값 = 기능 비활성 (webhook 503).
     email_webhook_secret: str = ""
     email_ingest_domain: str = "in.woong-s.com"
+    # 수익화 W5-6 (2026-07-07) — 카카오페이 정기결제.
+    # 미설정(빈값) = 결제 기능 비활성 (payments 라우터 503). 무중단 graceful.
+    # 미래 토스/Stripe swap 대비 provider 문자열(어댑터 factory 가 dispatch).
+    payment_provider: str = "kakaopay"
+    # KakaoPay open-api SECRET_KEY. Railway ENV. 심사 전 sandbox, 후 production 키.
+    kakaopay_secret_key: str = ""
+    # 정기결제 CID. default sandbox TCSUBSCRIP — 심사 승인 후 production CID 로 ENV 교체.
+    kakaopay_cid: str = "TCSUBSCRIP"
+    # SID(빌링키) Fernet 암호화 키 (Fernet.generate_key(), 32-byte urlsafe base64).
+    # 빈값이면 billing_crypto 가 RuntimeError (평문 SID 저장 금지 — fail-fast).
+    billing_key_encryption_key: str = ""
+    # billing 배치 endpoint(POST /billing/run) 호출 gate. 빈값 = endpoint 503.
+    billing_cron_secret: str = ""
+    # 결제창 redirect base (프론트 도메인). approve/cancel/fail URL 조립.
+    billing_redirect_base: str = "https://jetrag.woong-s.com"
 
 
 # 잠정값 — 데이터 누적 부족 시 fallback. master plan §7.5 default 채택.
@@ -213,4 +228,12 @@ def get_settings() -> Settings:
         quota_enforcement_enabled=_parse_bool("JETRAG_QUOTA_ENFORCEMENT_ENABLED", True),
         email_webhook_secret=os.environ.get("JETRAG_EMAIL_WEBHOOK_SECRET", ""),
         email_ingest_domain=os.environ.get("JETRAG_EMAIL_INGEST_DOMAIN", "in.woong-s.com"),
+        payment_provider=os.environ.get("JETRAG_PAYMENT_PROVIDER", "kakaopay"),
+        kakaopay_secret_key=os.environ.get("JETRAG_KAKAOPAY_SECRET_KEY", ""),
+        kakaopay_cid=os.environ.get("JETRAG_KAKAOPAY_CID", "TCSUBSCRIP"),
+        billing_key_encryption_key=os.environ.get("JETRAG_BILLING_KEY_ENCRYPTION_KEY", ""),
+        billing_cron_secret=os.environ.get("JETRAG_BILLING_CRON_SECRET", ""),
+        billing_redirect_base=os.environ.get(
+            "JETRAG_BILLING_REDIRECT_BASE", "https://jetrag.woong-s.com"
+        ),
     )
