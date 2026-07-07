@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { apiGet, apiPost } from '@/lib/api/client';
 
 interface MePlan {
@@ -22,20 +22,28 @@ export default function SettingsPage() {
   const [email, setEmail] = useState<EmailIngest | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rotating, setRotating] = useState(false);
+  const rotatedRef = useRef(false);
 
   useEffect(() => {
+    let cancelled = false;
     Promise.all([
       apiGet<MePlan>('/me/plan'),
       apiGet<EmailIngest>('/me/email-ingest'),
     ])
       .then(([p, e]) => {
+        if (cancelled) return;
         setPlan(p);
-        setEmail(e);
+        // 재발급이 먼저 완료된 경우 늦게 도착한 초기 주소로 덮어쓰지 않음.
+        if (!rotatedRef.current) setEmail(e);
         setError(null);
       })
-      .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : '설정을 불러오지 못했습니다. 로그인 상태를 확인해 주세요.');
+      .catch(() => {
+        if (cancelled) return;
+        setError('설정을 불러오지 못했습니다. 로그인 상태를 확인해 주세요.');
       });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const rotate = async () => {
@@ -43,6 +51,7 @@ export default function SettingsPage() {
     setRotating(true);
     try {
       const e = await apiPost<EmailIngest>('/me/email-ingest/rotate');
+      rotatedRef.current = true;
       setEmail(e);
     } catch {
       setError('주소 재발급에 실패했습니다. 잠시 후 다시 시도해 주세요.');
