@@ -77,6 +77,38 @@ class PlanLimits:
     answers_per_day: int
 
 
+@dataclass(frozen=True)
+class SubscriptionView:
+    plan_code: str
+    status: str  # active | past_due | canceled | none(행 없음)
+    current_period_end: str | None
+
+
+def get_subscription_view(user_id: str) -> SubscriptionView:
+    """구독 표시용 (/me/subscription). 행 없음/실패 → free·none (fail-open)."""
+    try:
+        rows = (
+            get_supabase_client()
+            .table("subscriptions")
+            .select("plan_code, status, current_period_end")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+            .data
+        ) or []
+        if not rows:
+            return SubscriptionView(plan_code="free", status="none", current_period_end=None)
+        r = rows[0]
+        return SubscriptionView(
+            plan_code=r.get("plan_code", "free"),
+            status=r.get("status", "none"),
+            current_period_end=r.get("current_period_end"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("구독 조회 실패 (user=%s): %s", user_id, exc)
+        return SubscriptionView(plan_code="free", status="none", current_period_end=None)
+
+
 def get_effective_plan(user_id: str) -> PlanLimits | None:
     """유저의 유효 플랜 한도. 실패 시 None (fail-open).
 

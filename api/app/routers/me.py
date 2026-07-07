@@ -48,6 +48,25 @@ def me_plan(current_user: CurrentUserDep = LEGACY_DEFAULT_USER) -> MePlanRespons
     )
 
 
+class MeSubscriptionResponse(BaseModel):
+    plan_code: str
+    status: str
+    current_period_end: str | None = None
+
+
+@router.get("/subscription", response_model=MeSubscriptionResponse)
+def me_subscription(
+    current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
+) -> MeSubscriptionResponse:
+    """본인 구독 상태 — 프론트 SubscriptionSection 이 다음 결제일·해지 버튼 렌더에 사용."""
+    view = quota.get_subscription_view(current_user.user_id)
+    return MeSubscriptionResponse(
+        plan_code=view.plan_code,
+        status=view.status,
+        current_period_end=view.current_period_end,
+    )
+
+
 class EmailIngestAddressResponse(BaseModel):
     address: str
     pro: bool
