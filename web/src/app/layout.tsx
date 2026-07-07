@@ -3,6 +3,7 @@ import { Noto_Sans_KR } from 'next/font/google';
 import { Toaster } from 'sonner';
 import './globals.css';
 import { Header } from '@/components/jet-rag/header';
+import { Footer } from '@/components/jet-rag/footer';
 import { ActiveDocsProvider } from '@/lib/contexts/active-docs-context';
 import { AuthProvider } from '@/lib/auth/auth-context';
 import { getCurrentUser } from '@/lib/auth/session';
@@ -62,6 +63,7 @@ export default async function RootLayout({
           <ActiveDocsProvider>
             <Header />
             {children}
+            <Footer />
           </ActiveDocsProvider>
         </AuthProvider>
         <Toaster position="top-right" richColors closeButton />
