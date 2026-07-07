@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hmac
 import logging
 from datetime import datetime, timezone
 
@@ -33,12 +34,17 @@ class EmailWebhookPayload(BaseModel):
     to: str
     from_: str = Field(alias="from")
     subject: str = ""
-    attachments: list[EmailAttachmentIn] = []
+    attachments: list[EmailAttachmentIn] = Field(default_factory=list)
 
 
 class EmailWebhookResponse(BaseModel):
     status: str  # "processed" | "ignored"
     results: list[dict] = []
+
+
+def _safe(value: str, limit: int = 128) -> str:
+    """이메일 헤더 유래 값 로그용 — 개행 escape + 길이 제한 (log injection 방어)."""
+    return value.replace("\r", "\\r").replace("\n", "\\n")[:limit]
 
 
 def _increment_docs_counter(user_id: str) -> None:
@@ -68,7 +74,7 @@ def email_webhook(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="이메일 인제스트가 비활성 상태입니다 (JETRAG_EMAIL_WEBHOOK_SECRET 미설정).",
         )
-    if x_jetrag_webhook_secret != settings.email_webhook_secret:
+    if not hmac.compare_digest(x_jetrag_webhook_secret, settings.email_webhook_secret):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="webhook secret 불일치",
@@ -76,7 +82,7 @@ def email_webhook(
 
     token = email_ingest.parse_token(payload.to)
     if token is None:
-        logger.warning("email_ingest ignore — 잘못된 수신 주소: %s", payload.to)
+        logger.warning("email_ingest ignore — 잘못된 수신 주소: %s", _safe(payload.to))
         return EmailWebhookResponse(status="ignored")
 
     addr = email_ingest.lookup_by_token(token)
@@ -87,7 +93,7 @@ def email_webhook(
     if not email_ingest.sender_allowed(payload.from_, addr.get("owner_email")):
         logger.warning(
             "email_ingest ignore — 발신자 불일치 (user=%s, from=%s)",
-            addr["user_id"], payload.from_,
+            addr["user_id"], _safe(payload.from_),
         )
         return EmailWebhookResponse(status="ignored")
 
