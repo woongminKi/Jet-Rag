@@ -9,6 +9,9 @@ os.environ.setdefault("GEMINI_API_KEY", "dummy-test-token")
 
 from app.adapters.payment import ApproveResult, PaymentError, ReadyResult
 from app.adapters.impl.kakaopay import KakaoPayImpl
+from app.adapters.impl.kakaopay import KakaoPayImpl as _KPImpl
+from app.adapters.payment_factory import get_payment_provider
+from app.config import get_settings
 
 
 class PaymentTypesTest(unittest.TestCase):
@@ -120,6 +123,26 @@ class KakaoPayImplTest(unittest.TestCase):
             self.assertEqual(kwargs["json"]["cid"], "TCSUBSCRIP")
             self.assertEqual(kwargs["json"]["total_amount"], 6900)
             self.assertEqual(kwargs["json"]["partner_order_id"], "u1-20260707")
+
+
+class PaymentFactoryTest(unittest.TestCase):
+    def tearDown(self) -> None:
+        get_settings.cache_clear()
+
+    def test_kakaopay_default(self) -> None:
+        with patch.dict(os.environ, {
+            "JETRAG_PAYMENT_PROVIDER": "kakaopay",
+            "JETRAG_KAKAOPAY_SECRET_KEY": "sk_test",
+        }):
+            get_settings.cache_clear()
+            provider = get_payment_provider()
+        self.assertIsInstance(provider, _KPImpl)
+
+    def test_unknown_provider_raises(self) -> None:
+        with patch.dict(os.environ, {"JETRAG_PAYMENT_PROVIDER": "bogus"}):
+            get_settings.cache_clear()
+            with self.assertRaises(ValueError):
+                get_payment_provider()
 
 
 if __name__ == "__main__":
