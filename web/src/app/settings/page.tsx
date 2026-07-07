@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { apiGet, apiPost } from '@/lib/api/client';
+import { SubscriptionSection } from '@/components/jet-rag/subscription-section';
 
 interface MePlan {
   plan_code: string;
@@ -78,6 +79,8 @@ export default function SettingsPage() {
           <p className="mt-2 text-sm text-gray-500">불러오는 중…</p>
         )}
       </section>
+
+      <SubscriptionSection />
 
       <section className="mt-6 rounded-lg border p-4">
         <h2 className="font-semibold">이메일로 문서 보내기</h2>
