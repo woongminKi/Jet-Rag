@@ -281,6 +281,11 @@ flowchart LR
 
 **누적 검증**: 단위 테스트 1336+ PASS / production smoke 401·200·12 doc inbox / Storage 무인증 GET 400 / Railway deploy SUCCESS.
 
+### 수익화 sprint W2~W4 (2026-07-04 ~ 2026-07-07)
+- ✅ **W2 rate limit** — `usage_counters` 기반 per-user 일일 abuse cap (answers/docs, 429) + Gemini 유료 키 전환
+- ✅ **W3 plans/quota** — `plans`·`subscriptions` (마이그 022) + 플랜 한도 402 게이트 (`JETRAG_QUOTA_ENFORCEMENT_ENABLED`)
+- ✅ **W4 이메일 인제스트 (Pro 전용)** — Cloudflare Email Routing catch-all `@in.woong-s.com` → Email Worker (`workers/email-ingest`) → `POST /ingest/email` (공유 시크릿 + 발신자 화이트리스트 + Pro 게이트 fail-closed) → 업로드 동일 게이트 (확장자·50MB·magic·dedup) → `source_channel='email'` 인제스트. `/settings` 에서 주소 확인·재발급. 실메일 e2e PASS (수집→청킹→임베딩 83초)
+
 ---
 
 ## 데모
