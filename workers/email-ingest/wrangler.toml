@@ -1,0 +1,8 @@
+name = "jetrag-email-ingest"
+main = "src/index.js"
+compatibility_date = "2026-07-01"
+
+[vars]
+JETRAG_API_URL = "https://jetrag-api.woong-s.com"
+# JETRAG_EMAIL_WEBHOOK_SECRET 는 var 가 아니라 secret:
+#   npx wrangler secret put JETRAG_EMAIL_WEBHOOK_SECRET

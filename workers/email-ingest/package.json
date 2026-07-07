@@ -1,0 +1,9 @@
+{
+  "name": "jetrag-email-ingest",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Jet-Rag W4 — Email Routing 수신 메일을 백엔드 webhook 으로 전달",
+  "dependencies": {
+    "postal-mime": "^2.3.2"
+  }
+}
