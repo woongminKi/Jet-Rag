@@ -172,37 +172,54 @@ class EmailIngestSettingsTest(unittest.TestCase):
 class KakaoPayConfigTest(unittest.TestCase):
     """수익화 W5-6 — 카카오페이 결제 ENV 파싱."""
 
-    def test_defaults_when_unset(self) -> None:
-        for key in (
-            "JETRAG_PAYMENT_PROVIDER",
-            "JETRAG_KAKAOPAY_SECRET_KEY",
-            "JETRAG_KAKAOPAY_CID",
-            "JETRAG_BILLING_KEY_ENCRYPTION_KEY",
-            "JETRAG_BILLING_CRON_SECRET",
-            "JETRAG_BILLING_REDIRECT_BASE",
-        ):
+    _KEYS = (
+        "JETRAG_PAYMENT_PROVIDER",
+        "JETRAG_KAKAOPAY_SECRET_KEY",
+        "JETRAG_KAKAOPAY_CID",
+        "JETRAG_BILLING_KEY_ENCRYPTION_KEY",
+        "JETRAG_BILLING_CRON_SECRET",
+        "JETRAG_BILLING_REDIRECT_BASE",
+    )
+
+    def _clear(self) -> None:
+        for key in self._KEYS:
             os.environ.pop(key, None)
         get_settings.cache_clear()
-        s = get_settings()
-        self.assertEqual(s.payment_provider, "kakaopay")
-        self.assertEqual(s.kakaopay_secret_key, "")
-        self.assertEqual(s.kakaopay_cid, "TCSUBSCRIP")
-        self.assertEqual(s.billing_key_encryption_key, "")
-        self.assertEqual(s.billing_cron_secret, "")
-        self.assertEqual(s.billing_redirect_base, "https://jetrag.woong-s.com")
+
+    def test_defaults(self) -> None:
+        self._clear()
+        try:
+            s = get_settings()
+            self.assertEqual(s.payment_provider, "kakaopay")
+            self.assertEqual(s.kakaopay_secret_key, "")
+            self.assertEqual(s.kakaopay_cid, "TCSUBSCRIP")
+            self.assertEqual(s.billing_key_encryption_key, "")
+            self.assertEqual(s.billing_cron_secret, "")
+            self.assertEqual(s.billing_redirect_base, "https://jetrag.woong-s.com")
+        finally:
+            self._clear()
 
     def test_env_override(self) -> None:
-        os.environ["JETRAG_KAKAOPAY_CID"] = "CID_PROD_1234"
-        os.environ["JETRAG_KAKAOPAY_SECRET_KEY"] = "sk_test"
+        overrides = {
+            "JETRAG_PAYMENT_PROVIDER": "toss",
+            "JETRAG_KAKAOPAY_SECRET_KEY": "sk_test",
+            "JETRAG_KAKAOPAY_CID": "CID_PROD_1234",
+            "JETRAG_BILLING_KEY_ENCRYPTION_KEY": "fernkey",
+            "JETRAG_BILLING_CRON_SECRET": "cronsec",
+            "JETRAG_BILLING_REDIRECT_BASE": "https://example.test",
+        }
+        os.environ.update(overrides)
         get_settings.cache_clear()
         try:
             s = get_settings()
-            self.assertEqual(s.kakaopay_cid, "CID_PROD_1234")
+            self.assertEqual(s.payment_provider, "toss")
             self.assertEqual(s.kakaopay_secret_key, "sk_test")
+            self.assertEqual(s.kakaopay_cid, "CID_PROD_1234")
+            self.assertEqual(s.billing_key_encryption_key, "fernkey")
+            self.assertEqual(s.billing_cron_secret, "cronsec")
+            self.assertEqual(s.billing_redirect_base, "https://example.test")
         finally:
-            os.environ.pop("JETRAG_KAKAOPAY_CID", None)
-            os.environ.pop("JETRAG_KAKAOPAY_SECRET_KEY", None)
-            get_settings.cache_clear()
+            self._clear()
 
 
 if __name__ == "__main__":
