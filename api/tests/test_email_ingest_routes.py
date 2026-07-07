@@ -1,4 +1,4 @@
-"""수익화 W4 — POST /ingest/email webhook 통합 테스트. 외부 I/O 0."""
+"""수익화 W4 — POST /ingest/email webhook + /me/email-ingest 라우트 테스트. 외부 I/O 0."""
 from __future__ import annotations
 
 import base64
