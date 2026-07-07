@@ -1,6 +1,8 @@
 name = "jetrag-email-ingest"
 main = "src/index.js"
 compatibility_date = "2026-07-01"
+# 이메일 전용 Worker — HTTP 진입점 불필요, workers.dev 노출 끔.
+workers_dev = false
 
 [vars]
 JETRAG_API_URL = "https://jetrag-api.woong-s.com"
