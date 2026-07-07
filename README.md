@@ -281,10 +281,27 @@ flowchart LR
 
 **누적 검증**: 단위 테스트 1336+ PASS / production smoke 401·200·12 doc inbox / Storage 무인증 GET 400 / Railway deploy SUCCESS.
 
-### 수익화 sprint W2~W4 (2026-07-04 ~ 2026-07-07)
+### 수익화 sprint W2~W6 (2026-07-04 ~ 2026-07-08)
 - ✅ **W2 rate limit** — `usage_counters` 기반 per-user 일일 abuse cap (answers/docs, 429) + Gemini 유료 키 전환
 - ✅ **W3 plans/quota** — `plans`·`subscriptions` (마이그 022) + 플랜 한도 402 게이트 (`JETRAG_QUOTA_ENFORCEMENT_ENABLED`)
 - ✅ **W4 이메일 인제스트 (Pro 전용)** — Cloudflare Email Routing catch-all `@in.woong-s.com` → Email Worker (`workers/email-ingest`) → `POST /ingest/email` (공유 시크릿 + 발신자 화이트리스트 + Pro 게이트 fail-closed) → 업로드 동일 게이트 (확장자·50MB·magic·dedup) → `source_channel='email'` 인제스트. `/settings` 에서 주소 확인·재발급. 실메일 e2e PASS (수집→청킹→임베딩 83초)
+- ✅ **W5-6 카카오페이 정기결제 (Pro 구독)** — `PaymentProvider` Protocol + `KakaoPayImpl` 어댑터(ready→approve→subscription/inactive), SID(빌링키) Fernet 암호화 저장, 상태 머신 `active → past_due(7일 grace) → canceled`(Free 강등·데이터 보존). `/payments/subscribe/{ready,approve,cancel}` + 매일 배치(`scripts/billing_charge.py`, Railway cron)가 만료 자동결제 + grace sweep. 이중청구 멱등 마커. `/settings` 구독/해지 UI + `/billing/{success,fail,cancel}` + 공용 footer(이용약관·개인정보처리방침). 재청구 방지·재구독 다운그레이드 방지 코드리뷰 반영.
+
+#### 정기결제 운영 (W5-6)
+
+**월 자동결제 — Railway cron**
+1. Railway 프로젝트 → API 서비스 → Settings → Cron Schedule.
+2. 스케줄 `0 18 * * *` (UTC 18:00 = KST 새벽 3시).
+3. 커맨드: `cd api && uv run python scripts/billing_charge.py`
+4. cron 서비스에 결제 ENV(.env.example W5-6 블록) + `SUPABASE_*` 주입. **Railway ENV 변경은 좌상단 보라색 Deploy(Apply changes) 클릭해야 반영됨.**
+
+**외부 cron fallback** — `POST https://<api>/billing/run` 을 `X-Billing-Cron-Secret: <JETRAG_BILLING_CRON_SECRET>` 헤더로 호출 (cron-job.org / Cloudflare Workers cron).
+
+**회복(rollback) 토글**
+- 결제 전면 비활성: `JETRAG_KAKAOPAY_SECRET_KEY` 또는 `JETRAG_BILLING_KEY_ENCRYPTION_KEY` 빈값 → payments 503 (기존 구독 DB 상태는 유지).
+- 배치 중단: `JETRAG_BILLING_CRON_SECRET` 빈값 → `/billing/run` 503 (또는 Railway cron 스케줄 off).
+- 심사 지연 시 수동 결제 fallback: `POST /admin/subscriptions` 로 admin 이 `status=active` 수동 upsert (마이그 022 경로).
+- 마이그레이션: `api/migrations/025_billing_subscription.sql` 를 Supabase SQL Editor 에서 적용해야 정기결제 동작 (pending_tid·past_due_since·payment_history).
 
 ---
 
