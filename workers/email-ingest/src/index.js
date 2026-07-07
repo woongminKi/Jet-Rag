@@ -25,7 +25,9 @@ export default {
       }));
       const payload = {
         to: message.to,
-        from: message.from,
+        // 봉투(MAIL FROM)가 아니라 파싱된 From 헤더 — 포워딩 메일러 경유 시
+        // 봉투 발신자가 달라져 화이트리스트가 오탐하므로 헤더를 우선한다.
+        from: email.from?.address || message.from,
         subject: email.subject || '',
         attachments,
       };
