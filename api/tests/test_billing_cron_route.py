@@ -22,6 +22,7 @@ def _settings(**over) -> Settings:
         doc_budget_usd=0.1, daily_budget_usd=0.5, sliding_24h_budget_usd=0.5,
         budget_krw_per_usd=1380.0, vision_need_score_enabled=True, vision_page_cap_per_doc=50,
         billing_cron_secret="cron_secret_x",
+        kakaopay_secret_key="sk_test", billing_key_encryption_key="k",
     )
     base.update(over)
     return Settings(**base)
@@ -51,6 +52,13 @@ class BillingCronRouteTest(unittest.TestCase):
     def test_run_503_when_secret_unset(self) -> None:
         app.dependency_overrides[get_settings] = lambda: _settings(billing_cron_secret="")
         resp = self.client.post("/billing/run", headers={"X-Billing-Cron-Secret": "x"})
+        self.assertEqual(resp.status_code, 503)
+
+    def test_run_503_when_payment_keys_unset(self) -> None:
+        app.dependency_overrides[get_settings] = lambda: _settings(
+            kakaopay_secret_key="", billing_key_encryption_key=""
+        )
+        resp = self.client.post("/billing/run", headers={"X-Billing-Cron-Secret": "cron_secret_x"})
         self.assertEqual(resp.status_code, 503)
 
 

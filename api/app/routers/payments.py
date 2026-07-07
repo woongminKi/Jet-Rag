@@ -127,6 +127,7 @@ def billing_run(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="cron secret 불일치"
         )
+    _ensure_enabled(settings)
     charge = billing.charge_due_subscriptions()
     sweep = billing.sweep_past_due()
     return BillingRunResponse(
