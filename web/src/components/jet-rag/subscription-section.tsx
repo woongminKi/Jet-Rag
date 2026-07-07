@@ -67,7 +67,7 @@ export function SubscriptionSection() {
   };
 
   const cancel = async () => {
-    if (!window.confirm('구독을 해지하면 다음 결제일부터 Free 로 전환됩니다. 계속할까요?')) return;
+    if (!window.confirm('구독을 해지하면 즉시 Free 로 전환됩니다(문서는 보존). 계속할까요?')) return;
     setBusy(true);
     setError(null);
     try {
