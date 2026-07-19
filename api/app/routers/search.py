@@ -611,6 +611,8 @@ class SearchResponse(BaseModel):
     query_parsed: QueryParsedInfo  # W3 신규 — 기존 필드는 변경 X (backward compatible)
     # 진단 정보 dict.
     # - meta_fast path 진입 시: {path, matched_kind, tags, title_ilike, date_range} (S3 D2).
+    # - meta_fast 0건 → RAG fallback 시 (UX-1): 이 dict 는 RAG path 형태로 채워지고,
+    #   구분은 `X-Search-Path: meta_fast_fallback` 헤더로 함 (본문 meta 는 RAG 와 동일 shape).
     # - RAG path 시 (M1 W-1(a)): decomposition 4키 —
     #   decomposition_fired(bool) / decomposed_subqueries(list[str]) /
     #   decomposition_cost_usd(float) / decomposition_cached(bool).
@@ -679,11 +681,16 @@ def search(
     # S3 D2 — 메타 필터 fast path 분기 (planner v0.1 §C).
     # - 단일 문서 스코프 (doc_id) / mode ablation 시에는 RAG path 강제 (의도 우선).
     # - is_meta_only 가 plan 반환 시 임베딩·RPC·reranker 호출 0 으로 바로 응답.
+    # - UX-1 (2026-05-19 발견) — "SK 사업보고서 매출" 처럼 문서유형어(doc-suffix)+
+    #   내용어가 섞인 query 는 title ILIKE 가 0건이 되는데, 예전엔 그대로 빈 결과를
+    #   반환해 "어렴풋한 기억으로 검색" 기획 의도에 반하는 트랩이었음. 0건이면
+    #   fast path 를 버리고 RAG path 로 계속 진행 (fallback). non-zero 동작은 불변.
     # ------------------------------------------------------------------
+    meta_fast_fallback = False
     if doc_id is None and mode == "hybrid":
         plan = meta_filter_fast_path.is_meta_only(clean_q)
         if plan is not None:
-            return _run_meta_fast_path(
+            fast_result = _run_meta_fast_path(
                 clean_q=clean_q,
                 plan=plan,
                 limit=limit,
@@ -692,8 +699,13 @@ def search(
                 response=response,
                 start_t=start_t,
             )
+            if fast_result is not None:
+                return fast_result
+            meta_fast_fallback = True
     if response is not None:
-        response.headers["X-Search-Path"] = "rag"
+        response.headers["X-Search-Path"] = (
+            "meta_fast_fallback" if meta_fast_fallback else "rag"
+        )
     if doc_type is not None and doc_type not in _DOC_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -932,7 +944,9 @@ def search(
     #   이후 파이프라인 (chunk cap·MMR·enrich) 은 rpc_rows dict 만 보므로 불변.
     #   `_round_robin_cross_doc_chunks` (eval) 가 라벨 doc 만 평가하므로 production
     #   측에서 noise doc 제거만 해도 cross_doc R@10 자연 향상 (W-1(a) P2 함정 회피).
-    #   meta_fast_path return 은 게이트 ② mode=hybrid 후속이라 도달 안 함 (불변).
+    #   meta_fast_path 가 non-zero 매칭 시엔 위에서 이미 return 해 여기 도달 안 함.
+    #   0건 fallback (UX-1) 시엔 mode=hybrid 그대로라 게이트 ②를 만족 — 일반 hybrid
+    #   query 와 동일하게 이 로직도 정상 적용됨 (의도된 동작, cross_doc 로직과 무관).
     # ------------------------------------------------------------------
     cross_doc_scoped_applied = False
     cross_doc_candidate_doc_ids: list[str] = []
@@ -1638,14 +1652,19 @@ def _run_meta_fast_path(
     user_id: str,
     response: Response | None,
     start_t: float,
-) -> SearchResponse:
+) -> SearchResponse | None:
     """S3 D2 — 메타 필터 fast path 실행 + SearchResponse 조립.
 
     임베딩/RPC/reranker 호출 0. documents SELECT 1회.
     응답 schema 는 RAG path 와 동일 (matched_chunks 는 빈 list — 메타만 매칭이라
     개별 청크 매칭 정보는 없음).
+
+    rows 가 0건이면 None 반환 — 호출자(search())가 RAG path 로 fallback (UX-1).
+    이 경우 X-Search-Path 헤더는 여기서 설정하지 않음 (호출자가 fallback 값으로 설정).
     """
     rows = meta_filter_fast_path.run(plan, user_id=user_id)
+    if not rows:
+        return None
     paged = rows[offset : offset + limit]
 
     items: list[SearchHit] = []
