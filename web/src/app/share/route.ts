@@ -3,14 +3,21 @@
  *
  * 흐름:
  *   1. Android Chrome PWA 가 설치되면 manifest 의 `share_target.action=/share` 가
- *      OS 공유 시트에 "Jet-Rag" 항목으로 등록된다 (Adobe Acrobat 등에서 직접 공유 가능).
- *   2. 사용자가 PDF 를 공유하면 브라우저는 `POST /share` 로 multipart/form-data 를 보낸다.
+ *      OS 공유 시트에 "Jet-Rag" 항목으로 등록된다 (Adobe Acrobat, 갤러리, 한글 뷰어 등에서 직접 공유 가능).
+ *   2. 사용자가 파일을 공유하면 브라우저는 `POST /share` 로 multipart/form-data 를 보낸다.
  *   3. 본 route 가 검증 후 동일 multipart 를 백엔드 `POST {API_BASE}/documents` 로 forward 한다.
  *
  * 안전 조건:
  *   - POST only — GET 은 /docs 로 redirect (PC 사용자가 URL 직접 타이핑해도 무해).
  *   - Service Worker 없음 — fetch 캐싱 안 함, PC 검색/답변 결과 stale 위험 0.
  *   - 백엔드 0 수정 — 본 route 가 단순 forward 만 수행, 기존 /documents 라우터 재사용.
+ *
+ * 허용 포맷 (P1 확대) — PDF/HWP/HWPX/JPG/PNG/HEIC. 백엔드 `documents.py` 의
+ * `_ALLOWED_EXTENSIONS` 화이트리스트(pdf/hwp/hwpx/docx/pptx/jpg/jpeg/png/heic/txt/md) 중
+ * 모바일 공유에 의미 있는 서브셋만 여기서 게이트. HWP/HWPX 는 브라우저가 MIME 을
+ * `application/octet-stream` 등 비표준으로 보내는 경우가 많아 **확장자를 우선 기준**으로,
+ * MIME 은 보조 검증으로만 사용한다. 실제 콘텐츠 검증(매직바이트)은 백엔드 `_input_gate.py`
+ * 가 이미 수행하므로 여기서는 확장자 게이트만.
  *
  * iOS 한계:
  *   - iOS Safari 는 PWA share_target 미지원 (2026-05 기준 ITP 정책 유지).
@@ -25,8 +32,65 @@ import { NextResponse } from 'next/server';
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
-const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50MB — 기획서 §10 의 PDF 단일 업로드 한도.
-const ACCEPTED_MIME = 'application/pdf';
+const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50MB — 기획서 §10 의 단일 업로드 한도.
+
+// 확장자 우선 화이트리스트 (백엔드 _ALLOWED_EXTENSIONS 의 모바일 공유 서브셋).
+const ACCEPTED_EXTENSIONS = new Set([
+  '.pdf',
+  '.hwp',
+  '.hwpx',
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.heic',
+]);
+// MIME 은 보조 검증 — 확장자가 화이트리스트에 있으면 MIME 불일치(예: HWP 를
+// application/octet-stream 으로 보내는 브라우저)를 이유로 거절하지 않는다.
+const ACCEPTED_MIME_HINTS = new Set([
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/heic',
+  'image/heif',
+]);
+
+const ACCEPTED_FORMATS_LABEL = 'PDF, HWP, HWPX, JPG, PNG, HEIC';
+
+function getExtension(fileName: string): string {
+  const idx = fileName.lastIndexOf('.');
+  return idx === -1 ? '' : fileName.slice(idx).toLowerCase();
+}
+
+function isAcceptedFile(file: File): boolean {
+  const ext = getExtension(file.name || '');
+  if (ACCEPTED_EXTENSIONS.has(ext)) {
+    return true;
+  }
+  // 확장자를 못 읽은 극히 드문 케이스 대비 — MIME 힌트로 보조 판정.
+  return ACCEPTED_MIME_HINTS.has(file.type);
+}
+
+// 확장자가 없는(또는 화이트리스트 밖) 파일명으로 forward 하면 백엔드가 확장자로
+// doc_type 을 못 판별해 400 처리 — MIME 힌트로 안전한 확장자를 보정.
+const _MIME_TO_EXT: Record<string, string> = {
+  'application/pdf': '.pdf',
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  // 백엔드 화이트리스트에 .heif 는 없음 — HEIC 로 정규화.
+  'image/heic': '.heic',
+  'image/heif': '.heic',
+};
+
+function resolveForwardFileName(file: File): string {
+  const rawName = file.name || '';
+  const ext = getExtension(rawName);
+  if (ACCEPTED_EXTENSIONS.has(ext)) {
+    return rawName;
+  }
+  const fallbackExt = _MIME_TO_EXT[file.type] ?? '.pdf';
+  const base = rawName.replace(/\.[^./\\]*$/, '') || 'shared';
+  return `${base}${fallbackExt}`;
+}
 
 /**
  * GET — PWA share_target 은 POST 만 사용. PC 사용자가 URL 직접 입력하거나
@@ -52,11 +116,11 @@ export async function POST(request: Request): Promise<Response> {
 
   const file = pickFile(formData);
   if (!file) {
-    return jsonError(400, '공유된 항목에서 PDF 파일을 찾을 수 없습니다.');
+    return jsonError(400, `공유된 항목에서 파일을 찾을 수 없습니다 (${ACCEPTED_FORMATS_LABEL}).`);
   }
 
-  if (file.type !== ACCEPTED_MIME) {
-    return jsonError(400, 'PDF 파일만 업로드할 수 있습니다.');
+  if (!isAcceptedFile(file)) {
+    return jsonError(400, `${ACCEPTED_FORMATS_LABEL} 파일만 업로드할 수 있습니다.`);
   }
 
   if (file.size > MAX_FILE_SIZE_BYTES) {
@@ -72,7 +136,7 @@ export async function POST(request: Request): Promise<Response> {
   const accessToken = await getServerForwardToken();
 
   const forwardForm = new FormData();
-  forwardForm.append('file', file, file.name || 'shared.pdf');
+  forwardForm.append('file', file, resolveForwardFileName(file));
 
   const fetchHeaders: HeadersInit = {};
   if (accessToken) {

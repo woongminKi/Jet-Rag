@@ -31,7 +31,15 @@
       "files": [
         {
           "name": "file",
-          "accept": ["application/pdf"]
+          "accept": [
+            "application/pdf",
+            ".hwp",
+            ".hwpx",
+            "image/jpeg",
+            "image/png",
+            "image/heic",
+            "image/heif"
+          ]
         }
       ]
     }
