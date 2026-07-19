@@ -141,7 +141,8 @@ export function UploadItem({
               업로드 실패: {data.uploadError}
             </p>
           ) : data.duplicated ? (
-            <p className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning-foreground">
+            // 다크모드 스팟 체크 — text-warning-foreground(solid 배경 전용) → text-warning 로 수정.
+            <p className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">
               이미 같은 내용이 등록되어 있어요. 기존 문서와 연결됩니다.
             </p>
           ) : (

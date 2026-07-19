@@ -50,13 +50,16 @@ const CONFIDENCE_META: Record<
 > = {
   high: {
     label: '신뢰도 높음',
-    tone: 'border-success/40 bg-success/10 text-success-foreground',
+    // 다크모드 스팟 체크 — bg-success/10 은 옅은 반투명 tint 라 실제 대비는 배경(다크: 거의
+    // 페이지색)과 이루어짐. -foreground(고정 다크 텍스트)는 solid 배경 전용이라 다크 배경에서
+    // 텍스트가 거의 안 보이는 문제 → text-success(색상 자체, 채도 높아 양쪽 배경에서 대비 확보)로 수정.
+    tone: 'border-success/40 bg-success/10 text-success',
     icon: ShieldCheck,
     description: '여러 출처 (3개 이상) 와 풍부한 답변',
   },
   medium: {
     label: '신뢰도 보통',
-    tone: 'border-warning/40 bg-warning/10 text-warning-foreground',
+    tone: 'border-warning/40 bg-warning/10 text-warning',
     icon: ShieldQuestion,
     description: '출처가 적거나 답변이 짧음 — 직접 검증 권장',
   },

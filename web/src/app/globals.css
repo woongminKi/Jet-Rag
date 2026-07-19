@@ -57,25 +57,31 @@
 }
 
 .dark {
-  --background: oklch(0.16 0.015 250);
-  --foreground: oklch(0.95 0.005 250);
-  --card: oklch(0.2 0.015 250);
-  --card-foreground: oklch(0.95 0.005 250);
-  --popover: oklch(0.2 0.015 250);
-  --popover-foreground: oklch(0.95 0.005 250);
-  --primary: oklch(0.6 0.15 250);
-  --primary-foreground: oklch(0.99 0 0);
-  --secondary: oklch(0.25 0.015 250);
-  --secondary-foreground: oklch(0.95 0.005 250);
-  --muted: oklch(0.25 0.01 250);
-  --muted-foreground: oklch(0.65 0.02 250);
-  --accent: oklch(0.6 0.18 180);
-  --accent-foreground: oklch(0.99 0 0);
-  --destructive: oklch(0.55 0.2 25);
-  --destructive-foreground: oklch(0.99 0 0);
-  --border: oklch(0.28 0.015 250);
-  --input: oklch(0.28 0.015 250);
-  --ring: oklch(0.6 0.15 250);
+  /* design.md §2.3/§2.4 다크 컬럼 — Wanted DS 다크 시맨틱 표 전체 채택.
+     (추정) 표시 값은 Figma 다크 프레임 재추출 전 시작점(§8-2 후속 필요), 나머지는 확정치. */
+  --background: #1B1C1E;
+  --foreground: #F7F7F8;
+  --card: #171719; /* (추정) — coolNeutral-10, elevated 재검증 필요(design.md §2.3) */
+  --card-foreground: #F7F7F8;
+  --popover: #171719;
+  --popover-foreground: #F7F7F8;
+  --primary: #3385FF;
+  --primary-foreground: #FFFFFF;
+  --secondary: #2E2F33; /* (추정) */
+  --secondary-foreground: #F7F7F8;
+  --muted: #212225; /* (추정) */
+  --muted-foreground: rgba(247, 247, 248, 0.61); /* (추정) — semantic_opacity_dark 61% */
+  /* --accent 다크값 cyan-60(#28D0ED, design.md §2.4) — Jet-Rag 자체 판단(라이트와 동일 축).
+     --accent-foreground: cyan-60 배경에 흰 텍스트는 대비 ~1.85:1로 AA/UI 3:1 모두 미달(라이트의
+     cyan-50 x 흰 텍스트 2.25:1과 동일한 문제 구조) → label-normal(다크, #171719)로 대비 확보
+     (실측 ~9.5:1, 라이트와 동일 판단 유지). */
+  --accent: #28D0ED;
+  --accent-foreground: #171719;
+  --destructive: #FF4242;
+  --destructive-foreground: #FFFFFF;
+  --border: rgba(112, 115, 124, 0.32);
+  --input: rgba(112, 115, 124, 0.32);
+  --ring: #3385FF;
   --chart-1: oklch(0.6 0.15 250);
   --chart-2: oklch(0.6 0.18 180);
   --chart-3: oklch(0.65 0.15 140);
@@ -89,14 +95,18 @@
   --sidebar-accent-foreground: oklch(0.95 0.005 250);
   --sidebar-border: oklch(0.28 0.015 250);
   --sidebar-ring: oklch(0.6 0.15 250);
-  --success: oklch(0.6 0.18 150);
-  --success-foreground: oklch(0.99 0 0);
-  --warning: oklch(0.75 0.15 80);
-  --warning-foreground: oklch(0.2 0 0);
+  /* status 색은 라이트와 동일 hex 유지 — 채도가 높아 다크 배경에서도 대비 충분(design.md §2.3),
+     별도 다크 변형 불필요. -foreground 페어도 라이트와 동일 판단 유지 — 배경 hex 자체가 라이트와
+     같아 대비 문제(흰 텍스트 AA 미달)가 그대로 재현되기 때문. */
+  --success: #00BF40;
+  --success-foreground: #171719;
+  --warning: #FF9200;
+  --warning-foreground: #171719;
 }
 
 @theme inline {
-  --font-sans: var(--font-sans), 'Noto Sans KR', system-ui, sans-serif;
+  /* design.md §2.5/§3.1 — Pretendard Variable 전환. fallback 체인은 §2.5 표 순서 그대로. */
+  --font-sans: var(--font-sans), 'Pretendard Variable', Pretendard, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
   --font-mono: 'Geist Mono', 'Geist Mono Fallback';
   --color-background: var(--background);
   --color-foreground: var(--foreground);

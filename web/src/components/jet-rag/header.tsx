@@ -10,6 +10,7 @@ import { ActiveDocsIndicator } from './active-docs-indicator';
 import { HeaderSearch } from './header-search';
 import { HeaderMobileToggle } from './header-mobile-toggle';
 import { HeaderMobilePanel } from './header-mobile-panel';
+import { ThemeToggle } from './theme-toggle';
 
 export function Header() {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -81,6 +82,9 @@ export function Header() {
               </Link>
             </Button>
           )}
+
+          {/* design.md §8 — 데스크톱 영역 다크모드 토글. 모바일 등가는 HeaderMobilePanel. */}
+          <ThemeToggle className="hidden sm:flex" />
 
           <HeaderMobileToggle
             open={mobileOpen}

@@ -76,8 +76,10 @@ export function RouterSignalsBadge({ meta }: RouterSignalsBadgeProps) {
     <div
       className={cn(
         'space-y-1.5 rounded-md border px-3 py-2 text-xs',
+        // 다크모드 스팟 체크 — bg-warning/5 반투명 배경엔 text-warning-foreground(solid 배경
+        // 전용, 다크에서 거의 검정) 대신 색상 자체인 text-warning 사용 (양쪽 배경에서 대비 확보).
         lowConfidence
-          ? 'border-warning/40 bg-warning/5 text-warning-foreground'
+          ? 'border-warning/40 bg-warning/5 text-warning'
           : 'border-border bg-muted/40 text-muted-foreground',
       )}
       role="note"

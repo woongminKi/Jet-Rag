@@ -7,6 +7,7 @@ import { Search, Settings, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useAuth } from '@/lib/auth/auth-context';
+import { ThemeToggle } from './theme-toggle';
 
 interface HeaderMobilePanelProps {
   onClose: () => void;
@@ -57,6 +58,8 @@ export function HeaderMobilePanel({ onClose }: HeaderMobilePanelProps) {
             </Link>
           </Button>
         )}
+        {/* design.md §8 — 모바일 등가 다크모드 토글 (데스크톱은 header.tsx). */}
+        <ThemeToggle variant="full" />
       </div>
     </div>
   );
