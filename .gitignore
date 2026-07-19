@@ -80,3 +80,5 @@ logs/
 .claude/scheduled_tasks.lock
 evals/*.bak.*
 evals/golden_v2.csv.bak.*
+.gstack/
+.omc/
