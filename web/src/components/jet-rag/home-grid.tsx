@@ -27,11 +27,13 @@ export function HomeGrid({
     <section className="container mx-auto px-4 py-6 md:px-6 md:py-12">
       {/* W26 — mobile gap 축소 (gap-4) / desktop 은 기존 gap-8 유지 */}
       <div className="grid gap-4 md:gap-6 lg:grid-cols-3 lg:gap-8">
-        <div className="space-y-4 md:space-y-6 lg:col-span-2">
+        {/* min-w-0 — grid 아이템 기본 min-width:auto 가 카드 min-content(긴 nowrap 콘텐츠)로
+            트랙을 밀어내 모바일에서 우측 ~21px 잘림 유발 (Android 412px 실측). 컬럼 래퍼에도 강제. */}
+        <div className="min-w-0 space-y-4 md:space-y-6 lg:col-span-2">
           <NewArrivalsCard documents={recentDocuments} />
           <RecentlyViewedCard />
         </div>
-        <div className="space-y-4 md:space-y-6">
+        <div className="min-w-0 space-y-4 md:space-y-6">
           <PopularTagsCard tags={stats.popular_tags} />
           <MyDocStatsCard stats={stats} />
           <ChunksStatsCard stats={stats} />
