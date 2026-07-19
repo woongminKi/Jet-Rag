@@ -4,25 +4,33 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: oklch(0.985 0.002 250);
-  --foreground: oklch(0.2 0.02 250);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.2 0.02 250);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.2 0.02 250);
-  --primary: oklch(0.45 0.15 250);
-  --primary-foreground: oklch(0.99 0 0);
-  --secondary: oklch(0.96 0.01 250);
-  --secondary-foreground: oklch(0.25 0.02 250);
-  --muted: oklch(0.96 0.005 250);
-  --muted-foreground: oklch(0.5 0.02 250);
-  --accent: oklch(0.55 0.18 180);
-  --accent-foreground: oklch(0.99 0 0);
-  --destructive: oklch(0.55 0.2 25);
-  --destructive-foreground: oklch(0.99 0 0);
-  --border: oklch(0.91 0.01 250);
-  --input: oklch(0.91 0.01 250);
-  --ring: oklch(0.45 0.15 250);
+  /* design.md §2.4 — Wanted DS 시맨틱 토큰(라이트) 그대로 채택. oklch 임의값 →
+     출처가 명확한 hex/rgba 로 전환. .dark 블록은 다크 값이 전량 (추정) 이라 후속 보류(§9). */
+  --background: #FFFFFF;
+  --foreground: #171719;
+  --card: #FFFFFF;
+  --card-foreground: #171719;
+  --popover: #FFFFFF;
+  --popover-foreground: #171719;
+  --primary: #0066FF;
+  --primary-foreground: #FFFFFF;
+  --secondary: #F7F7F8;
+  --secondary-foreground: #171719;
+  --muted: #F7F7F8;
+  --muted-foreground: rgba(55, 56, 60, 0.61);
+  /* --accent 는 Wanted 시맨틱 표에 대응 토큰이 없어 Jet-Rag 자체 판단(cyan-50, design.md §2.4 각주).
+     --accent-foreground 는 표에 없는 페어 — cyan-50(#00BDDE) 배경에 흰 텍스트는 대비 2.25:1로
+     WCAG AA(3:1 UI/4.5:1 텍스트) 미달 → label-normal(다크)로 대비 확보(실측 ~8.2:1). */
+  --accent: #00BDDE;
+  --accent-foreground: #171719;
+  --destructive: #FF4242;
+  /* --destructive-foreground 는 표에 없는 페어 — 흰 텍스트 대비 3.44:1(대형 텍스트/UI 요소
+     3:1 기준 통과), button.tsx/badge.tsx 의 destructive variant 가 이미 text-white 하드코딩
+     중이라 그 관례와 정합하도록 흰색 유지(기존 관계 유지 판단). */
+  --destructive-foreground: #FFFFFF;
+  --border: #E1E2E4;
+  --input: #E1E2E4;
+  --ring: #0066FF;
   --chart-1: oklch(0.45 0.15 250);
   --chart-2: oklch(0.55 0.18 180);
   --chart-3: oklch(0.6 0.15 140);
@@ -37,10 +45,15 @@
   --sidebar-accent-foreground: oklch(0.25 0.02 250);
   --sidebar-border: oklch(0.91 0.01 250);
   --sidebar-ring: oklch(0.45 0.15 250);
-  --success: oklch(0.55 0.18 150);
-  --success-foreground: oklch(0.99 0 0);
-  --warning: oklch(0.7 0.15 80);
-  --warning-foreground: oklch(0.25 0 0);
+  /* --success-foreground 는 표에 없는 페어 — green-50(#00BF40) 배경에 흰 텍스트는 대비
+     2.47:1로 AA 미달(기존 오클치 값도 동일 문제 — answer-view.tsx 의 bg-success/10 처럼
+     옅은 배경에선 거의 안 보임) → label-normal 로 전환, 실측 ~7.5:1. */
+  --success: #00BF40;
+  --success-foreground: #171719;
+  /* --warning-foreground 는 원래도 다크 톤이었음(orange-50 배경에 흰 텍스트는 2.24:1로 AA
+     미달) — 방향은 유지하고 값만 hex 체계로 통일. */
+  --warning: #FF9200;
+  --warning-foreground: #171719;
 }
 
 .dark {

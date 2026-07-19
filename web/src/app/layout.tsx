@@ -35,8 +35,9 @@ export const metadata: Metadata = {
 
 // W28 — viewport-fit=cover: iOS notch / home-indicator safe-area 대응 (CSS 의 env(safe-area-inset-*) 활성화 조건).
 // themeColor: standalone PWA 의 상태바 / Android Chrome 의 주소창 색상.
+// design.md §2.4 — 앱이 라이트-only 라 헤더(흰 카드톤)와 정합되도록 흰색으로 통일 (manifest.json 의 theme_color/background_color 와 동일).
 export const viewport: Viewport = {
-  themeColor: '#0B0B0F',
+  themeColor: '#FFFFFF',
   width: 'device-width',
   initialScale: 1,
   viewportFit: 'cover',
