@@ -1,0 +1,7 @@
+{
+  "//": "Phase 0 스파이크 전용. @ohah/hwpjs 의 순수 WASM 빌드는 optionalDependency 라 자동 설치가 필요하다(nodeModulesDir=auto). 저장소 루트에 두면 web/ 툴체인과 헷갈리므로 scripts/ 로 스코프를 좁힌다.",
+  "nodeModulesDir": "auto",
+  "imports": {
+    "@ohah/hwpjs-wasm32-wasi": "npm:@ohah/hwpjs-wasm32-wasi@0.1.0-rc.10"
+  }
+}

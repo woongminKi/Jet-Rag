@@ -1,6 +1,9 @@
 {
   "imports": {
     "@supabase/functions-js": "jsr:@supabase/functions-js@^2",
-    "@supabase/server": "npm:@supabase/server@^1"
+    "@supabase/server": "npm:@supabase/server@^1",
+
+    "@ohah/hwpjs-wasm32-wasi": "npm:@ohah/hwpjs-wasm32-wasi@0.1.0-rc.10",
+    "@rhwp/core": "npm:@rhwp/core@0.8.4"
   }
 }

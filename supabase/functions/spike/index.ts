@@ -13,7 +13,9 @@
  *
  * 사용:
  *   GET  ?kind=noop                     하네스 자체 동작 확인
- *   POST ?kind=<hwp|pdf|docx|...>       body = 파일 바이트, Task 0.2~0.5 에서 case 추가
+ *   GET  ?kind=env                      런타임 능력 조사 (SAB / Worker / shared wasm memory)
+ *   GET  ?kind=hwp-import               HWP WASM 모듈 로드만 시도 (S1 의 진짜 관문)
+ *   POST ?kind=<hwp|hwp-rhwp>           body = HWP 바이트, 실제 파싱 + CPU 계측
  *
  * 응답의 cpuMs 가 2000 에 근접하면 그 작업 단위는 더 잘게 쪼개야 한다는 신호다.
  */
@@ -25,6 +27,43 @@ interface SpikeResult {
   bytesIn: number;
   error: string | null;
   result: unknown;
+}
+
+function errText(e: unknown): string {
+  return e instanceof Error ? `${e.name}: ${e.message}\n${e.stack ?? ""}` : String(e);
+}
+
+/**
+ * HWP WASM 후보 로드.
+ *
+ * `@ohah/hwpjs` 를 그냥 import 하면 안 된다 — Deno 는 `node` export 조건을 골라
+ * `dist/index.js`(NAPI 로더) → `hwpjs.linux-x64-gnu.node` 네이티브 애드온을 찾는다.
+ * Edge Functions 는 네이티브 애드온을 못 쓰므로 **wasm32-wasi 서브패키지를 직접 지목**한다.
+ * (로컬 Deno 2.8 실측: 순수 WASM 경로로 toJson 238,962자 / 15ms / RSS +35MB — 네이티브와 동일 출력)
+ *
+ * 이 경로가 Edge 에서 살아남으려면 emnapi 부트스트랩이 요구하는 3가지가 필요하다:
+ *   1. SharedArrayBuffer + shared WebAssembly.Memory(initial 4000페이지 = 250MB **예약**)
+ *   2. fetch(file:) 로 번들 내 .wasm 읽기
+ *   3. Worker 생성 (비동기 작업 풀 — 동기 호출만 쓰면 안 탈 수도 있다)
+ * 셋 중 하나라도 막히면 여기서 예외가 난다. 그 예외 전문이 곧 S1 판정 근거다.
+ */
+async function loadHwpWasm(): Promise<{ mod: Record<string, unknown>; importMs: number }> {
+  const t0 = performance.now();
+  const mod = await import("@ohah/hwpjs-wasm32-wasi") as Record<string, unknown>;
+  return { mod, importMs: performance.now() - t0 };
+}
+
+/** 대안 후보 — wasm-bindgen 계열이라 SAB/Worker 를 요구하지 않을 가능성이 있다. */
+async function loadRhwp(): Promise<{ mod: Record<string, unknown>; importMs: number }> {
+  const t0 = performance.now();
+  const mod = await import("@rhwp/core") as Record<string, unknown>;
+  const init = mod.default;
+  if (typeof init === "function") {
+    try {
+      await (init as () => Promise<unknown>)();
+    } catch { /* init 없이도 동작하는 빌드가 있어 실패를 삼킨다 */ }
+  }
+  return { mod, importMs: performance.now() - t0 };
 }
 
 /** 동기 블록만 감싸 CPU 시간을 근사한다. async 함수를 넘기지 말 것. */
@@ -68,8 +107,83 @@ async function handle(req: Request): Promise<SpikeResult> {
         return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };
       }
 
-      // Task 0.2 에서 "hwp" / "hwp-rhwp", 0.3 에서 "pdf",
-      // 0.4 에서 "fernet", 0.5 에서 "docx" case 가 여기 추가된다.
+      /** 런타임 능력 조사 — hwp 케이스가 실패했을 때 "무엇 때문인지"를 가르는 대조군. */
+      case "env": {
+        const probe = (fn: () => unknown) => {
+          try {
+            return fn();
+          } catch (e) {
+            return errText(e).split("\n")[0];
+          }
+        };
+        const { cpuMs, value } = measure(() => ({
+          denoVersion: (globalThis as { Deno?: { version?: { deno?: string } } }).Deno?.version?.deno ?? null,
+          hasSharedArrayBuffer: typeof SharedArrayBuffer !== "undefined",
+          hasWorker: typeof Worker !== "undefined",
+          // emnapi 가 실제로 요구하는 크기(4000페이지 = 250MB 예약)를 그대로 시험한다.
+          sharedMemory250MB: probe(() => {
+            new WebAssembly.Memory({ initial: 4000, maximum: 65536, shared: true });
+            return true;
+          }),
+          sharedMemory1Page: probe(() => {
+            new WebAssembly.Memory({ initial: 1, maximum: 2, shared: true });
+            return true;
+          }),
+        }));
+        return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };
+      }
+
+      /**
+       * S1 의 진짜 관문 — 파일 없이 GET 으로 부를 수 있다.
+       * 여기서 실패하면 `@ohah/hwpjs` 는 Edge 에서 쓸 수 없고, 품질 수치는 볼 필요도 없다.
+       */
+      case "hwp-import": {
+        const { mod, importMs } = await loadHwpWasm();
+        const { cpuMs, value } = measure(() => ({
+          importMs,
+          exports: Object.keys(mod),
+          hasToJson: typeof mod.toJson === "function",
+        }));
+        return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };
+      }
+
+      /** POST body = HWP 바이트. import 는 계측 밖(비동기), 파싱만 measure 로 감싼다. */
+      case "hwp": {
+        const { mod, importMs } = await loadHwpWasm();
+        const toJson = mod.toJson as (b: Uint8Array) => unknown;
+        const toHtml = mod.toHtml as (b: Uint8Array) => unknown;
+        const { cpuMs, value } = measure(() => {
+          const j = toJson(bytes);
+          const h = toHtml(bytes);
+          const js = typeof j === "string" ? j : JSON.stringify(j);
+          const hs = typeof h === "string" ? h : JSON.stringify(h);
+          // 본문 전체를 응답에 실으면 수백 KB 다. 판정에 필요한 건 길이와 앞머리뿐.
+          return {
+            importMs,
+            jsonChars: js.length,
+            htmlChars: hs.length,
+            jsonHead: js.slice(0, 300),
+          };
+        });
+        return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };
+      }
+
+      /** 대안 후보 판정. hwp 가 죽었을 때만 의미가 있다. */
+      case "hwp-rhwp": {
+        const { mod, importMs } = await loadRhwp();
+        const { cpuMs, value } = measure(() => {
+          const HwpDocument = mod.HwpDocument as (new (b: Uint8Array) => unknown) | undefined;
+          if (typeof HwpDocument !== "function") {
+            return { importMs, exports: Object.keys(mod), note: "HwpDocument 없음" };
+          }
+          const doc = new HwpDocument(bytes) as Record<string, unknown>;
+          const methods = Object.getOwnPropertyNames(Object.getPrototypeOf(doc));
+          return { importMs, exports: Object.keys(mod), methods };
+        });
+        return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };
+      }
+
+      // 0.3 에서 "pdf", 0.4 에서 "fernet", 0.5 에서 "docx" case 가 여기 추가된다.
 
       default:
         return {
@@ -86,7 +200,7 @@ async function handle(req: Request): Promise<SpikeResult> {
       ...base,
       cpuMs: null,
       wallMs: performance.now() - wallStart,
-      error: e instanceof Error ? `${e.name}: ${e.message}\n${e.stack ?? ""}` : String(e),
+      error: errText(e),
       result: null,
     };
   }
