@@ -109,18 +109,84 @@ CPU 2s 때문에 인제스트는 "문서 1건 = 9-stage 통째" → **"작업 1�
 
 **속도는 문제가 아니다** — 1~2ms 로 CPU 2s 예산 대비 약 1,000배 여유.
 
-## 미검증으로 남은 것 (다음 세션 최우선)
+## 2차 세션 — 미검증 #1·#2 처리 (커밋 `155cd92`, `a1e8dc9`)
 
-1. **`@ohah/hwpjs` 가 Linux/Deno Edge 에서 동작하는가.** 로컬 설치 시 `@ohah/hwpjs-darwin-arm64` 가 함께 초기화됐다 — 플랫폼별 **네이티브 바이너리**라면 Edge Functions(Linux, 네이티브 애드온 불가)에서 실패한다. `@rhwp/core` 는 `initSync`/`init_panic_hook` 이 있어 진짜 wasm-bindgen 으로 보인다. **배포해서 확인해야 결론 가능 — S1 의 진짜 관문은 여기다.**
-2. `toJson` 기반 텍스트 추출기의 실제 유사도 (0.9413 → 0.95 돌파 여부)
+### 미검증 #1 (네이티브냐 WASM 이냐) — **로컬에서 결론 남. 배포 불필요했다.**
+
+`@ohah/hwpjs` 는 **napi-rs 패키지**다. 패키지 실측(0.1.0-rc.10):
+
+| export 조건 | 진입점 | 정체 |
+|---|---|---|
+| `node` ← **Deno 가 기본 선택** | `dist/index.js` | NAPI 로더 → `hwpjs.<platform>.node` 네이티브 |
+| `browser` | `dist/browser.js` | `export * from '@ohah/hwpjs-wasm32-wasi'` |
+
+즉 1차 세션에서 본 `-darwin-arm64` 는 **기본 경로가 네이티브라서** 뜬 것이고,
+optionalDependencies 에 `@ohah/hwpjs-wasm32-wasi`(순수 WASM, 910KB) 가 **따로 있다.**
+서브패키지를 직접 지목하면 네이티브 없이 돈다 — 로컬 Deno 2.8 실측:
+
+| 지표 | 값 |
+|---|---|
+| import | 22ms |
+| `toJson` | 238,962자 / 15ms — **네이티브 경로와 완전히 동일** |
+| `toHtml` | 18,530자 / 9ms — 동일 |
+| RSS 증가 | import +13MB, 파싱 후 +35MB (총 88.6MB) |
+
+**속도·메모리 모두 Edge 예산(CPU 2s / 256MB) 안에 들어온다.**
+
+### 미검증 #2 (toJson 추출기 유사도) — **1.0000 PASS**
+
+`supabase/functions/_shared/hwp_text.ts` 신설. 기준선 대비 유사도 **1.0000** (기준 0.95).
+
+| 후보 | chars | 유사도 | 판정 |
+|---|---|---|---|
+| `extracted(toJson)` | 950 (36문단) | **1.0000** | PASS |
+| `toHtml` | 1,166 | 0.9413 | FAIL — 표 셀 8토큰 누락 |
+
+**도중 잡은 함정:** `ctrl_header` 의 `paragraphs` 는 `children` 의 **평탄화 사본**이다.
+둘 다 순회하면 문서 전체가 정확히 두 번 나온다(985자 → 2,141자, 중복 문단 36건).
+ctrl_header 19건 전부에서 `children` 텍스트 == `paragraphs` 텍스트임을 확인하고
+children 우선 + 빈 경우만 paragraphs 폴백으로 해결.
+
+채점 스크립트를 저장소에 남겼다: `api/scripts/spike_hwp_similarity.py`
+(`python3 api/scripts/spike_hwp_similarity.py <추출디렉토리>`)
+
+### 새로 드러난 것 — **hwpjs 는 HWP 5.x(OLE2) 전용이다**
+
+같은 추출기를 다른 확장자에 걸어본 결과:
+
+| 샘플 | 결과 |
+|---|---|
+| `law_sample1.hwp` (OLE2 `d0cf11e0`) | OK |
+| `law sample2.hwp` (실제로는 HWPML/XML) | `Invalid CFB file (wrong magic number): [ef,bb,bf,3c...]` |
+| `직제_규정...hwpx` (ZIP) | `Invalid CFB file (wrong magic number): [50,4b,3,4...]` |
+
+기준선 6샘플 중 **HWPX 2건 + HWPML 1건은 hwpjs 로 처리 못 한다.**
+Deno 이관 시 HWP 계열만 **3경로**(hwpjs / ZIP+XML / XML)가 필요하다 — Phase 1 공수 재산정 대상.
+
+### 스파이크 함수 확장 (배포 1회로 판정 끝나게 묶음)
+
+`?kind=env` / `hwp-import` / `hwp` / `hwp-rhwp` 추가. `deno check`·`deno lint` 통과.
+`env` 는 실패 시 원인을 가르는 대조군이다 — emnapi 부트스트랩이 요구하는
+SharedArrayBuffer / Worker / `WebAssembly.Memory({initial:4000, shared:true})`(250MB **예약**)를 각각 시험한다.
+
+### git 정리
+
+로컬 `main` 이 origin 보다 3커밋 앞서고 11커밋 뒤처져 있었다(1차 세션 `306399c` 가 미푸시 상태).
+`origin/main` 위로 rebase 후 push 완료 (백업 ref `backup/pre-rebase-20260824`).
+
+## 미검증으로 남은 것
+
+1. **Edge 런타임이 emnapi 부트스트랩을 허용하는가** — SAB / `fetch(file:)` 로 번들 내 .wasm 읽기 / Worker 생성.
+   로컬 Deno 는 셋 다 되지만 Edge 는 더 제한적이다. **`?kind=env` + `?kind=hwp-import` 한 번이면 판정된다.**
+2. HWPX/HWPML 경로 (위 참조) — 미착수
 3. S2(PDF span/bbox), S3(Fernet), S4(DOCX/PPTX), S5(메모리) — 전부 미착수
-4. `@ohah/hwpjs` 가 stdout 에 `DEBUG_LINESEG:` 디버그 로그를 뿜는다 — 운영 투입 시 로그 오염 확인 필요
-5. 기준선의 HWP 샘플이 985자로 작다. 더 큰 실문서로 재검증 권장 (현재 유사도 수치의 신뢰구간이 넓다)
+4. `DEBUG_LINESEG:` 디버그 로그가 stdout 을 오염시킨다 — 운영 투입 전 처리 필요
+5. HWP 샘플이 985자 1건뿐이다. 유사도 1.0000 의 신뢰구간이 넓다 — 더 큰 실문서 필요
 
 ## 다음 세션 진입 조건
 
-**`supabase login` 실행 후 `supabase link --project-ref <REF>`.** 그다음:
+**`supabase login` → `supabase link --project-ref mpmtydudhojpukuuadrd`.** 그다음:
 1. `supabase functions deploy spike --no-verify-jwt`
 2. `?kind=burn&ms=500` 로 하네스 계측 정확도 확인
-3. `?kind=hwp` case 추가 → **Linux/Deno 에서 hwpjs 동작 여부 판정** (미검증 #1)
+3. `?kind=env` → `?kind=hwp-import` → `?kind=hwp`(POST, HWP 바이트) 순으로 S1 Edge 판정
 4. S2~S5 순차 진행 → Task 0.6 판정표 작성 → Phase 1 착수 승인
