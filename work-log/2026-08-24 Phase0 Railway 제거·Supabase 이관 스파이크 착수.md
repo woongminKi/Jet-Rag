@@ -1,4 +1,23 @@
-# 2026-08-24 — Phase 0 스파이크 착수 (Railway 제거 · Supabase 전면 이관)
+# 2026-08-24 — Phase 0 스파이크 (Railway 제거 · Supabase 전면 이관)
+
+> **범위**: Railway 해지·Supabase 전면 이관 결정 → 플랜 2건 작성 → Phase 0 타당성 스파이크 Task 0.1/0.2(S1 = HWP 파서).
+> **다음 세션 재진입**: 터미널에 `! supabase login` 실행 → 이후 `link` → `functions deploy spike --no-verify-jwt` → `?kind=env`·`hwp-import`·`hwp` 호출로 **S1 Edge 판정 마무리**. 코드는 전부 커밋·push 되어 있어 로그인만 하면 바로 이어진다.
+
+## 0. 한눈에 보기
+
+| 항목 | 상태 | 근거 |
+|---|---|---|
+| 이관 결정 (Railway 해지 → Supabase 단일화) | ✅ 완료 | 신규 비용 0, Railway $5/mo 절감, 벤더 4→3 |
+| 마스터 플랜 + Phase 1 상세 플랜 | ✅ 완료 | 615줄 / 1,262줄 |
+| 이관 규모 실측 | ✅ 완료 | 소스 20,714 + 테스트 32,176 = **52,890 LOC**, 12~17주 추정 |
+| Task 0.1 스파이크 하네스 | 🟡 코드 완료 / 배포 대기 | `deno check`·`lint` 통과, `supabase login` 미완 |
+| Task 0.2 파서 기준선 (Python) | ✅ 완료 | 6/6 성공, `api/scripts/spike_baseline.json` |
+| S1 — HWP WASM 로컬 동작 | ✅ **PASS** | 순수 WASM 경로 확보, toJson 238,962자 / 15ms / RSS +35MB |
+| S1 — 텍스트 품질 | ✅ **PASS** | 기준선 대비 유사도 **1.0000** (기준 0.95) |
+| S1 — Edge(Linux) 실동작 | ⬜ 대기 | **차단: `supabase login`** |
+| S1 — HWPX / HWPML | ⬜ 미착수 | hwpjs 는 HWP 5.x(OLE2) 전용으로 확인됨 |
+| S2 PDF / S3 Fernet / S4 DOCX·PPTX / S5 메모리 | ⬜ 미착수 | — |
+| Task 0.6 판정표 → Phase 1 착수 승인 | ⬜ 대기 | S1~S5 완료 후 |
 
 ## 결정 사항
 
@@ -183,10 +202,95 @@ SharedArrayBuffer / Worker / `WebAssembly.Memory({initial:4000, shared:true})`(2
 4. `DEBUG_LINESEG:` 디버그 로그가 stdout 을 오염시킨다 — 운영 투입 전 처리 필요
 5. HWP 샘플이 985자 1건뿐이다. 유사도 1.0000 의 신뢰구간이 넓다 — 더 큰 실문서 필요
 
-## 다음 세션 진입 조건
+## 산출물 지도
 
-**`supabase login` → `supabase link --project-ref mpmtydudhojpukuuadrd`.** 그다음:
-1. `supabase functions deploy spike --no-verify-jwt`
-2. `?kind=burn&ms=500` 로 하네스 계측 정확도 확인
-3. `?kind=env` → `?kind=hwp-import` → `?kind=hwp`(POST, HWP 바이트) 순으로 S1 Edge 판정
-4. S2~S5 순차 진행 → Task 0.6 판정표 작성 → Phase 1 착수 승인
+| 파일 | 역할 |
+|---|---|
+| `docs/superpowers/plans/2026-08-24-railway-제거-supabase-전면이관.md` | 마스터 플랜 |
+| `docs/superpowers/plans/2026-08-24-phase1-기반-계층.md` | Phase 1 상세 (실행 가능 코드 포함) |
+| `supabase/functions/spike/index.ts` | CPU 계측 하네스. `noop`/`burn`/`env`/`hwp-import`/`hwp`/`hwp-rhwp` |
+| `supabase/functions/_shared/hwp_text.ts` | **toJson 텍스트 추출기 — Phase 1 에서 그대로 쓸 코드** |
+| `scripts/spike_hwp_extract.ts` | WASM 파싱 → 산출물 덤프 (`toJson`/`toHtml`/`toMarkdown`/`extracted`) |
+| `scripts/spike_wasm_probe.ts` · `probe2` · `probe3` | 후보 탐색 1·2차 / WASM 경로 강제 검증 |
+| `scripts/deno.json` | `nodeModulesDir: auto` + WASM 서브패키지 버전 고정 |
+| `api/scripts/spike_hwp_baseline.py` | Python 파서 기준선 생성 |
+| `api/scripts/spike_baseline.json` | 기준선 6샘플 |
+| `api/scripts/spike_hwp_similarity.py` | **채점 스크립트 — 추출기 고칠 때마다 재실행** |
+
+재현 명령 (2건 모두 로그인 불필요):
+
+```bash
+cd scripts && deno run -A spike_hwp_extract.ts ../assets/public/law_sample1.hwp /tmp/hwpout
+python3 api/scripts/spike_hwp_similarity.py /tmp/hwpout      # → 최고 유사도 1.0000 PASS
+```
+
+## 커밋 이력 (최신순)
+
+| 해시 | 메시지 |
+|---|---|
+| `d528aa3` | docs(work-log): S1 2차 세션 — WASM 경로 확보·유사도 1.0000·HWPX 미지원 발견 기록 |
+| `a1e8dc9` | chore(spike-s1): deno.lock 커밋 — WASM 후보 버전 고정 |
+| `155cd92` | feat(spike-s1): HWP 순수 WASM 경로 확보 + toJson 텍스트 추출기 유사도 1.0000 |
+| `3b06eca` | feat(migration): Railway 제거·Supabase 전면 이관 플랜 + Phase 0 스파이크 착수 |
+
+전부 `origin/main` push 완료. rebase 백업 ref: `backup/pre-rebase-20260824`.
+
+미커밋 잔여(이번 세션과 무관, 손대지 않음): `docs/superpowers/plans/2026-07-07-w5-6-kakaopay-subscription.md`, `workers/email-ingest/package-lock.json`.
+
+## 차단 요인
+
+| 요인 | 성격 | 해소 방법 |
+|---|---|---|
+| `supabase login` 미완 | **사용자 액션 필요** | 터미널에 `! supabase login` → 브라우저 Authorize |
+
+그 외 외부 대기 없음. Docker 불필요(CLI 2.111.0 은 Edge Function 배포에 Docker 를 쓰지 않는다).
+
+## 다음 세션 재진입 런북
+
+로그인 후 아래를 순서대로. 각 단계의 **기대 결과**를 먼저 적어둔다.
+
+```bash
+# 1. 프로젝트 연결 → 기대: "Finished supabase link."
+supabase link --project-ref mpmtydudhojpukuuadrd
+
+# 2. 함수 배포 → 기대: "Deployed Functions on project mpmtydudhojpukuuadrd: spike"
+supabase functions deploy spike --no-verify-jwt
+
+# 3. 하네스 계측 정확도 → 기대: cpuMs 가 500 근처
+curl -s "https://mpmtydudhojpukuuadrd.supabase.co/functions/v1/spike?kind=burn&ms=500"
+
+# 4. 런타임 능력 조사 → hwp 실패 시 원인을 가르는 대조군
+curl -s "https://mpmtydudhojpukuuadrd.supabase.co/functions/v1/spike?kind=env"
+
+# 5. S1 관문 → 기대: exports 에 toJson 포함, error null
+curl -s "https://mpmtydudhojpukuuadrd.supabase.co/functions/v1/spike?kind=hwp-import"
+
+# 6. 실파싱 + CPU 계측 → 기대: jsonChars 238962, cpuMs << 2000
+curl -s -X POST --data-binary @assets/public/law_sample1.hwp \
+  "https://mpmtydudhojpukuuadrd.supabase.co/functions/v1/spike?kind=hwp"
+```
+
+3~6번이 **401** 이면 게이트웨이가 apikey 를 요구하는 것이다 — `-H "Authorization: Bearer $NEXT_PUBLIC_SUPABASE_ANON_KEY"` 를 붙여 재시도한다(값은 `.env` 에 있다). 함수 자체는 `--no-verify-jwt` 로 배포하므로 코드 수정은 불필요.
+
+> ⚠️ `link` 이후 **`supabase db push` 계열은 절대 쓰지 말 것.** 이 프로젝트는 마이그레이션을
+> SQL Editor 로 직접 적용해와서 `supabase_migrations` 추적 테이블이 비어 있다(대시보드에도
+> "No migrations" 로 표시된다). CLI 가 미적용으로 오판해 전체를 다시 밀 수 있다.
+> 이번 작업은 `functions deploy` 만 쓴다.
+
+**5번이 실패하면** 4번 결과로 원인을 가른다:
+
+| `env` 결과 | 해석 | 다음 수 |
+|---|---|---|
+| `sharedMemory250MB` 실패 | 250MB 예약이 Edge 메모리 정책에 막힘 | `@rhwp/core`(`?kind=hwp-rhwp`) 로 전환 — wasm-bindgen 계열이라 SAB 불필요 가능성 |
+| `hasWorker: false` | emnapi 비동기 워커 풀 생성 불가 | 동기 호출만 쓰면 우회 가능한지 확인 |
+| 전부 true 인데 import 실패 | `fetch(file:)` 로 번들 내 .wasm 읽기 실패 | .wasm 을 base64 인라인하거나 Storage 에서 받아 `WebAssembly.instantiate` |
+
+## 다음 후보
+
+| 후보 | 내용 | 근거 |
+|---|---|---|
+| **A (권고)** | 위 런북대로 **S1 Edge 판정 마무리** | 로컬은 전부 통과. 남은 건 Edge 런타임 정책 하나뿐이고 curl 3방이면 끝난다. 여기서 FAIL 이면 이관 계획 전체가 바뀌므로 가장 먼저 알아야 한다 |
+| B | S2~S5(PDF·Fernet·DOCX/PPTX·메모리) 로컬 프로브 선행 | 로그인 없이 진행 가능. 다만 S1 결과에 따라 전제가 흔들릴 수 있다 |
+| C | HWPX/HWPML Deno 경로 설계 (ZIP+XML / XML) | 이번에 새로 드러난 구멍. 공수 재산정에 필요하지만 S1 확정 후가 순서 |
+
+**권고: A** — 로그인 1회로 즉시 진입 가능하고, 이관 가부를 좌우하는 마지막 미검증이다.
