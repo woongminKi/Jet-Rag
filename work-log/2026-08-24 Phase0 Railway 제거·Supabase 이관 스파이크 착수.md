@@ -10,11 +10,11 @@
 | 이관 결정 (Railway 해지 → Supabase 단일화) | ✅ 완료 | 신규 비용 0, Railway $5/mo 절감, 벤더 4→3 |
 | 마스터 플랜 + Phase 1 상세 플랜 | ✅ 완료 | 615줄 / 1,262줄 |
 | 이관 규모 실측 | ✅ 완료 | 소스 20,714 + 테스트 32,176 = **52,890 LOC**, 12~17주 추정 |
-| Task 0.1 스파이크 하네스 | 🟡 코드 완료 / 배포 대기 | `deno check`·`lint` 통과, `supabase login` 미완 |
+| Task 0.1 스파이크 하네스 | ✅ 배포 완료 | `burn&ms=500` → `cpuMs 500.07` 로 계측 정확도 확인 |
 | Task 0.2 파서 기준선 (Python) | ✅ 완료 | 6/6 성공, `api/scripts/spike_baseline.json` |
-| S1 — HWP WASM 로컬 동작 | ✅ **PASS** | 순수 WASM 경로 확보, toJson 238,962자 / 15ms / RSS +35MB |
-| S1 — 텍스트 품질 | ✅ **PASS** | 기준선 대비 유사도 **1.0000** (기준 0.95) |
-| S1 — Edge(Linux) 실동작 | ⬜ 대기 | **차단: `supabase login`** |
+| S1 — `@ohah/hwpjs` | ❌ **Edge FAIL** | emnapi 가 shared memory·Worker 요구 → Edge 는 1페이지도 불가 |
+| S1 — **`@rhwp/core`** | ✅ **Edge PASS** | `getTextFileText()` 유사도 **1.0000**, 총 72ms (예산 2s) |
+| S1 — 최종 판정 | ✅ **PASS** | HWP 5.x 경로 확정: `@rhwp/core` + HTML 엔티티 디코딩 |
 | S1 — HWPX / HWPML | ⬜ 미착수 | hwpjs 는 HWP 5.x(OLE2) 전용으로 확인됨 |
 | S2 PDF / S3 Fernet / S4 DOCX·PPTX / S5 메모리 | ⬜ 미착수 | — |
 | Task 0.6 판정표 → Phase 1 착수 승인 | ⬜ 대기 | S1~S5 완료 후 |
@@ -202,6 +202,64 @@ SharedArrayBuffer / Worker / `WebAssembly.Memory({initial:4000, shared:true})`(2
 4. `DEBUG_LINESEG:` 디버그 로그가 stdout 을 오염시킨다 — 운영 투입 전 처리 필요
 5. HWP 샘플이 985자 1건뿐이다. 유사도 1.0000 의 신뢰구간이 넓다 — 더 큰 실문서 필요
 
+## 3차 세션 (2026-08-25) — **S1 Edge 판정 완료. PASS, 단 라이브러리가 바뀌었다**
+
+`supabase login` 해소 → `link` → `functions deploy spike --no-verify-jwt` 성공(Docker 불필요 확인).
+`?kind=burn&ms=500` → `cpuMs 500.07` 로 하네스 계측 정확도 검증됨. 인증 헤더 없이 200 응답.
+
+### `@ohah/hwpjs` — Edge **FAIL** (로컬 통과가 아무 의미 없었다)
+
+```
+Error: Context is currently not supported
+    at new Context (node:wasi:6:11)
+    at .../@ohah/hwpjs-wasm32-wasi/0.1.0-rc.10/hwpjs.wasi.cjs:19:16
+```
+
+`?kind=env` 로 원인이 정확히 갈렸다:
+
+| 능력 | 로컬 Deno 2.8 | **Edge Runtime 1.74.3 (Deno 2.1.4 호환)** |
+|---|---|---|
+| SharedArrayBuffer 존재 | true | true |
+| `Worker` | true | **false** |
+| shared memory 250MB | OK | **불가** |
+| shared memory **1페이지** | OK | **불가** (`Creating a shared memory is not supported`) |
+
+1페이지도 안 된다 → 크기 문제가 아니라 **정책적 전면 차단**이다.
+emnapi 부트스트랩이 `WebAssembly.Memory({shared:true})` + Worker 를 요구하므로
+**napi-rs/emnapi 계열 WASM 패키지는 Edge 에서 전부 불가**로 봐야 한다. 우회로 없음.
+
+### `@rhwp/core` — Edge **PASS**
+
+| 지표 | 값 |
+|---|---|
+| import | 41.9ms |
+| `new HwpDocument(bytes)` | 66.9ms |
+| `getTextFileText()` | **2.8ms** |
+| 합계 | 약 **72ms** / CPU 2s 예산 대비 **28배 여유** |
+| 유사도 (기준선 대비) | **1.0000** (엔티티 디코딩 후) |
+
+wasm-bindgen 계열이라 SAB·Worker 를 요구하지 않는 것이 갈린 지점이다.
+
+**메서드 탐색 결과** (411개 메서드 중):
+
+| 메서드 | 결과 |
+|---|---|
+| `getTextFileText()` | **1,041자 — 표 셀 포함 전문. 채택** |
+| `getTextFileUnicode()` | 1,085자(JSON 이스케이프 포함), 내용 동일 |
+| `getPageText()` | 빈 문자열 — 페이지네이션 전이라 무효 |
+| `exportHml()` | `HML_SOURCE_REQUIRED` — HML 원본 문서만 가능 |
+
+**필수 후처리 1건**: 출력이 특수문자를 HTML 숫자 엔티티로 낸다(`&#65378;` = `｢`).
+디코딩 전 0.9637 → **디코딩 후 1.0000**. 샘플에서 6개 발견.
+
+### 이번 판정이 바꾼 것
+
+- 2차 세션의 `_shared/hwp_text.ts`(toJson 추출기, 로컬 유사도 1.0000)는 **Edge 에서 무용지물**이다.
+  의존 파서가 로드조차 안 된다. 파일 상단에 경고를 달아두고 남겼다 — toJson 구조 분석
+  (children↔paragraphs 이중 노출 함정)은 재활용 가치가 있어서다.
+- **교훈: 로컬 Deno 통과는 Edge 통과의 근거가 되지 못한다.** 남은 스파이크(S2~S5)는
+  로컬 프로브를 건너뛰고 **처음부터 배포해서 재는 편이 빠르다.** 배포는 20초면 된다.
+
 ## 산출물 지도
 
 | 파일 | 역할 |
@@ -289,8 +347,11 @@ curl -s -X POST --data-binary @assets/public/law_sample1.hwp \
 
 | 후보 | 내용 | 근거 |
 |---|---|---|
-| **A (권고)** | 위 런북대로 **S1 Edge 판정 마무리** | 로컬은 전부 통과. 남은 건 Edge 런타임 정책 하나뿐이고 curl 3방이면 끝난다. 여기서 FAIL 이면 이관 계획 전체가 바뀌므로 가장 먼저 알아야 한다 |
-| B | S2~S5(PDF·Fernet·DOCX/PPTX·메모리) 로컬 프로브 선행 | 로그인 없이 진행 가능. 다만 S1 결과에 따라 전제가 흔들릴 수 있다 |
-| C | HWPX/HWPML Deno 경로 설계 (ZIP+XML / XML) | 이번에 새로 드러난 구멍. 공수 재산정에 필요하지만 S1 확정 후가 순서 |
+| **A (권고)** | **S2 — PDF span/bbox** 를 Edge 에 바로 배포해 판정 | 파서 중 가장 무겁고(비전 need score·bbox 의존) 실패 시 설계 영향이 가장 크다. S1 처럼 라이브러리 선택이 갈릴 수 있어 일찍 알아야 한다 |
+| B | S3 Fernet + S4 DOCX/PPTX 묶어서 판정 | 둘 다 가볍고 후보가 명확하다(WebCrypto / 순수 JS). 한 번의 배포로 두 개를 끝낼 수 있다 |
+| C | HWPX/HWPML Edge 경로 (ZIP+XML / XML) | `@rhwp/core` 에 `exportHwpx` 가 있으니 읽기도 되는지 먼저 확인 — 3경로가 2경로로 줄 수 있다 |
 
-**권고: A** — 로그인 1회로 즉시 진입 가능하고, 이관 가부를 좌우하는 마지막 미검증이다.
+**권고: A** — 남은 스파이크 중 위험이 가장 크고, S1 에서 배운 대로 **로컬을 건너뛰고 바로 배포해서 잰다.**
+
+> S1 이 남긴 절차 변경: 로컬 Deno 통과는 Edge 통과의 근거가 아니다. S2~S5 는 로컬 프로브
+> 없이 `spike` 함수에 case 를 추가해 배포(약 20초)하고 실측한다.

@@ -1,4 +1,14 @@
 /**
+ * ⚠️ **2026-08-25 Edge 실측 결과 이 파일은 현재 Edge 에서 쓸 수 없다.**
+ * 의존하는 `@ohah/hwpjs`(napi-rs/emnapi) 가 Supabase Edge Runtime 에서 로드 자체가 안 된다 —
+ * `node:wasi` 의 `Context` 미지원 + `WebAssembly.Memory({shared:true})` 가 1페이지도 불가.
+ * **Edge 의 HWP 경로는 `@rhwp/core` 의 `getTextFileText()` 로 확정됐다**(유사도 1.0000).
+ * 이 파일은 로컬/서버 Deno(제약 없는 환경)에서만 유효하다. 지우지 않는 이유는 toJson 구조
+ * 분석 결과(표 셀이 children↔paragraphs 로 이중 노출되는 함정)가 재활용 가치가 있어서다.
+ * 자세한 근거: work-log/2026-08-24 Phase0 ... 스파이크 착수.md
+ *
+ * ---
+ *
  * HWP 5.x → 평문 추출기 (`@ohah/hwpjs` 의 `toJson` 출력 위에서 동작).
  *
  * 왜 toJson 인가 — Phase 0 / S1 실측 결과:

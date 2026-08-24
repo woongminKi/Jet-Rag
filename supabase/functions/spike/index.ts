@@ -183,6 +183,52 @@ async function handle(req: Request): Promise<SpikeResult> {
         return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };
       }
 
+      /**
+       * `@rhwp/core` 의 메서드를 이름으로 호출한다.
+       *
+       * 이 패키지는 파서가 아니라 **에디터 엔진**이라 메서드가 411개고, 어느 것이 문서 전체
+       * 평문을 주는지 문서화돼 있지 않다. 후보(getTextFileText / getTextFileUnicode /
+       * getPageText / exportHml …)를 하나씩 시험해야 하는데, 매번 재배포하면 왕복이 길다.
+       * 그래서 메서드명을 쿼리로 받는다 — 스파이크 한정이며 Phase 1 로 넘기지 않는다.
+       *
+       * POST body = HWP 바이트
+       *   ?kind=rhwp-call&method=getTextFileText[&args=[0]]
+       */
+      case "rhwp-call": {
+        const method = url.searchParams.get("method") ?? "getTextFileText";
+        const rawArgs = url.searchParams.get("args");
+        const callArgs = rawArgs ? JSON.parse(rawArgs) as unknown[] : [];
+        const { mod, importMs } = await loadRhwp();
+        const HwpDocument = mod.HwpDocument as new (b: Uint8Array) => Record<string, unknown>;
+
+        const ctor = measure(() => new HwpDocument(bytes));
+        const doc = ctor.value;
+        const fn = doc[method];
+        if (typeof fn !== "function") {
+          return {
+            ...base,
+            cpuMs: ctor.cpuMs,
+            wallMs: performance.now() - wallStart,
+            error: `메서드 없음: ${method}`,
+            result: null,
+          };
+        }
+
+        const { cpuMs, value } = measure(() => {
+          const out = (fn as (...a: unknown[]) => unknown).apply(doc, callArgs);
+          const text = typeof out === "string" ? out : JSON.stringify(out);
+          return {
+            importMs,
+            ctorCpuMs: ctor.cpuMs,
+            method,
+            chars: text.length,
+            // 판정용 원문. 기준선 샘플이 1KB 대라 이 상한이면 전문이 다 온다.
+            text: text.slice(0, 120_000),
+          };
+        });
+        return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };
+      }
+
       // 0.3 에서 "pdf", 0.4 에서 "fernet", 0.5 에서 "docx" case 가 여기 추가된다.
 
       default:
