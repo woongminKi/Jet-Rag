@@ -25,6 +25,7 @@
  *   POST ?kind=fernet                   body = {key, token, plaintext} — S3 판정
  *   POST ?kind=<docx|pptx>              body = 파일 바이트 — S4 판정
  *   POST ?kind=<hwpx|hwpml>             body = 파일 바이트 — HWPX/HWPML 판정
+ *   POST ?kind=mem&mb=N[&parse=…]       할당 사다리로 메모리 상한 실측 — S5 판정
  *
  * 응답의 cpuMs 가 2000 에 근접하면 그 작업 단위는 더 잘게 쪼개야 한다는 신호다.
  */
@@ -616,6 +617,75 @@ async function handle(req: Request): Promise<SpikeResult> {
             titles: [...new Set(out.sections.map((s) => s.sectionTitle).filter(Boolean))].sort(),
             warnings: out.warnings,
             sections: out.sections,
+          };
+        });
+        return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };
+      }
+
+      /**
+       * S5 — 메모리. **직접 계측이 막혀 있다**: Edge 의 `Deno.memoryUsage()` 는 0 을 돌려준다
+       * (2026-09-04 실측 — `pdf-pages` 의 rssStartMB/rssEndMB 가 전부 0).
+       *
+       * 그래서 "얼마나 쓰는가" 대신 **"얼마나 더 쓸 수 있는가"** 를 잰다. 할당 사다리로 죽는
+       * 지점을 찾으면 그게 상한이고, **파싱 전후 상한의 차이**가 파서가 붙잡고 있는 양이다.
+       * 없는 계기를 두 번의 임계 측정의 차이로 대체하는 것이다.
+       *
+       * 할당만 하면 안 된다 — 페이지를 건드리지 않으면 실제로 커밋되지 않아 상한을 못 만나고
+       * 그냥 통과한다. 4KB 마다 1바이트씩 쓴다.
+       *
+       *   POST ?kind=mem&mb=N[&parse=pdf|hwpx|docx]   body = (parse 지정 시) 파일 바이트
+       */
+      case "mem": {
+        const mb = Number(url.searchParams.get("mb") ?? "64");
+        const parse = url.searchParams.get("parse") ?? "none";
+        const CHUNK_MB = 8;
+
+        // 파싱 산출물을 **살려둔 채** 할당한다. 참조를 놓으면 GC 가 걷어가 차이가 0 이 된다.
+        let held: unknown = null;
+        let parseMs: number | null = null;
+        if (parse !== "none") {
+          const t = performance.now();
+          if (parse === "pdf") {
+            const { mod } = await loadMupdf();
+            const M = mod as {
+              Document: { openDocument(b: Uint8Array, mime: string): Record<string, unknown> };
+            };
+            const doc = M.Document.openDocument(bytes, "application/pdf") as unknown as {
+              countPages(): number;
+              loadPage(n: number): Record<string, unknown>;
+            };
+            const page = doc.loadPage(0);
+            const st = (page.toStructuredText as (o: string) => { walk(w: Record<string, unknown>): void })
+              .call(page, STEXT_OPTS);
+            held = toPageDict(st, (page.getBounds as () => number[])());
+          } else if (parse === "hwpx") {
+            held = extractHwpx(bytes);
+          } else if (parse === "docx") {
+            held = extractDocx(bytes);
+          }
+          parseMs = performance.now() - t;
+        }
+
+        const { cpuMs, value } = measure(() => {
+          const blocks: Uint8Array[] = [];
+          let allocatedMB = 0;
+          for (let i = 0; i < Math.ceil(mb / CHUNK_MB); i++) {
+            const block = new Uint8Array(CHUNK_MB * 1024 * 1024);
+            // 페이지를 실제로 커밋시킨다 — 안 건드리면 가상 할당으로 끝나 상한을 못 만난다.
+            for (let off = 0; off < block.length; off += 4096) block[off] = 1;
+            blocks.push(block);
+            allocatedMB += CHUNK_MB;
+          }
+          // 최적화로 blocks 가 사라지지 않도록 값을 읽는다.
+          let checksum = 0;
+          for (const b of blocks) checksum += b[0];
+          return {
+            parse,
+            parseMs,
+            requestedMB: mb,
+            allocatedMB,
+            checksum,
+            heldKind: held === null ? null : typeof held,
           };
         });
         return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };

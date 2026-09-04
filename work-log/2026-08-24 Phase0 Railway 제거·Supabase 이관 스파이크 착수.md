@@ -1,7 +1,7 @@
 # 2026-08-24 — Phase 0 스파이크 (Railway 제거 · Supabase 전면 이관)
 
 > **범위**: Railway 해지·Supabase 전면 이관 결정 → 플랜 2건 작성 → Phase 0 타당성 스파이크 Task 0.1~0.5 (S1 HWP · S2 PDF · S3 Fernet · S4 DOCX/PPTX).
-> **다음 세션 재진입**: **파서 전 경로 판정 완료 — S1·S2·S3·S4 + HWPX/HWPML 전부 PASS.** 남은 건 ① S5 메모리 판정 방법(직접 계측 막힘) ② Task 0.6 판정표 → Phase 1 착수 승인. 배포·인증은 이미 뚫려 있어 `supabase functions deploy spike --no-verify-jwt` 한 줄이면 바로 이어진다. 자세한 후보는 맨 아래 "다음 후보" 참조.
+> **다음 세션 재진입**: **Phase 0 측정 종료 — S1~S5 전부 PASS, Task 0.6 판정표 작성 완료.** 남은 건 **사용자의 Phase 1 착수 승인** 하나다(52,890 LOC / 12~17주). 이관은 아직 한 줄도 시작 안 했고 운영 백엔드는 여전히 Railway 다(`server: railway-hikari` 실측). 배포·인증은 뚫려 있어 `supabase functions deploy spike --no-verify-jwt` 한 줄이면 재측정 가능.
 
 ## 0. 한눈에 보기
 
@@ -19,8 +19,9 @@
 | **S2 — PDF (`mupdf` 1.27.0)** | ✅ **PASS** | 페이지당 CPU 최대 **100.8ms**, 유사도 **1.0000**×7p, 다운스트림 **7/7 동등** |
 | **S3 — Fernet (Web Crypto)** | ✅ **PASS** | Python↔Deno **양방향 복호**, 변조·오키 거부, 복호 1.7~2.0ms |
 | **S4 — DOCX/PPTX (ZIP+XML 직접)** | ✅ **PASS** | 섹션·(text,title) 쌍 **완전일치**, 유사도 **1.0000**, CPU 10~72ms |
-| S5 — 메모리 | ⚠️ **방법 막힘** | Edge `Deno.memoryUsage()` 가 0 반환 — 직접 계측 불가 |
-| Task 0.6 판정표 → Phase 1 착수 승인 | ⬜ 대기 | **파서 리스크는 전부 해소.** S5 판정 방법만 결정하면 됨 |
+| **S5 — 메모리** | ✅ **PASS** | 할당 사다리로 상한 **240MB** 실측, PDF 경로 점유 **24MB**. CPU 가 먼저 걸린다 |
+| **Task 0.6 판정표** | ✅ **작성 완료** | S1~S5 전부 PASS — 중단 조건 해제 |
+| Phase 1 착수 승인 | ⬜ **사용자 결정 대기** | 52,890 LOC / 12~17주 |
 
 ## 결정 사항
 
@@ -201,8 +202,8 @@ SharedArrayBuffer / Worker / `WebAssembly.Memory({initial:4000, shared:true})`(2
 1. **Edge 런타임이 emnapi 부트스트랩을 허용하는가** — SAB / `fetch(file:)` 로 번들 내 .wasm 읽기 / Worker 생성.
    로컬 Deno 는 셋 다 되지만 Edge 는 더 제한적이다. **`?kind=env` + `?kind=hwp-import` 한 번이면 판정된다.**
 2. ~~HWPX/HWPML 경로~~ → **2026-09-04 PASS** (실자산 3건 완전일치)
-3. ~~S2(PDF span/bbox)~~ ~~S3(Fernet)~~ ~~S4(DOCX/PPTX)~~ → **2026-09-04 전부 PASS**.
-   S5(메모리)만 남았고 방법부터 막혀 있다 — Edge 의 `Deno.memoryUsage()` 가 0 을 반환한다.
+3. ~~S2 ~ S5~~ → **2026-09-04 전부 PASS**. `Deno.memoryUsage()` 가 0 인 건 그대로지만,
+   할당 사다리로 상한을 재는 우회로가 확보돼 판정이 끝났다.
 4. `DEBUG_LINESEG:` 디버그 로그가 stdout 을 오염시킨다 — 운영 투입 전 처리 필요
 5. HWP 샘플이 985자 1건뿐이다. 유사도 1.0000 의 신뢰구간이 넓다 — 더 큰 실문서 필요
 
@@ -332,15 +333,15 @@ S1 교훈대로 로컬 프로브를 건너뛰고 바로 배포해서 쟀다. 배
 |---|---|---|---|---|
 | 50p | 296ms | 78.4ms | 5.7ms | OK |
 | 200p | 725ms | 79.4ms | 3.6ms | OK |
-| 400p | **1,421ms** | 100.8ms | 3.5ms | OK |
-| 573p(전체) | — | — | — | **`WORKER_RESOURCE_LIMIT`** |
+| 400p | 1,421ms | 100.8ms | 3.5ms | OK |
+| 573p(전체) | — | — | — | `WORKER_RESOURCE_LIMIT` |
 
 9MB/93p 이미지 문서(`sample-report`)는 50p 에 1,212ms 로 가장 무겁다.
 41p 데이터센터 안내서는 전체 392ms.
 
-**먼저 걸리는 건 메모리가 아니라 CPU 2s 다.** 메모리는 직접 계측하지 못했다 —
-Edge 의 `Deno.memoryUsage()` 가 0 을 반환한다(**미검증**). 다만 400페이지를 한 워커에서
-연속 처리하고도 죽지 않았으므로 페이지 해제(`destroy()`)는 동작하는 것으로 본다.
+> ⚠️ **2026-09-04 6차 세션에서 위 표의 573p 행을 정정했다.** 아래 "S5" 절 참조 —
+> 573p 는 **고정 실패가 아니라 경계**다(4회 중 1회 성공, 성공 시 cpuMs 1,762).
+> 400p 도 회차별로 978~1,421ms 로 흔들린다. 단발 측정 1회로 "여기서 죽는다"고 쓴 게 과했다.
 
 ### 남은 잔차 — 합성 공백 (닫음, 영향 0으로 측정)
 
@@ -467,6 +468,102 @@ HWPX 는 `.//hp:p` 로 **표 안 중첩 단락까지** 훑되, 단락 텍스트�
 style heading(`개요 1`) · 텍스트 패턴 heading(`제 3 조`) · **표 중첩 단락** ·
 **중첩 P 컨테이너 skip** · `PARAMETERSET` 메타데이터 CHAR 배제 · UTF-8 BOM · 비BMP 문자.
 
+## 7차 세션 (2026-09-04) — **S5(메모리) 판정 완료 + Task 0.6 판정표**
+
+### 계기가 없으면 차이로 잰다
+
+Edge 의 `Deno.memoryUsage()` 는 0 을 돌려준다. "지금 얼마 쓰는가"를 읽을 방법이 없다.
+그래서 **"얼마나 더 쓸 수 있는가"** 를 재는 쪽으로 바꿨다 —
+8MB 청크를 할당하고 **4KB 마다 1바이트씩 써서 실제로 커밋시킨 뒤** 죽는 지점을 찾는다.
+(안 건드리면 가상 할당으로 끝나 상한을 못 만난다.)
+
+    파서 없이 죽는 지점 − 파싱 산출물을 든 채 죽는 지점 = 파서가 붙잡고 있는 양
+
+**8MB 눈금으로 2회 독립 측정:**
+
+| 케이스 | 1차 상한 | 2차 상한 | 역산 점유 | 판정 |
+|---|---|---|---|---|
+| 파서 없음 | 240MB | 240MB | — | 상한 **약 240MB** (문서상 256MB 와 정합) |
+| PDF 1페이지 (mupdf) | 216MB | 216MB | **약 24MB** | 2회 일치 — mupdf WASM 힙 |
+| HWPX 497섹션 | 240MB | 248MB | 0 / −8MB | **8MB 눈금 아래 — 측정 불가** |
+| DOCX 322섹션 | 232MB | 248MB | +8 / −8MB | **8MB 눈금 아래 — 측정 불가** |
+
+- 상한 240MB 와 PDF 24MB 는 2회 재현됐다.
+- 순수 JS 경로(HWPX/DOCX)는 **노이즈(±8MB) 안**이라 "작다"까지만 말할 수 있다.
+  숫자를 더 좁히려면 눈금을 줄여야 하는데, 그럴 실익이 없다 — 어차피 CPU 가 먼저 걸린다.
+
+### 실패 신호는 같지만 **실패까지 걸린 시간이 다르다**
+
+CPU 초과와 메모리 초과가 **둘 다 HTTP 546 / `WORKER_RESOURCE_LIMIT`** 이다.
+응답만으로는 원인을 못 가른다. 다만 시간이 갈라준다:
+
+| 원인 | 실패까지 wall (3회) |
+|---|---|
+| 메모리 초과 (`mem&mb=320`) | **0.42 / 0.52 / 0.55s** — 즉시 |
+| CPU 초과 (`burn&ms=3000`) | **3.43 / 3.44 / 3.46s** — 한도까지 태우고 죽음 |
+
+→ **운영 규칙**: 546 을 보면 응답 본문이 아니라 **소요 시간**으로 원인을 가른다.
+1초 미만이면 메모리, 2초 이상이면 CPU.
+
+### 573p 정정 — 고정 실패가 아니라 경계다
+
+4회 반복:
+
+| 회차 | 결과 | wall |
+|---|---|---|
+| #1 | **HTTP 200, cpuMs 1,762 / 573p 전부 처리** | 2.55s |
+| #2~#4 | `WORKER_RESOURCE_LIMIT` | 2.99 / 3.24 / 3.60s |
+
+실패 회차의 소요 시간(3.0~3.6s)이 **메모리 패턴(0.4~0.55s)이 아니라 CPU 패턴(3.4s)** 과
+맞는다. 즉 573p 에서 걸리는 건 CPU 가 맞다 — 다만 **독립된 두 신호(시간·성공 시 cpuMs 1,762)로
+확인한 뒤에야** 그렇게 말할 수 있다. 5차 세션에서 단발 실패 1회를 보고 "573p 에서 죽는다"고
+쓴 것은 과한 단정이었다.
+
+반복 측정에서 드러난 편차도 기록해 둔다 — 같은 400p 가 **978~1,421ms** 로 흔들린다.
+공유 CPU 라 회차 편차가 크므로, **단발 측정으로 임계를 확정하면 안 된다.**
+
+| 페이지 수 | 실측 cpuMs (회차별) |
+|---|---|
+| 300p | 766 / 1,194 |
+| 400p | 978 / 1,345 / 1,421 |
+| 573p | 1,762 (성공 1회) / 나머지 초과 |
+
+### S5 판정
+
+**PASS.** 목표 아키텍처는 "작업 1건 = 큐 메시지 1개"(페이지 단위 팬아웃)이라 한 요청이
+다루는 건 **1페이지**다. 페이지당 CPU 최대 100.8ms · PDF 경로 상시 점유 24MB 는
+상한 240MB / CPU 2s 대비 각각 **10배 · 20배** 여유다. 메모리는 제약이 아니다.
+
+## Task 0.6 — 스파이크 판정표 (Phase 1 착수 승인 게이트)
+
+| # | 항목 | 판정 | 근거 (전부 배포된 Edge 함수 실측) |
+|---|---|---|---|
+| S1 | HWP 5.x | ✅ PASS | `@rhwp/core` 유사도 **1.0000**, 총 72ms. `@ohah/hwpjs` 는 shared memory 요구로 FAIL |
+| S1b | HWPX / HWPML | ✅ PASS | 실자산 3건 섹션·(text,title) 쌍 **완전일치**, 유사도 1.0000, 1.5~27ms |
+| S2 | PDF span/bbox | ✅ PASS | `mupdf@1.27.0`. block 7/7 일치, bboxΔ ≤ 0.97pt, **다운스트림 7/7 동등**, 페이지당 ≤ 100.8ms |
+| S3 | Fernet | ✅ PASS | Python↔Deno **양방향** 복호, 변조·오키 거부, 1.7~2.5ms |
+| S4 | DOCX / PPTX | ✅ PASS | 섹션·(text,title) 쌍 완전일치, 유사도 1.0000, 10~72ms |
+| S5 | 메모리 | ✅ PASS | 상한 **240MB**, PDF 경로 점유 **24MB**. CPU 가 먼저 걸린다 |
+
+**중단 조건 해제.** 마스터 플랜 §6 은 "S1 또는 S2 가 FAIL 이면 이 플랜 중단" 이었다.
+둘 다 PASS 이므로 폴백(§6)은 발동하지 않는다.
+
+### 판정표가 바꾼 설계 전제 3가지
+
+1. **파서 라이브러리가 확정됐다** — HWP `@rhwp/core` · PDF `mupdf@1.27.0`(버전 고정 필수) ·
+   HWPX/HWPML/DOCX/PPTX 는 **자체 ZIP+XML 추출기**(`_shared/`). Phase 1 공수 산정의 입력이다.
+2. **HWP 계열은 3경로가 맞다** — `@rhwp/core`(OLE2) / ZIP+XML(HWPX) / XML(HWPML).
+   S1 에서 "3경로 필요"로 잡았던 추정이 실측으로 확정됐다.
+3. **메모리는 제약이 아니다** — 남는 건 CPU 2s 뿐이다. 페이지 단위 팬아웃 설계의 근거가
+   "메모리 때문"이 아니라 **오직 CPU 때문**임이 확정됐다.
+
+### 남은 결정 (사용자 승인 필요)
+
+- Phase 1 착수 여부 — 재작성 대상 **52,890 LOC**, 추정 **12~17주**(1인, 테스트 포함).
+- 스파이크 함수 `spike` 처리 — 현재 `verify_jwt=false` 로 공개 배포 중이다.
+  운영 DB·시크릿은 건드리지 않지만 `?kind=burn&ms=N` 으로 CPU 를 태울 수 있는 표면이 있다.
+  Phase 1 착수 시 **삭제 권장**(재배포 20초).
+
 ## 산출물 지도
 
 | 파일 | 역할 |
@@ -489,6 +586,7 @@ style heading(`개요 1`) · 텍스트 패턴 heading(`제 3 조`) · **표 중�
 | `supabase/functions/_shared/hwp_xml_text.ts` | **HWPX/HWPML 추출기 — Phase 1 에서 그대로 쓸 코드** |
 | `api/scripts/spike_hwpxml_fixture.py` | HWPX/HWPML 합성 fixture 생성기 |
 | `api/scripts/spike_hwpxml_baseline.py` · `.json` | HWPX/HWPML 기준선 (기본=fixture, `--include-local`=실자산) |
+| `api/scripts/spike_memory_probe.py` | **S5 채점기 — 할당 사다리로 메모리 상한·파서 점유 역산** |
 | `scripts/spike_hwp_extract.ts` | WASM 파싱 → 산출물 덤프 (`toJson`/`toHtml`/`toMarkdown`/`extracted`) |
 | `scripts/spike_wasm_probe.ts` · `probe2` · `probe3` | 후보 탐색 1·2차 / WASM 경로 강제 검증 |
 | `scripts/deno.json` | `nodeModulesDir: auto` + WASM 서브패키지 버전 고정 |
@@ -519,12 +617,16 @@ api/.venv/bin/python api/scripts/spike_hwpxml_fixture.py             # fixture �
 api/.venv/bin/python api/scripts/spike_hwpxml_baseline.py            # 기준선 재생성
 python3 api/scripts/spike_ooxml_compare.py \
   --baseline api/scripts/spike_hwpxml_baseline.json                  # → FAIL 0
+
+# S5 메모리 (실자산 필요 — 없으면 해당 행만 건너뜀)
+python3 api/scripts/spike_memory_probe.py --from=160 --to=256 --step=8
 ```
 
 ## 커밋 이력 (최신순)
 
 | 해시 | 메시지 |
 |---|---|
+| (이번 세션) | feat(spike-s5): 메모리 상한 실측 + Task 0.6 판정표 — Phase 0 측정 종료 |
 | `0d59955` | feat(spike): HWPX/HWPML Edge 경로 PASS — 실자산 3건 전부 완전일치 |
 | `783f8c6` | feat(spike-s3,s4): Fernet 양방향 호환 + DOCX/PPTX 추출 PASS — 전부 FAIL 0 |
 | `e1c2b1d` | docs(work-log): S2(PDF) Edge 판정 PASS 기록 |
@@ -588,19 +690,22 @@ curl -s -X POST --data-binary @assets/public/law_sample1.hwp \
 | `hasWorker: false` | emnapi 비동기 워커 풀 생성 불가 | 동기 호출만 쓰면 우회 가능한지 확인 |
 | 전부 true 인데 import 실패 | `fetch(file:)` 로 번들 내 .wasm 읽기 실패 | .wasm 을 base64 인라인하거나 Storage 에서 받아 `WebAssembly.instantiate` |
 
-## 다음 후보 (2026-09-04 갱신 — **파서 전 경로 판정 완료** 후)
+## 다음 후보 (2026-09-04 갱신 — **Phase 0 측정 종료** 후)
 
-기준선 6샘플이 전부 Edge 경로를 확보했다. HWP 5.x(`@rhwp/core`) · PDF(`mupdf`) ·
-HWPX/HWPML · DOCX/PPTX(ZIP+XML) · Fernet(Web Crypto).
+측정은 끝났다. 다음은 **판단**이다 — 12~17주짜리 재작성을 시작할지 여부.
 
 | 후보 | 내용 | 근거 |
 |---|---|---|
-| **A (권고)** | **S5 메모리 판정 방법 확정 → Task 0.6 판정표 작성 → Phase 1 착수 승인** | Phase 0 에서 유일하게 안 닫힌 항목. `Deno.memoryUsage()` 가 0 이라 직접 계측이 막혔으므로 간접 지표(대량 처리 생존 · `WORKER_RESOURCE_LIMIT` 유형 구분)로 대체할지 **결정**만 하면 Phase 0 이 끝난다. 판정표는 이미 수치가 다 모여 있어 정리 작업이다 |
-| B | Phase 1 Task 1 착수 (Cloudflare Worker 리버스 프록시) | 쿠키 도메인 함정의 해법이자 Phase 1 의 첫 블록. 프론트 변경 0줄로 경로별 점진 전환이 가능해 되돌리기 쉽다 |
-| C | 스파이크 코드를 Phase 1 형태로 정리 | `_shared/` 의 파서 4종은 이미 "그대로 쓸 코드"로 썼다. `spike/index.ts` 만 걷어내면 된다 — 다만 S5 가 안 끝나 아직 스파이크가 필요할 수 있다 |
+| **A (권고)** | **Phase 1 Task 1 착수 — Cloudflare Worker 리버스 프록시** | 쿠키 도메인 함정(설계 함정 #1)의 해법이자 Phase 1 의 첫 블록. **프론트 변경 0줄**, 경로별 점진 전환·즉시 롤백. 이관 전체를 커밋하지 않고도 되돌릴 수 있는 유일한 시작점이다 |
+| B | 이관 보류 — 스파이크만 정리하고 Railway 유지 | 절감액은 **$5/mo** 인데 재작성은 **12~17주**다. `_shared/` 파서 5종은 이미 확보돼 있어 나중에 재개해도 손실이 없다. 그 시간을 제품(수익화·베타 피드백)에 쓰는 선택 |
+| C | 범위 축소 — 파서·인제스트만 Edge 로, 나머지는 Railway 유지 | 하이브리드. CPU 가 무거운 인제스트만 팬아웃 구조로 옮기고 API 는 그대로 둔다. 벤더 4개는 유지되지만 재작성량이 크게 준다 |
 
-**권고: A** — 남은 건 판정 **방법**에 대한 결정 하나다. 여기서 Phase 0 을 닫아야
-Task 0.6 승인 게이트가 성립하고, 그 다음에 Phase 1 을 근거 있게 시작할 수 있다.
+**권고: A 를 하되, B 를 먼저 판단할 것.** 측정 결과는 "기술적으로 가능하다"까지만 말한다.
+**$5/mo 를 위해 12~17주를 쓰는 게 맞는지는 별개 질문**이고, 그건 목표·제약을 아는
+사용자만 답할 수 있다. 기술 리스크는 해소됐으니 이제 순수하게 우선순위 결정이다.
+
+> 스파이크 함수 `spike` 는 `verify_jwt=false` 로 공개 배포 중이다. 어느 후보로 가든
+> Phase 0 을 닫을 때 삭제를 권한다(`supabase functions delete spike`, 재배포 20초).
 
 > S1 이 남긴 절차 변경(S2 에서 재확인됨): 로컬 Deno 통과는 Edge 통과의 근거가 아니다.
 > S3~S5 도 로컬 프로브 없이 `spike` 함수에 case 를 추가해 배포(약 20초)하고 실측한다.
