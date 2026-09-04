@@ -144,3 +144,7 @@ jobs:
       - name: iso datetime (fuzz)
         working-directory: api
         run: uv run python scripts/verify_iso_datetime_parity.py
+      # `--live` 는 뺀다 — 운영 DB 자격증명이 필요하고 CI 를 DB 가용성에 묶는다.
+      - name: search guards/filters
+        working-directory: api
+        run: uv run python scripts/verify_search_guards_parity.py
