@@ -1,7 +1,7 @@
 # 2026-08-24 — Phase 0 스파이크 (Railway 제거 · Supabase 전면 이관)
 
-> **범위**: Railway 해지·Supabase 전면 이관 결정 → 플랜 2건 작성 → Phase 0 타당성 스파이크 Task 0.1/0.2(S1 = HWP), Task 0.3(S2 = PDF).
-> **다음 세션 재진입**: S1·S2 **둘 다 PASS**. 남은 스파이크는 S3(Fernet)·S4(DOCX/PPTX)·S5(메모리)와 HWPX/HWPML 경로. 배포·인증은 이미 뚫려 있어 `supabase functions deploy spike --no-verify-jwt` 한 줄이면 바로 이어진다. 자세한 후보는 맨 아래 "다음 후보" 참조.
+> **범위**: Railway 해지·Supabase 전면 이관 결정 → 플랜 2건 작성 → Phase 0 타당성 스파이크 Task 0.1~0.5 (S1 HWP · S2 PDF · S3 Fernet · S4 DOCX/PPTX).
+> **다음 세션 재진입**: **S1·S2·S3·S4 전부 PASS.** 남은 건 ① HWPX/HWPML Edge 경로(기준선 6샘플 중 3건) ② S5 메모리 판정 방법(직접 계측 막힘) ③ Task 0.6 판정표. 배포·인증은 이미 뚫려 있어 `supabase functions deploy spike --no-verify-jwt` 한 줄이면 바로 이어진다. 자세한 후보는 맨 아래 "다음 후보" 참조.
 
 ## 0. 한눈에 보기
 
