@@ -4,6 +4,9 @@
     "@supabase/server": "npm:@supabase/server@^1",
 
     "@ohah/hwpjs-wasm32-wasi": "npm:@ohah/hwpjs-wasm32-wasi@0.1.0-rc.10",
-    "@rhwp/core": "npm:@rhwp/core@0.8.4"
+    "@rhwp/core": "npm:@rhwp/core@0.8.4",
+
+    "mupdf": "npm:mupdf@1.27.0",
+    "unpdf": "npm:unpdf@1.8.1"
   }
 }

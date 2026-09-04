@@ -16,9 +16,17 @@
  *   GET  ?kind=env                      런타임 능력 조사 (SAB / Worker / shared wasm memory)
  *   GET  ?kind=hwp-import               HWP WASM 모듈 로드만 시도 (S1 의 진짜 관문)
  *   POST ?kind=<hwp|hwp-rhwp>           body = HWP 바이트, 실제 파싱 + CPU 계측
+ *   GET  ?kind=pdf-import               mupdf 로드만 시도 (S2 의 진짜 관문)
+ *   GET  ?kind=pdf-unpdf                pdfjs 계열 대안 후보 로드 시도
+ *   POST ?kind=pdf&page=N[&full=1]      body = PDF 바이트, structured text 원본(asJSON) 덤프
+ *   POST ?kind=pdf-walk&page=N          walk() 콜백 인자 원본 덤프 (추출기 작성 전 확인용)
+ *   POST ?kind=pdf-dict&page=N          **S2 본 판정** — PyMuPDF get_text("dict") 호환 dict
+ *   POST ?kind=pdf-pages&from=&count=   페이지 단위 CPU 추이 (573p 는 CPU 2s 초과로 546)
  *
  * 응답의 cpuMs 가 2000 에 근접하면 그 작업 단위는 더 잘게 쪼개야 한다는 신호다.
  */
+
+import { pageArea, STEXT_OPTS, toPageDict } from "../_shared/pdf_dict.ts";
 
 interface SpikeResult {
   kind: string;
@@ -64,6 +72,31 @@ async function loadRhwp(): Promise<{ mod: Record<string, unknown>; importMs: num
     } catch { /* init 없이도 동작하는 빌드가 있어 실패를 삼킨다 */ }
   }
   return { mod, importMs: performance.now() - t0 };
+}
+
+/**
+ * S2 후보 — `mupdf`(mupdf.js). Emscripten WASM 이라 emnapi 계열과 부트스트랩이 다르다.
+ * S1 에서 Edge 를 죽인 `WebAssembly.Memory({shared:true})`·Worker 를 요구하지 않는지가 관문이다.
+ * 기준선이 PyMuPDF 1.27.2(MuPDF 1.27.2)라 엔진이 사실상 같다 — 그래서 1순위다.
+ */
+async function loadMupdf(): Promise<{ mod: Record<string, unknown>; importMs: number }> {
+  const t0 = performance.now();
+  const mod = await import("mupdf") as unknown as Record<string, unknown>;
+  return { mod, importMs: performance.now() - t0 };
+}
+
+/** 대안 후보 — pdfjs 서버리스 빌드(순수 JS). WASM 이 아예 없어 로드 위험이 가장 낮다. */
+async function loadUnpdf(): Promise<{ mod: Record<string, unknown>; importMs: number }> {
+  const t0 = performance.now();
+  const mod = await import("unpdf") as unknown as Record<string, unknown>;
+  return { mod, importMs: performance.now() - t0 };
+}
+
+/** 객체가 실제로 제공하는 메서드명. "있을 것"이라 가정하지 않고 실측해서 응답에 싣는다. */
+function methodsOf(o: unknown): string[] {
+  if (o === null || o === undefined) return [];
+  const proto = Object.getPrototypeOf(o);
+  return proto ? Object.getOwnPropertyNames(proto) : [];
 }
 
 /** 동기 블록만 감싸 CPU 시간을 근사한다. async 함수를 넘기지 말 것. */
@@ -229,7 +262,277 @@ async function handle(req: Request): Promise<SpikeResult> {
         return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };
       }
 
-      // 0.3 에서 "pdf", 0.4 에서 "fernet", 0.5 에서 "docx" case 가 여기 추가된다.
+      /**
+       * S2 의 관문 — 파일 없이 GET 으로 부른다.
+       * 여기서 죽으면 mupdf 는 Edge 에서 쓸 수 없고, span/bbox 품질은 볼 필요도 없다.
+       */
+      case "pdf-import": {
+        const { mod, importMs } = await loadMupdf();
+        const { cpuMs, value } = measure(() => ({
+          importMs,
+          exports: Object.keys(mod).slice(0, 60),
+          exportCount: Object.keys(mod).length,
+          hasDocument: typeof mod.Document === "function",
+          documentStatics: mod.Document ? Object.getOwnPropertyNames(mod.Document) : [],
+        }));
+        return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };
+      }
+
+      /**
+       * POST body = PDF 바이트. **1페이지의 structured text 원본을 그대로 덤프한다.**
+       *
+       * 추출기를 먼저 쓰지 않는 이유: mupdf 의 JSON 이 PyMuPDF 의 `get_text("dict")` 와
+       * 같은 모양이라는 보장이 없다(특히 spans 배열의 유무). 상상해서 파서를 쓰면 틀린다 —
+       * 원본을 1회 받아 눈으로 읽고 나서 매핑을 정한다.
+       *
+       *   ?kind=pdf&page=0&opts=preserve-spans,preserve-images&full=1
+       */
+      case "pdf": {
+        const pageIdx = Number(url.searchParams.get("page") ?? "0");
+        // mupdf 의 structured-text 옵션 문자열. 기본값은 span 보존 + 이미지 블록 유지.
+        const opts = url.searchParams.get("opts") ?? "preserve-whitespace,preserve-spans,preserve-images";
+        const wantFull = url.searchParams.get("full") === "1";
+        const { mod, importMs } = await loadMupdf();
+
+        const { cpuMs, value } = measure(() => {
+          const M = mod as {
+            Document: { openDocument(b: Uint8Array, mime: string): Record<string, unknown> };
+          };
+          const tOpen = performance.now();
+          const doc = M.Document.openDocument(bytes, "application/pdf") as unknown as {
+            countPages(): number;
+            loadPage(n: number): Record<string, unknown>;
+          };
+          const pageCount = doc.countPages();
+          const openMs = performance.now() - tOpen;
+
+          const tPage = performance.now();
+          const page = doc.loadPage(pageIdx);
+          const loadMs = performance.now() - tPage;
+
+          const bounds = typeof page.getBounds === "function"
+            ? (page.getBounds as () => unknown)()
+            : null;
+
+          const tSt = performance.now();
+          const st = (page.toStructuredText as (o: string) => Record<string, unknown>)(opts);
+          const stMs = performance.now() - tSt;
+
+          const tJson = performance.now();
+          const raw = (st.asJSON as () => string)();
+          const jsonMs = performance.now() - tJson;
+
+          return {
+            importMs,
+            openMs,
+            loadMs,
+            stMs,
+            jsonMs,
+            pageCount,
+            bounds,
+            pageMethods: methodsOf(page).slice(0, 40),
+            stMethods: methodsOf(st),
+            jsonChars: raw.length,
+            // 판정에 필요한 건 "무엇이 들어있나"다. full=1 이면 전문, 아니면 앞머리만.
+            json: wantFull ? raw : raw.slice(0, 3000),
+          };
+        });
+        return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };
+      }
+
+      /**
+       * 페이지 단위 팬아웃 아키텍처의 실제 단가 — N 페이지를 연속 처리하며 페이지당 CPU 를 잰다.
+       * 판정 포인트는 "합계"가 아니라 **페이지 1건 최댓값 < 2s** 와 메모리 증가 추이다.
+       *
+       *   ?kind=pdf-pages&from=0&count=20
+       */
+      case "pdf-pages": {
+        const from = Number(url.searchParams.get("from") ?? "0");
+        const count = Number(url.searchParams.get("count") ?? "10");
+        const opts = url.searchParams.get("opts") ?? STEXT_OPTS;
+        const { mod, importMs } = await loadMupdf();
+
+        const { cpuMs, value } = measure(() => {
+          const M = mod as {
+            Document: { openDocument(b: Uint8Array, mime: string): Record<string, unknown> };
+          };
+          const doc = M.Document.openDocument(bytes, "application/pdf") as unknown as {
+            countPages(): number;
+            loadPage(n: number): Record<string, unknown>;
+          };
+          const pageCount = doc.countPages();
+          const rss = () => {
+            try {
+              const mu = (globalThis as { Deno?: { memoryUsage?: () => { rss: number } } }).Deno?.memoryUsage;
+              return mu ? Math.round(mu().rss / 1e6) : null;
+            } catch {
+              return null;
+            }
+          };
+          const rssStart = rss();
+          const per: { page: number; ms: number; chars: number }[] = [];
+          const end = Math.min(from + count, pageCount);
+          for (let i = from; i < end; i++) {
+            const t = performance.now();
+            const page = doc.loadPage(i);
+            // 운영에서 실제로 돌 경로 그대로 잰다 — walk + toPageDict. asJSON 으로 재면 숫자가 의미 없다.
+            const st = (page.toStructuredText as (
+              o: string,
+            ) => { walk(w: Record<string, unknown>): void; destroy?: () => void }).call(page, opts);
+            const dict = toPageDict(st, (page.getBounds as () => number[])());
+            let chars = 0;
+            for (const b of dict.blocks) {
+              for (const l of b.lines ?? []) for (const s of l.spans) chars += s.text.length;
+            }
+            per.push({ page: i, ms: Math.round((performance.now() - t) * 10) / 10, chars });
+            // 페이지 객체를 즉시 놓아준다 — 이게 없으면 573p 문서에서 메모리가 선형 증가한다.
+            if (typeof st.destroy === "function") (st.destroy as () => void)();
+            if (typeof page.destroy === "function") (page.destroy as () => void)();
+          }
+          const msList = per.map((p) => p.ms);
+          return {
+            importMs,
+            pageCount,
+            pagesMeasured: per.length,
+            maxPageMs: msList.length ? Math.max(...msList) : null,
+            avgPageMs: msList.length ? Math.round((msList.reduce((a, b) => a + b, 0) / msList.length) * 10) / 10 : null,
+            rssStartMB: rssStart,
+            rssEndMB: rss(),
+            per,
+          };
+        });
+        return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };
+      }
+
+      /** mupdf 가 Edge 에서 죽었을 때만 의미가 있는 대안 후보. 로드 가능성만 먼저 본다. */
+      case "pdf-unpdf": {
+        const { mod, importMs } = await loadUnpdf();
+        const { cpuMs, value } = measure(() => ({
+          importMs,
+          exports: Object.keys(mod),
+        }));
+        return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };
+      }
+
+      /**
+       * S2 의 본 판정 — Edge 에서 **PyMuPDF `get_text("dict")` 호환 dict** 를 만들어 그대로 돌려준다.
+       * 이 응답을 `api/scripts/spike_pdf_compare.py` 로 기준선과 대조하면 이관 가능 여부가
+       * "텍스트가 비슷하다"가 아니라 **필드 단위 일치**로 판정된다.
+       *
+       *   ?kind=pdf-dict&page=39
+       */
+      case "pdf-dict": {
+        const pageIdx = Number(url.searchParams.get("page") ?? "0");
+        const { mod, importMs } = await loadMupdf();
+
+        const { cpuMs, value } = measure(() => {
+          const M = mod as {
+            Document: { openDocument(b: Uint8Array, mime: string): Record<string, unknown> };
+          };
+          const doc = M.Document.openDocument(bytes, "application/pdf") as unknown as {
+            countPages(): number;
+            loadPage(n: number): Record<string, unknown>;
+          };
+          const pageCount = doc.countPages();
+          const page = doc.loadPage(pageIdx);
+          const bounds = (page.getBounds as () => number[])();
+          // 메서드를 변수에 담아 호출하면 `this` 가 끊겨 mupdf 내부에서
+          // `Cannot read properties of undefined (reading 'pointer')` 가 난다. 반드시 수신자를 붙여 호출한다.
+          const st = (page.toStructuredText as (o: string) => { walk(w: Record<string, unknown>): void })
+            .call(page, STEXT_OPTS);
+          const dict = toPageDict(st, bounds);
+
+          let spanCount = 0;
+          let lineCount = 0;
+          let textBlocks = 0;
+          let imageBlocks = 0;
+          for (const b of dict.blocks) {
+            if (b.type === 1) {
+              imageBlocks++;
+              continue;
+            }
+            textBlocks++;
+            for (const l of b.lines ?? []) {
+              lineCount++;
+              spanCount += l.spans.length;
+            }
+          }
+          return {
+            importMs,
+            pageCount,
+            pageArea: pageArea(dict),
+            blockCount: dict.blocks.length,
+            textBlocks,
+            imageBlocks,
+            lineCount,
+            spanCount,
+            dict,
+          };
+        });
+        return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };
+      }
+
+      /**
+       * `StructuredText.walk()` 의 **콜백 인자 원본**을 그대로 덤프한다.
+       *
+       * asJSON 경로는 두 가지가 막혔다(2026-09-04 실측):
+       *   1. bbox 가 정수로 반올림된다 (기준선 대비 최대 1.93pt 편차)
+       *   2. `preserve-spans` 를 켜면 **블록 분할 자체가 달라진다**
+       *      (sample-report p0: 7블록/5텍스트 → 6블록/4텍스트). 두 호출을 인덱스로 짝지을 수 없다.
+       * walk 가 char 단위 (font, size, quad) 를 주면 한 번의 순회로 PyMuPDF 의 span 정의
+       * (= 같은 font·size 의 연속 run) 를 그대로 복원할 수 있다. 인자 모양을 확인하는 게 먼저다.
+       */
+      case "pdf-walk": {
+        const pageIdx = Number(url.searchParams.get("page") ?? "0");
+        const limit = Number(url.searchParams.get("limit") ?? "12");
+        const { mod, importMs } = await loadMupdf();
+
+        const { cpuMs, value } = measure(() => {
+          const M = mod as {
+            Document: { openDocument(b: Uint8Array, mime: string): Record<string, unknown> };
+          };
+          const doc = M.Document.openDocument(bytes, "application/pdf") as unknown as {
+            loadPage(n: number): Record<string, unknown>;
+          };
+          const page = doc.loadPage(pageIdx);
+          const st = (page.toStructuredText as (o: string) => Record<string, unknown>)
+            .call(page, STEXT_OPTS);
+
+          const events: unknown[] = [];
+          let charCount = 0;
+          const rec = (name: string, args: unknown[]) => {
+            if (events.length < limit) {
+              events.push({ name, args: args.map((a) => (typeof a === "object" && a !== null ? { ...a } : a)) });
+            }
+          };
+          // 어떤 콜백이 실제로 불리는지 모른다 → 후보를 전부 등록하고 호출된 것만 센다.
+          const called: Record<string, number> = {};
+          const names = [
+            "beginTextBlock",
+            "endTextBlock",
+            "beginLine",
+            "endLine",
+            "beginStruct",
+            "endStruct",
+            "onChar",
+            "onImageBlock",
+            "onVector",
+          ];
+          const walker: Record<string, unknown> = {};
+          for (const n of names) {
+            walker[n] = (...args: unknown[]) => {
+              called[n] = (called[n] ?? 0) + 1;
+              if (n === "onChar") charCount++;
+              rec(n, args);
+            };
+          }
+          (st.walk as (w: unknown) => void).call(st, walker);
+          return { importMs, called, charCount, events };
+        });
+        return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };
+      }
+
+      // 0.4 에서 "fernet", 0.5 에서 "docx" case 가 여기 추가된다.
 
       default:
         return {
