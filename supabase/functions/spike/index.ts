@@ -24,6 +24,7 @@
  *   POST ?kind=pdf-pages&from=&count=   페이지 단위 CPU 추이 (573p 는 CPU 2s 초과로 546)
  *   POST ?kind=fernet                   body = {key, token, plaintext} — S3 판정
  *   POST ?kind=<docx|pptx>              body = 파일 바이트 — S4 판정
+ *   POST ?kind=<hwpx|hwpml>             body = 파일 바이트 — HWPX/HWPML 판정
  *
  * 응답의 cpuMs 가 2000 에 근접하면 그 작업 단위는 더 잘게 쪼개야 한다는 신호다.
  */
@@ -31,6 +32,7 @@
 import { pageArea, STEXT_OPTS, toPageDict } from "../_shared/pdf_dict.ts";
 import { decryptFernet, encryptFernet } from "../_shared/fernet.ts";
 import { extractDocx, extractPptx } from "../_shared/ooxml_text.ts";
+import { extractHwpml, extractHwpx } from "../_shared/hwp_xml_text.ts";
 
 interface SpikeResult {
   kind: string;
@@ -592,9 +594,17 @@ async function handle(req: Request): Promise<SpikeResult> {
        * 응답에 섹션 전문을 실어 기준선(`spike_ooxml_baseline.json`)과 직접 대조한다.
        */
       case "docx":
-      case "pptx": {
+      case "pptx":
+      case "hwpx":
+      case "hwpml": {
         const { cpuMs, value } = measure(() => {
-          const out = kind === "docx" ? extractDocx(bytes) : extractPptx(bytes);
+          const out = kind === "docx"
+            ? extractDocx(bytes)
+            : kind === "pptx"
+            ? extractPptx(bytes)
+            : kind === "hwpx"
+            ? extractHwpx(bytes)
+            : extractHwpml(bytes);
           const joined = out.sections.map((s) => s.text).join("\n");
           return {
             sourceType: out.sourceType,

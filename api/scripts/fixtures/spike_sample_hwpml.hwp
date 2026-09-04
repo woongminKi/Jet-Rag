@@ -1,0 +1,17 @@
+﻿<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<HWPML Style="embed" SubVersion="8.0.0.0" Version="2.8">
+<HEAD SecCnt="1"><DOCSUMMARY><TITLE>스파이크 fixture</TITLE><AUTHOR>Jet-Rag</AUTHOR></DOCSUMMARY></HEAD>
+<BODY>
+<SECTION Id="0">
+<P Style="0"><TEXT><SECDEF><PARAMETERSET SetId="1"><ITEM Type="Set"><CHAR>메타데이터 CHAR - 본문에 섞이면 안 된다</CHAR></ITEM></PARAMETERSET></SECDEF><CHAR>첫 단락 본문이다. 📌</CHAR></TEXT></P>
+<P Style="0"><TEXT><CHAR>제 2 조 (정의)</CHAR></TEXT></P>
+<P Style="0"><TEXT><CHAR>텍스트 패턴 heading 뒤의 본문 - sticky 로 붙어야 한다.</CHAR></TEXT></P>
+<P Style="0"><TEXT><CHAR>바깥 P 텍스트 - 컨테이너라 skip 되어야 한다</CHAR></TEXT>
+  <P Style="0"><TEXT><CHAR>중첩 P 의 본문 - 이쪽만 단락이 된다</CHAR></TEXT></P>
+</P>
+<P Style="0"><TEXT><CHAR>엔티티 검사: &amp; &lt; &gt; 그리고 줄바꿈 없는 본문</CHAR></TEXT></P>
+<P Style="0"><TEXT><CHAR>부칙</CHAR></TEXT></P>
+<P Style="0"><TEXT><CHAR>마지막 단락.</CHAR></TEXT></P>
+</SECTION>
+</BODY>
+</HWPML>

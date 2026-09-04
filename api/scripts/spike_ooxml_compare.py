@@ -1,11 +1,11 @@
-"""S4 채점기 — Edge 의 `?kind=docx|pptx` 응답을 프로덕션 파서 기준선과 대조한다.
+"""S4/HWPX 채점기 — Edge 의 `?kind=docx|pptx|hwpx|hwpml` 응답을 프로덕션 파서 기준선과 대조한다.
 
 기준선은 `spike_ooxml_baseline.py` 가 실제 `DocxParser`/`PptxParser` 로 뜬 값이다.
 텍스트 유사도만 보지 않는다 — `section_title` sticky propagate 가 검색 품질을 좌우하므로
 **섹션 단위 (text, section_title) 쌍이 그대로인지**까지 본다.
 
 사용:
-    python3 api/scripts/spike_ooxml_compare.py [--dump DIR]
+    python3 api/scripts/spike_ooxml_compare.py [--dump DIR] [--baseline PATH]
 """
 
 from __future__ import annotations
@@ -65,12 +65,13 @@ def similarity(a: str, b: str) -> float:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dump", help="Edge 원본 응답 저장 디렉토리")
+    ap.add_argument("--baseline", default=BASELINE, help="기준선 JSON 경로 (기본: spike_ooxml_baseline.json)")
     args = ap.parse_args()
     if args.dump:
         os.makedirs(args.dump, exist_ok=True)
 
     key = anon_key()
-    with open(BASELINE, encoding="utf-8") as f:
+    with open(args.baseline, encoding="utf-8") as f:
         baseline = json.load(f)
 
     hdr = f"{'샘플':<34}{'섹션':>12}{'문자':>14}{'쌍일치':>9}{'제목':>7}{'유사도':>9}{'cpuMs':>8}  판정"

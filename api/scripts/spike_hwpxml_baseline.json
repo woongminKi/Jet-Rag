@@ -1,0 +1,134 @@
+{
+ "samples": {
+  "api/scripts/fixtures/spike_sample.hwpx": {
+   "source_type": "hwpx",
+   "file_bytes": 7809,
+   "section_count": 12,
+   "chars": 187,
+   "titles": [
+    "두 번째 본문 단락 — 앞 heading 이 sticky 로 붙어야 한다.",
+    "부칙",
+    "스타일 없이 텍스트 패턴만으로 heading 이 된 뒤의 본문.",
+    "스타일 이름으로 heading 이 판정되는 경로다. 📌",
+    "제 3 조 (적용범위)",
+    "제1장 총칙",
+    "표 뒤 단락 — 문서 순서가 보존되는지 확인용.",
+    "표 앞 안내 문장"
+   ],
+   "text": "제1장 총칙\n스타일 이름으로 heading 이 판정되는 경로다. 📌\n두 번째 본문 단락 — 앞 heading 이 sticky 로 붙어야 한다.\n제 3 조 (적용범위)\n스타일 없이 텍스트 패턴만으로 heading 이 된 뒤의 본문.\n표 앞 안내 문장\n항목\n결과\n유사도\n1.0000 📌\n부칙\n표 뒤 단락 — 문서 순서가 보존되는지 확인용.",
+   "sections": [
+    {
+     "text": "제1장 총칙",
+     "page": null,
+     "section_title": "제1장 총칙"
+    },
+    {
+     "text": "스타일 이름으로 heading 이 판정되는 경로다. 📌",
+     "page": null,
+     "section_title": "스타일 이름으로 heading 이 판정되는 경로다. 📌"
+    },
+    {
+     "text": "두 번째 본문 단락 — 앞 heading 이 sticky 로 붙어야 한다.",
+     "page": null,
+     "section_title": "두 번째 본문 단락 — 앞 heading 이 sticky 로 붙어야 한다."
+    },
+    {
+     "text": "제 3 조 (적용범위)",
+     "page": null,
+     "section_title": "제 3 조 (적용범위)"
+    },
+    {
+     "text": "스타일 없이 텍스트 패턴만으로 heading 이 된 뒤의 본문.",
+     "page": null,
+     "section_title": "스타일 없이 텍스트 패턴만으로 heading 이 된 뒤의 본문."
+    },
+    {
+     "text": "표 앞 안내 문장",
+     "page": null,
+     "section_title": "표 앞 안내 문장"
+    },
+    {
+     "text": "항목",
+     "page": null,
+     "section_title": "표 앞 안내 문장"
+    },
+    {
+     "text": "결과",
+     "page": null,
+     "section_title": "표 앞 안내 문장"
+    },
+    {
+     "text": "유사도",
+     "page": null,
+     "section_title": "표 앞 안내 문장"
+    },
+    {
+     "text": "1.0000 📌",
+     "page": null,
+     "section_title": "표 앞 안내 문장"
+    },
+    {
+     "text": "부칙",
+     "page": null,
+     "section_title": "부칙"
+    },
+    {
+     "text": "표 뒤 단락 — 문서 순서가 보존되는지 확인용.",
+     "page": null,
+     "section_title": "표 뒤 단락 — 문서 순서가 보존되는지 확인용."
+    }
+   ],
+   "warnings": []
+  },
+  "api/scripts/fixtures/spike_sample_hwpml.hwp": {
+   "source_type": "hwpml",
+   "file_bytes": 1090,
+   "section_count": 7,
+   "chars": 125,
+   "titles": [
+    "section 0",
+    "부칙",
+    "제 2 조 (정의)"
+   ],
+   "text": "첫 단락 본문이다. 📌\n제 2 조 (정의)\n텍스트 패턴 heading 뒤의 본문 - sticky 로 붙어야 한다.\n중첩 P 의 본문 - 이쪽만 단락이 된다\n엔티티 검사: & < > 그리고 줄바꿈 없는 본문\n부칙\n마지막 단락.",
+   "sections": [
+    {
+     "text": "첫 단락 본문이다. 📌",
+     "page": null,
+     "section_title": "section 0"
+    },
+    {
+     "text": "제 2 조 (정의)",
+     "page": null,
+     "section_title": "제 2 조 (정의)"
+    },
+    {
+     "text": "텍스트 패턴 heading 뒤의 본문 - sticky 로 붙어야 한다.",
+     "page": null,
+     "section_title": "제 2 조 (정의)"
+    },
+    {
+     "text": "중첩 P 의 본문 - 이쪽만 단락이 된다",
+     "page": null,
+     "section_title": "제 2 조 (정의)"
+    },
+    {
+     "text": "엔티티 검사: & < > 그리고 줄바꿈 없는 본문",
+     "page": null,
+     "section_title": "제 2 조 (정의)"
+    },
+    {
+     "text": "부칙",
+     "page": null,
+     "section_title": "부칙"
+    },
+    {
+     "text": "마지막 단락.",
+     "page": null,
+     "section_title": "부칙"
+    }
+   ],
+   "warnings": []
+  }
+ }
+}
