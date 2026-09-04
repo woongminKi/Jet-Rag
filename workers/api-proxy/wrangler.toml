@@ -1,6 +1,9 @@
 name = "jetrag-api-proxy"
 main = "src/index.js"
-compatibility_date = "2026-09-01"
+# 로컬 workerd(wrangler 4.86)가 2026-05-03 까지만 지원한다. 더 최신 날짜를 쓰면 배포는 되지만
+# `wrangler dev` 가 안 떠서 **배포 전 검증을 못 한다** — 그게 더 큰 손해라 날짜를 맞춘다.
+# 이 Worker 는 fetch 통과가 전부라 날짜에 따른 런타임 동작 차이가 없다.
+compatibility_date = "2026-05-03"
 # 이 Worker 는 커스텀 도메인 route 로만 받는다. workers.dev 주소는 열지 않는다.
 workers_dev = false
 
