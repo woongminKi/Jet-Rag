@@ -82,3 +82,6 @@ evals/*.bak.*
 evals/golden_v2.csv.bak.*
 .gstack/
 .omc/
+
+# Cloudflare Worker 로컬 캐시·상태 (생성물)
+.wrangler/

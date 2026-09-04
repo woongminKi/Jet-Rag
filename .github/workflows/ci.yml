@@ -64,3 +64,74 @@ jobs:
         run: pnpm exec tsc --noEmit
       - name: eslint
         run: pnpm lint
+
+  edge-check:
+    name: edge · deno fmt/lint/test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      # supabase/functions 와 workers/api-proxy 는 deno.json 이 따로다.
+      # 한쪽만 돌리면 다른 쪽 회귀를 놓친다.
+      - name: functions · fmt
+        working-directory: supabase/functions
+        run: deno fmt --check
+      - name: functions · lint
+        working-directory: supabase/functions
+        run: deno lint
+      - name: functions · test
+        working-directory: supabase/functions
+        # jwt 테스트가 로컬 JWKS 서버를 띄우고 jose 를 npm 에서 받아온다.
+        run: deno test --allow-env --allow-net --allow-read
+
+      - name: proxy · fmt
+        working-directory: workers/api-proxy
+        run: deno fmt --check
+      - name: proxy · lint
+        working-directory: workers/api-proxy
+        run: deno lint
+      - name: proxy · test
+        working-directory: workers/api-proxy
+        run: deno test --allow-net
+
+  edge-parity:
+    name: edge · Python 동등성 대조
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: uv sync
+        working-directory: api
+        run: uv sync --frozen
+
+      # 이 검사기들이 이관의 실제 안전망이다. 단위 테스트는 "내가 이해한 계약" 을 고정할 뿐이고,
+      # 여기서만 **Python 원본과 같은가** 를 본다. 실제로 버그를 잡은 적이 있다
+      # (DEFAULT_USER_ID 접두어, base64 padding, jose 의 aud reason, Vary 덧붙이기).
+      # 전부 로컬에서 돈다 — 배포된 함수나 시크릿이 필요 없다.
+      - name: config
+        working-directory: api
+        run: uv run python scripts/verify_config_parity.py
+      - name: cookie_token
+        working-directory: api
+        run: uv run python scripts/verify_cookie_token_parity.py
+      - name: jwt
+        working-directory: api
+        run: uv run python scripts/verify_jwt_parity.py
+      - name: current_user
+        working-directory: api
+        run: uv run python scripts/verify_current_user_parity.py
+      - name: cors
+        working-directory: api
+        run: uv run python scripts/verify_cors_parity.py
