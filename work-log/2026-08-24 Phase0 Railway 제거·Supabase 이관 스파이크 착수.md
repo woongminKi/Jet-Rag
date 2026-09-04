@@ -1,7 +1,7 @@
 # 2026-08-24 — Phase 0 스파이크 (Railway 제거 · Supabase 전면 이관)
 
 > **범위**: Railway 해지·Supabase 전면 이관 결정 → 플랜 2건 작성 → Phase 0 타당성 스파이크 Task 0.1~0.5 (S1 HWP · S2 PDF · S3 Fernet · S4 DOCX/PPTX).
-> **다음 세션 재진입**: **S1·S2·S3·S4 전부 PASS.** 남은 건 ① HWPX/HWPML Edge 경로(기준선 6샘플 중 3건) ② S5 메모리 판정 방법(직접 계측 막힘) ③ Task 0.6 판정표. 배포·인증은 이미 뚫려 있어 `supabase functions deploy spike --no-verify-jwt` 한 줄이면 바로 이어진다. 자세한 후보는 맨 아래 "다음 후보" 참조.
+> **다음 세션 재진입**: **파서 전 경로 판정 완료 — S1·S2·S3·S4 + HWPX/HWPML 전부 PASS.** 남은 건 ① S5 메모리 판정 방법(직접 계측 막힘) ② Task 0.6 판정표 → Phase 1 착수 승인. 배포·인증은 이미 뚫려 있어 `supabase functions deploy spike --no-verify-jwt` 한 줄이면 바로 이어진다. 자세한 후보는 맨 아래 "다음 후보" 참조.
 
 ## 0. 한눈에 보기
 
@@ -15,12 +15,12 @@
 | S1 — `@ohah/hwpjs` | ❌ **Edge FAIL** | emnapi 가 shared memory·Worker 요구 → Edge 는 1페이지도 불가 |
 | S1 — **`@rhwp/core`** | ✅ **Edge PASS** | `getTextFileText()` 유사도 **1.0000**, 총 72ms (예산 2s) |
 | S1 — 최종 판정 | ✅ **PASS** | HWP 5.x 경로 확정: `@rhwp/core` + HTML 엔티티 디코딩 |
-| S1 — HWPX / HWPML | ⬜ 미착수 | hwpjs 는 HWP 5.x(OLE2) 전용으로 확인됨 |
+| **S1 — HWPX / HWPML** | ✅ **PASS** | 실자산 3건 섹션·(text,title) 쌍 **완전일치**, 유사도 **1.0000**, CPU 1.5~27ms |
 | **S2 — PDF (`mupdf` 1.27.0)** | ✅ **PASS** | 페이지당 CPU 최대 **100.8ms**, 유사도 **1.0000**×7p, 다운스트림 **7/7 동등** |
 | **S3 — Fernet (Web Crypto)** | ✅ **PASS** | Python↔Deno **양방향 복호**, 변조·오키 거부, 복호 1.7~2.0ms |
 | **S4 — DOCX/PPTX (ZIP+XML 직접)** | ✅ **PASS** | 섹션·(text,title) 쌍 **완전일치**, 유사도 **1.0000**, CPU 10~72ms |
 | S5 — 메모리 | ⚠️ **방법 막힘** | Edge `Deno.memoryUsage()` 가 0 반환 — 직접 계측 불가 |
-| Task 0.6 판정표 → Phase 1 착수 승인 | ⬜ 대기 | S5 판정 방법 결정 + HWPX/HWPML 잔여 |
+| Task 0.6 판정표 → Phase 1 착수 승인 | ⬜ 대기 | **파서 리스크는 전부 해소.** S5 판정 방법만 결정하면 됨 |
 
 ## 결정 사항
 
@@ -200,7 +200,7 @@ SharedArrayBuffer / Worker / `WebAssembly.Memory({initial:4000, shared:true})`(2
 
 1. **Edge 런타임이 emnapi 부트스트랩을 허용하는가** — SAB / `fetch(file:)` 로 번들 내 .wasm 읽기 / Worker 생성.
    로컬 Deno 는 셋 다 되지만 Edge 는 더 제한적이다. **`?kind=env` + `?kind=hwp-import` 한 번이면 판정된다.**
-2. HWPX/HWPML 경로 (위 참조) — 미착수
+2. ~~HWPX/HWPML 경로~~ → **2026-09-04 PASS** (실자산 3건 완전일치)
 3. ~~S2(PDF span/bbox)~~ ~~S3(Fernet)~~ ~~S4(DOCX/PPTX)~~ → **2026-09-04 전부 PASS**.
    S5(메모리)만 남았고 방법부터 막혀 있다 — Edge 의 `Deno.memoryUsage()` 가 0 을 반환한다.
 4. `DEBUG_LINESEG:` 디버그 로그가 stdout 을 오염시킨다 — 운영 투입 전 처리 필요
@@ -430,6 +430,43 @@ Web Crypto 만으로 Python `cryptography.fernet` 과 호환된다. **한 방향
   맞췄으므로 동작은 일치하지만, 결과적으로 하이퍼링크 텍스트는 **양쪽 다** 빠진다(기존 동작 유지).
 - 대상 문서 실측: 하이퍼링크 0 · `w:tab` 0 · `w:sdt` 0 — 위 경로가 실제로 안 밟혔다는 뜻이다.
 
+## 6차 세션 (2026-09-04) — **HWPX/HWPML 판정 완료. PASS. 파서 전 경로 종료**
+
+S1 이 남긴 마지막 구멍이었다. `@rhwp/core` 는 HWP 5.x(OLE2) 전용이라 기준선 6샘플 중
+HWPX 2건 + HWPML 1건이 처리되지 않았다. 둘 다 결국 XML 이라 **직접 읽는 쪽**을 택했다.
+
+| 샘플 | 섹션 | 문자 | (text,title) 쌍 | 제목 집합 | 유사도 | cpuMs |
+|---|---|---|---|---|---|---|
+| `직제_규정(2024.4.30.).hwpx` | 497/497 | 17,990/17,990 | **497/497** | O | **1.0000** | 27.3 |
+| `한마음생활체육관_내규.hwpx` | 118/118 | 4,069/4,069 | **118/118** | O | **1.0000** | 16.5 |
+| `law sample2.hwp` (HWPML) | 58/58 | 8,247/8,247 | **58/58** | O | **1.0000** | 7.0 |
+| fixture `spike_sample.hwpx` | 12/12 | 187/187 | **12/12** | O | **1.0000** | 9.9 |
+| fixture `spike_sample_hwpml.hwp` | 7/7 | 125/125 | **7/7** | O | **1.0000** | 1.6 |
+
+S4 의 XML 스캐너를 `_shared/xml_scan.ts` 로 분리해 OOXML 과 공유한다. 필요한 연산이
+**"직계 자식 / 첫 후손 / 모든 후손"** 세 가지뿐이라 DOM 파서 없이 충분하다.
+
+HWPX 는 `.//hp:p` 로 **표 안 중첩 단락까지** 훑되, 단락 텍스트는 **직계 `hp:run` 의 직계
+자식**만 읽는다. 후손을 전부 훑으면 표 텍스트가 중첩 단락과 **중복**된다.
+
+### 도중 잡은 것 3건
+
+1. **XML 주석 안의 태그를 실제 태그로 읽었다.** ElementTree 는 주석을 트리에 넣지 않는데
+   정규식 스캐너는 그대로 잡는다. `law sample2.hwp` 의 주석 처리된 템플릿 자리표시자
+   `{이유소제목}`·`{이유본문}` 이 본문으로 새어 **58개여야 할 섹션이 60개**가 됐다.
+   → `stripComments` 를 OOXML 경로에도 같이 적용하고 **S4 회귀 0 을 재확인**했다.
+   숫자가 이상해서 원본 XML 을 연 게 맞았다 — 코드만 봤으면 못 찾는다.
+2. **HWPX 줄바꿈은 `hp:br` 이 아니라 `hp:lineBreak`.** DOCX 용 `collectText` 를 그대로
+   쓰면 줄바꿈이 조용히 사라진다. HWPX 전용 순회로 분리했다.
+3. **`hwpx` 라이브러리는 lxml 트리를 쓴다.** fixture 의 표를 `xml.etree` 로 만들어 붙이면
+   `append` 가 타입 오류로 거부된다.
+
+### fixture 가 덮는 경로
+
+`spike_hwpxml_fixture.py` 가 생성한다(실자산은 `.gitignore` 대상이라 커밋 불가):
+style heading(`개요 1`) · 텍스트 패턴 heading(`제 3 조`) · **표 중첩 단락** ·
+**중첩 P 컨테이너 skip** · `PARAMETERSET` 메타데이터 CHAR 배제 · UTF-8 BOM · 비BMP 문자.
+
 ## 산출물 지도
 
 | 파일 | 역할 |
@@ -447,7 +484,11 @@ Web Crypto 만으로 Python `cryptography.fernet` 과 호환된다. **한 방향
 | `api/scripts/spike_fernet_check.py` | **S3 채점기 — 양방향 복호 + 변조·오키 거부** |
 | `api/scripts/spike_ooxml_fixture.py` | 합성 fixture 생성기 (docx/pptx) |
 | `api/scripts/spike_ooxml_baseline.py` · `.json` | 프로덕션 파서 기준선 (기본=fixture, `--include-local`=실자산) |
-| `api/scripts/spike_ooxml_compare.py` | **S4 채점기 — 섹션·(text,title) 쌍 대조** |
+| `api/scripts/spike_ooxml_compare.py` | **S4/HWPX 공용 채점기 — `--baseline` 로 대상 전환** |
+| `supabase/functions/_shared/xml_scan.ts` | **최소 XML 스캐너 (OOXML·HWPX·HWPML 공용)** |
+| `supabase/functions/_shared/hwp_xml_text.ts` | **HWPX/HWPML 추출기 — Phase 1 에서 그대로 쓸 코드** |
+| `api/scripts/spike_hwpxml_fixture.py` | HWPX/HWPML 합성 fixture 생성기 |
+| `api/scripts/spike_hwpxml_baseline.py` · `.json` | HWPX/HWPML 기준선 (기본=fixture, `--include-local`=실자산) |
 | `scripts/spike_hwp_extract.ts` | WASM 파싱 → 산출물 덤프 (`toJson`/`toHtml`/`toMarkdown`/`extracted`) |
 | `scripts/spike_wasm_probe.ts` · `probe2` · `probe3` | 후보 탐색 1·2차 / WASM 경로 강제 검증 |
 | `scripts/deno.json` | `nodeModulesDir: auto` + WASM 서브패키지 버전 고정 |
@@ -472,12 +513,19 @@ api/.venv/bin/python api/scripts/spike_fernet_check.py               # → FAIL 
 api/.venv/bin/python api/scripts/spike_ooxml_fixture.py              # fixture 재생성
 api/.venv/bin/python api/scripts/spike_ooxml_baseline.py             # 기준선 재생성
 python3 api/scripts/spike_ooxml_compare.py                           # → FAIL 0
+
+# HWPX / HWPML
+api/.venv/bin/python api/scripts/spike_hwpxml_fixture.py             # fixture 재생성
+api/.venv/bin/python api/scripts/spike_hwpxml_baseline.py            # 기준선 재생성
+python3 api/scripts/spike_ooxml_compare.py \
+  --baseline api/scripts/spike_hwpxml_baseline.json                  # → FAIL 0
 ```
 
 ## 커밋 이력 (최신순)
 
 | 해시 | 메시지 |
 |---|---|
+| `0d59955` | feat(spike): HWPX/HWPML Edge 경로 PASS — 실자산 3건 전부 완전일치 |
 | `783f8c6` | feat(spike-s3,s4): Fernet 양방향 호환 + DOCX/PPTX 추출 PASS — 전부 FAIL 0 |
 | `e1c2b1d` | docs(work-log): S2(PDF) Edge 판정 PASS 기록 |
 | `9226328` | feat(spike-s2): PDF Edge 판정 PASS — mupdf 1.27.0, 다운스트림 7/7 동등 |
@@ -540,16 +588,19 @@ curl -s -X POST --data-binary @assets/public/law_sample1.hwp \
 | `hasWorker: false` | emnapi 비동기 워커 풀 생성 불가 | 동기 호출만 쓰면 우회 가능한지 확인 |
 | 전부 true 인데 import 실패 | `fetch(file:)` 로 번들 내 .wasm 읽기 실패 | .wasm 을 base64 인라인하거나 Storage 에서 받아 `WebAssembly.instantiate` |
 
-## 다음 후보 (2026-09-04 갱신 — S1·S2·S3·S4 완료 후)
+## 다음 후보 (2026-09-04 갱신 — **파서 전 경로 판정 완료** 후)
+
+기준선 6샘플이 전부 Edge 경로를 확보했다. HWP 5.x(`@rhwp/core`) · PDF(`mupdf`) ·
+HWPX/HWPML · DOCX/PPTX(ZIP+XML) · Fernet(Web Crypto).
 
 | 후보 | 내용 | 근거 |
 |---|---|---|
-| **A (권고)** | **HWPX/HWPML Edge 경로** (ZIP+XML / XML) | 파서 중 유일하게 남은 미판정. 기준선 6샘플 중 **3건**이 여기 걸린다. S4 에서 만든 OOXML ZIP+XML 스캐너를 거의 그대로 재사용할 수 있어 비용이 낮다 |
-| B | S5 메모리 판정 방법을 정하고 Task 0.6 판정표 작성 | `Deno.memoryUsage()` 가 0 이라 직접 계측이 막혔다. 간접 지표(대량 처리 생존 · `WORKER_RESOURCE_LIMIT` 유형)로 대체할지 결정하면 Phase 1 착수 승인까지 간다 |
-| C | Phase 1 착수 (Cloudflare Worker 리버스 프록시부터) | 파서 4종이 다 통과해 "물리적으로 불가"라는 중단 조건은 벗어났다. HWPX 는 Phase 1 중 병렬 처리 |
+| **A (권고)** | **S5 메모리 판정 방법 확정 → Task 0.6 판정표 작성 → Phase 1 착수 승인** | Phase 0 에서 유일하게 안 닫힌 항목. `Deno.memoryUsage()` 가 0 이라 직접 계측이 막혔으므로 간접 지표(대량 처리 생존 · `WORKER_RESOURCE_LIMIT` 유형 구분)로 대체할지 **결정**만 하면 Phase 0 이 끝난다. 판정표는 이미 수치가 다 모여 있어 정리 작업이다 |
+| B | Phase 1 Task 1 착수 (Cloudflare Worker 리버스 프록시) | 쿠키 도메인 함정의 해법이자 Phase 1 의 첫 블록. 프론트 변경 0줄로 경로별 점진 전환이 가능해 되돌리기 쉽다 |
+| C | 스파이크 코드를 Phase 1 형태로 정리 | `_shared/` 의 파서 4종은 이미 "그대로 쓸 코드"로 썼다. `spike/index.ts` 만 걷어내면 된다 — 다만 S5 가 안 끝나 아직 스파이크가 필요할 수 있다 |
 
-**권고: A** — HWPX/HWPML 은 샘플 6건 중 3건이 걸리는데 아직 아무 근거가 없다.
-S4 의 XML 스캐너 재사용으로 싸게 닫을 수 있고, 그래야 Task 0.6 판정표가 빈칸 없이 채워진다.
+**권고: A** — 남은 건 판정 **방법**에 대한 결정 하나다. 여기서 Phase 0 을 닫아야
+Task 0.6 승인 게이트가 성립하고, 그 다음에 Phase 1 을 근거 있게 시작할 수 있다.
 
 > S1 이 남긴 절차 변경(S2 에서 재확인됨): 로컬 Deno 통과는 Edge 통과의 근거가 아니다.
 > S3~S5 도 로컬 프로브 없이 `spike` 함수에 case 를 추가해 배포(약 20초)하고 실측한다.
