@@ -92,6 +92,17 @@ PARAM_CASES: list[tuple[str, dict]] = [
     ("doc_id 공백만", {"q": "a", "doc_id": "   "}),
     ("doc_id 65자", {"q": "a", "doc_id": "x" * 65}),
     ("doc_id 64자 (경계)", {"q": "a", "doc_id": "x" * 64}),
+    # doc_type 은 pydantic 이 아니라 핸들러가 본다 — 처음에 통째로 빠뜨렸던 자리다.
+    ("doc_type 잘못", {"q": "a", "doc_type": "bogus"}),
+    ("doc_type 빈 문자열", {"q": "a", "doc_type": ""}),
+    ("doc_type 대문자", {"q": "a", "doc_type": "PDF"}),
+    ("doc_type 정상", {"q": "a", "doc_type": "pdf"}),
+    # 검사 순서 고정 — doc_type 이 doc_id·mode 보다 먼저다.
+    ("doc_type+doc_id 동시 오류", {"q": "a", "doc_type": "bogus", "doc_id": ""}),
+    ("doc_type+mode 동시 오류", {"q": "a", "doc_type": "bogus", "mode": "bogus"}),
+    ("doc_id+mode 동시 오류", {"q": "a", "doc_id": "", "mode": "bogus"}),
+    ("mode+from_date 동시 오류", {"q": "a", "mode": "bogus", "from_date": "nope"}),
+    ("from_date+to_date 동시 오류", {"q": "a", "from_date": "nope", "to_date": "nope"}),
     ("from_date 형식오류", {"q": "a", "from_date": "nope"}),
     ("to_date 형식오류", {"q": "a", "to_date": "2026-13-99"}),
     ("from_date 날짜만", {"q": "a", "from_date": "2026-04-01"}),

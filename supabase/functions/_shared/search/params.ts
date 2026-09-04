@@ -15,8 +15,21 @@
  *
  * ## 순서도 계약이다
  * pydantic 은 **함수 시그니처 선언 순서**로 검증한다: `q → limit → offset → … → doc_id → mode`.
- * 핸들러는 그 다음에 **빈 질의 → doc_id → mode → from_date → to_date** 순으로 본다.
+ * 핸들러는 그 다음에 **빈 질의 → doc_type → doc_id → mode → from_date → to_date** 순으로 본다.
  * 여러 개가 동시에 틀리면 어느 것이 먼저 나오는지가 달라지므로 순서를 맞춘다.
+ *
+ * ## `doc_type` 은 pydantic 이 아니라 핸들러가 본다
+ * 시그니처의 `Query(default=None)` 에는 제약이 없어서 422 가 안 난다. 60 줄 뒤 핸들러가
+ * `_DOC_TYPES` 화이트리스트로 검사해 **400** 을 낸다. 시그니처만 보고 포팅하면 통째로
+ * 빠지는 자리다(실제로 처음에 빠뜨렸다). 대소문자 구분하며 빈 문자열도 거부한다(실측).
+ *
+ * ## 미검증 — meta_fast_path 와의 순서
+ * 원본은 빈 질의 검사 **직후** meta fast path 를 돌리고, 거기서 결과가 나오면 아래 검사를
+ * 하나도 거치지 않고 반환한다(`search.py` 702 → 709). 즉 fast path 가 뜨는 질의에서는
+ * `doc_type=bogus` 가 400 이 아니라 200 이 될 수 있고, **메타 필터 4종이 통째로 무시된다**
+ * (`_run_meta_fast_path` 는 tags·doc_type·from_date·to_date 를 인자로 받지 않는다).
+ * 비인증 프로브는 문서 0 건이라 fast path 가 항상 fallback 해서 이걸 재현하지 못했다 —
+ * 소스 기준 판정이다. 호출 순서는 Task 2.6/2.8 에서 결정한다.
  *
  * ## 경계 하나 — 공백만 있는 질의
  * `q=" "` 는 pydantic 의 `min_length=1` 을 **통과한다**(길이 1). 그 뒤 핸들러가 `strip()` 해서
@@ -60,6 +73,18 @@ const MAX_LIMIT = 50;
 const DEFAULT_LIMIT = 10;
 const MAX_DOC_ID_LEN = 64;
 const MODES: readonly string[] = ["hybrid", "dense", "sparse"];
+/** `001_init.sql` 의 doc_type CHECK 제약과 동일. 원본 `_DOC_TYPES`. */
+const DOC_TYPES: ReadonlySet<string> = new Set([
+  "pdf",
+  "hwp",
+  "hwpx",
+  "docx",
+  "pptx",
+  "image",
+  "url",
+  "txt",
+  "md",
+]);
 
 /** 코드포인트 길이. pydantic 의 `len()` 은 코드포인트 기준이라 `.length` 와 다를 수 있다. */
 function charLen(s: string): number {
@@ -168,11 +193,16 @@ export function validateSearchParams(sp: URLSearchParams): ValidationResult {
 
   if (errors.length) return { ok: false, status: 422, detail: errors };
 
-  // --- 2층: 핸들러 내부 검사 (빈 질의 → doc_id → mode → from_date → to_date) ---
+  // --- 2층: 핸들러 내부 검사 (빈 질의 → doc_type → doc_id → mode → from_date → to_date) ---
   const q = rawQ as string;
   // DB title 이 NFC 라 질의도 NFC 로 맞춘다. NFD 로 오면 매칭이 통째로 실패한다.
   const cleanQ = q.trim().normalize("NFC");
   if (!cleanQ) return { ok: false, status: 400, detail: "검색어가 비어있습니다." };
+
+  const docType = sp.get("doc_type");
+  if (docType !== null && !DOC_TYPES.has(docType)) {
+    return { ok: false, status: 400, detail: `doc_type='${docType}' 가 유효하지 않습니다.` };
+  }
 
   let docId = sp.get("doc_id");
   if (docId !== null) {
@@ -214,7 +244,7 @@ export function validateSearchParams(sp: URLSearchParams): ValidationResult {
       limit,
       offset,
       tags: tags.length ? tags : null,
-      docType: sp.get("doc_type"),
+      docType,
       fromDate,
       toDate,
       docId,
