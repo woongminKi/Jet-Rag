@@ -3,6 +3,7 @@
   "specifiers": {
     "npm:@ohah/hwpjs-wasm32-wasi@0.1.0-rc.10": "0.1.0-rc.10_@emnapi+core@1.11.3_@emnapi+runtime@1.11.3",
     "npm:@rhwp/core@0.8.4": "0.8.4",
+    "npm:fflate@0.8.3": "0.8.3",
     "npm:mupdf@1.27.0": "1.27.0",
     "npm:unpdf@1.8.1": "1.8.1"
   },
@@ -50,6 +51,9 @@
         "tslib"
       ]
     },
+    "fflate@0.8.3": {
+      "integrity": "sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA=="
+    },
     "mupdf@1.27.0": {
       "integrity": "sha512-vEPUYwZeu5NgiFLz4e20R7Vp2pNY7szirGEvTxHyQQpQs6ab4DeGdonwT6sH1JZG5EhyHSrojZrZn2/0ee6qZQ=="
     },
@@ -66,6 +70,7 @@
       "npm:@ohah/hwpjs-wasm32-wasi@0.1.0-rc.10",
       "npm:@rhwp/core@0.8.4",
       "npm:@supabase/server@1",
+      "npm:fflate@0.8.3",
       "npm:mupdf@1.27.0",
       "npm:unpdf@1.8.1"
     ]

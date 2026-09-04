@@ -1,0 +1,117 @@
+{
+ "samples": {
+  "api/scripts/fixtures/spike_sample.docx": {
+   "source_type": "docx",
+   "file_bytes": 37258,
+   "section_count": 12,
+   "chars": 328,
+   "titles": [
+    "부칙",
+    "이관 스파이크 문서",
+    "제 3 조 (적용범위)",
+    "제1장 총칙",
+    "제1절 목적"
+   ],
+   "text": "이관 스파이크 문서\n표지 아래 본문 단락이다. 📌 비BMP 문자를 일부러 넣는다.\n제1장 총칙\n이 장은 스타일 이름으로 heading 이 판정되는 경로를 덮는다.\n두 번째 본문 단락. 앞 heading 이 sticky 로 붙어야 한다.\n제1절 목적\nHeading 2 는 styles.xml 에 `heading 2` 로 적힌다 — 정규식이 대소문자를 무시해야 잡힌다.\n제 3 조 (적용범위)\n인라인 패턴 heading 뒤의 본문.\n항목 | 기준 | 결과\nCPU | 2초 미만 | 통과\n유사도 | 0.95 이상 | 통과 📌\n부칙\n표 뒤 단락 — 표와 단락의 XML 순서가 보존되는지 확인용.",
+   "sections": [
+    {
+     "text": "이관 스파이크 문서",
+     "page": null,
+     "section_title": "이관 스파이크 문서"
+    },
+    {
+     "text": "표지 아래 본문 단락이다. 📌 비BMP 문자를 일부러 넣는다.",
+     "page": null,
+     "section_title": "이관 스파이크 문서"
+    },
+    {
+     "text": "제1장 총칙",
+     "page": null,
+     "section_title": "제1장 총칙"
+    },
+    {
+     "text": "이 장은 스타일 이름으로 heading 이 판정되는 경로를 덮는다.",
+     "page": null,
+     "section_title": "제1장 총칙"
+    },
+    {
+     "text": "두 번째 본문 단락. 앞 heading 이 sticky 로 붙어야 한다.",
+     "page": null,
+     "section_title": "제1장 총칙"
+    },
+    {
+     "text": "제1절 목적",
+     "page": null,
+     "section_title": "제1절 목적"
+    },
+    {
+     "text": "Heading 2 는 styles.xml 에 `heading 2` 로 적힌다 — 정규식이 대소문자를 무시해야 잡힌다.",
+     "page": null,
+     "section_title": "제1절 목적"
+    },
+    {
+     "text": "제 3 조 (적용범위)",
+     "page": null,
+     "section_title": "제 3 조 (적용범위)"
+    },
+    {
+     "text": "인라인 패턴 heading 뒤의 본문.",
+     "page": null,
+     "section_title": "제 3 조 (적용범위)"
+    },
+    {
+     "text": "항목 | 기준 | 결과\nCPU | 2초 미만 | 통과\n유사도 | 0.95 이상 | 통과 📌",
+     "page": null,
+     "section_title": "제 3 조 (적용범위)"
+    },
+    {
+     "text": "부칙",
+     "page": null,
+     "section_title": "부칙"
+    },
+    {
+     "text": "표 뒤 단락 — 표와 단락의 XML 순서가 보존되는지 확인용.",
+     "page": null,
+     "section_title": "부칙"
+    }
+   ],
+   "warnings": []
+  },
+  "api/scripts/fixtures/spike_sample.pptx": {
+   "source_type": "pptx",
+   "file_bytes": 31675,
+   "section_count": 4,
+   "chars": 287,
+   "titles": [
+    "그룹 도형 처리",
+    "배경과 문제 정의",
+    "제품 요구사항 정의서",
+    "판정 기준표"
+   ],
+   "text": "제품 요구사항 정의서\nJet-Rag 이관 스파이크 · 2026년 9월\n배경과 문제 정의\n현행 백엔드는 Railway 에서 구동된다.\nSupabase Edge Functions 는 요청당 CPU 2초 제한이 있다.\n인제스트는 페이지 단위로 팬아웃해야 한다.\nParser layer must run as WebAssembly.\n그룹 도형 처리\n그룹 안 첫 번째 상자\n그룹 안 두 번째 상자 — 재귀 순회 확인용\n판정 기준표\n항목 | 기준 | 결과\nCPU | 2초 미만 | 통과\n텍스트 유사도 | 0.95 이상 | 통과",
+   "sections": [
+    {
+     "text": "제품 요구사항 정의서\nJet-Rag 이관 스파이크 · 2026년 9월",
+     "page": 1,
+     "section_title": "제품 요구사항 정의서"
+    },
+    {
+     "text": "배경과 문제 정의\n현행 백엔드는 Railway 에서 구동된다.\nSupabase Edge Functions 는 요청당 CPU 2초 제한이 있다.\n인제스트는 페이지 단위로 팬아웃해야 한다.\nParser layer must run as WebAssembly.",
+     "page": 2,
+     "section_title": "배경과 문제 정의"
+    },
+    {
+     "text": "그룹 도형 처리\n그룹 안 첫 번째 상자\n그룹 안 두 번째 상자 — 재귀 순회 확인용",
+     "page": 3,
+     "section_title": "그룹 도형 처리"
+    },
+    {
+     "text": "판정 기준표\n항목 | 기준 | 결과\nCPU | 2초 미만 | 통과\n텍스트 유사도 | 0.95 이상 | 통과",
+     "page": 4,
+     "section_title": "판정 기준표"
+    }
+   ],
+   "warnings": []
+  }
+ }
+}

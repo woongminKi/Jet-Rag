@@ -7,6 +7,8 @@
     "@rhwp/core": "npm:@rhwp/core@0.8.4",
 
     "mupdf": "npm:mupdf@1.27.0",
-    "unpdf": "npm:unpdf@1.8.1"
+    "unpdf": "npm:unpdf@1.8.1",
+
+    "fflate": "npm:fflate@0.8.3"
   }
 }

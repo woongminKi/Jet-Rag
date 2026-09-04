@@ -22,11 +22,15 @@
  *   POST ?kind=pdf-walk&page=N          walk() 콜백 인자 원본 덤프 (추출기 작성 전 확인용)
  *   POST ?kind=pdf-dict&page=N          **S2 본 판정** — PyMuPDF get_text("dict") 호환 dict
  *   POST ?kind=pdf-pages&from=&count=   페이지 단위 CPU 추이 (573p 는 CPU 2s 초과로 546)
+ *   POST ?kind=fernet                   body = {key, token, plaintext} — S3 판정
+ *   POST ?kind=<docx|pptx>              body = 파일 바이트 — S4 판정
  *
  * 응답의 cpuMs 가 2000 에 근접하면 그 작업 단위는 더 잘게 쪼개야 한다는 신호다.
  */
 
 import { pageArea, STEXT_OPTS, toPageDict } from "../_shared/pdf_dict.ts";
+import { decryptFernet, encryptFernet } from "../_shared/fernet.ts";
+import { extractDocx, extractPptx } from "../_shared/ooxml_text.ts";
 
 interface SpikeResult {
   kind: string;
@@ -532,7 +536,80 @@ async function handle(req: Request): Promise<SpikeResult> {
         return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };
       }
 
-      // 0.4 에서 "fernet", 0.5 에서 "docx" case 가 여기 추가된다.
+      /**
+       * S3 — Fernet 호환. **기존 암호문을 읽을 수 있는가**가 판정 대상이다.
+       * 세 가지를 한 번에 확인한다: ① 기존 토큰 복호 ② Deno 가 만든 토큰(Python 이 읽을 것)
+       * ③ 변조 토큰 거부. ③ 이 빠지면 "복호는 되는데 위조도 통과"인 구현을 PASS 로 오판한다.
+       *
+       *   POST ?kind=fernet  body = {"key": "...", "token": "...", "plaintext": "..."}
+       * 운영 키·운영 SID 는 절대 넣지 않는다 — 호출 측이 일회용 키를 생성해서 보낸다.
+       */
+      case "fernet": {
+        const body = JSON.parse(new TextDecoder().decode(bytes)) as {
+          key: string;
+          token: string;
+          plaintext?: string;
+        };
+
+        const t0 = performance.now();
+        const dec = await decryptFernet(body.key, body.token);
+        const decryptMs = performance.now() - t0;
+
+        const t1 = performance.now();
+        const reEncoded = await encryptFernet(body.key, dec.plaintext);
+        const encryptMs = performance.now() - t1;
+
+        // 변조 검출 — 마지막 바이트(HMAC 끝)를 뒤집으면 반드시 거부돼야 한다.
+        let tamperRejected: string | boolean = false;
+        try {
+          const raw = body.token.replace(/-/g, "+").replace(/_/g, "/");
+          const bin = atob(raw + "=".repeat((4 - (raw.length % 4)) % 4));
+          const arr = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+          arr[arr.length - 1] ^= 0x01;
+          let s = "";
+          for (const b of arr) s += String.fromCharCode(b);
+          const tampered = btoa(s).replace(/\+/g, "-").replace(/\//g, "_");
+          await decryptFernet(body.key, tampered);
+          tamperRejected = false; // 여기 닿으면 위조 토큰을 받아들인 것 = FAIL
+        } catch (e) {
+          tamperRejected = e instanceof Error ? e.message : String(e);
+        }
+
+        const { cpuMs, value } = measure(() => ({
+          decryptMs,
+          encryptMs,
+          plaintext: dec.plaintext,
+          timestamp: dec.timestamp,
+          matchesExpected: body.plaintext === undefined ? null : dec.plaintext === body.plaintext,
+          reEncoded,
+          tamperRejected,
+        }));
+        return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };
+      }
+
+      /**
+       * S4 — DOCX / PPTX. POST body = 파일 바이트.
+       * 응답에 섹션 전문을 실어 기준선(`spike_ooxml_baseline.json`)과 직접 대조한다.
+       */
+      case "docx":
+      case "pptx": {
+        const { cpuMs, value } = measure(() => {
+          const out = kind === "docx" ? extractDocx(bytes) : extractPptx(bytes);
+          const joined = out.sections.map((s) => s.text).join("\n");
+          return {
+            sourceType: out.sourceType,
+            sectionCount: out.sections.length,
+            // Python `len()` 은 코드포인트, JS `.length` 는 UTF-16 코드유닛이다.
+            // 그대로 두면 이모지 1개당 1씩 어긋나 텍스트가 같은데도 달라 보인다
+            // (승인글 템플릿1: 📌 15개 → 54,086 vs 54,101). 코드포인트로 맞춘다.
+            chars: [...joined].length,
+            titles: [...new Set(out.sections.map((s) => s.sectionTitle).filter(Boolean))].sort(),
+            warnings: out.warnings,
+            sections: out.sections,
+          };
+        });
+        return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };
+      }
 
       default:
         return {
