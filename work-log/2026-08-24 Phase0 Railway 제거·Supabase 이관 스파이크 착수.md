@@ -1,7 +1,7 @@
 # 2026-08-24 — Phase 0 스파이크 (Railway 제거 · Supabase 전면 이관)
 
-> **범위**: Railway 해지·Supabase 전면 이관 결정 → 플랜 2건 작성 → Phase 0 타당성 스파이크 Task 0.1/0.2(S1 = HWP 파서).
-> **다음 세션 재진입**: 터미널에 `! supabase login` 실행 → 이후 `link` → `functions deploy spike --no-verify-jwt` → `?kind=env`·`hwp-import`·`hwp` 호출로 **S1 Edge 판정 마무리**. 코드는 전부 커밋·push 되어 있어 로그인만 하면 바로 이어진다.
+> **범위**: Railway 해지·Supabase 전면 이관 결정 → 플랜 2건 작성 → Phase 0 타당성 스파이크 Task 0.1/0.2(S1 = HWP), Task 0.3(S2 = PDF).
+> **다음 세션 재진입**: S1·S2 **둘 다 PASS**. 남은 스파이크는 S3(Fernet)·S4(DOCX/PPTX)·S5(메모리)와 HWPX/HWPML 경로. 배포·인증은 이미 뚫려 있어 `supabase functions deploy spike --no-verify-jwt` 한 줄이면 바로 이어진다. 자세한 후보는 맨 아래 "다음 후보" 참조.
 
 ## 0. 한눈에 보기
 
@@ -16,8 +16,9 @@
 | S1 — **`@rhwp/core`** | ✅ **Edge PASS** | `getTextFileText()` 유사도 **1.0000**, 총 72ms (예산 2s) |
 | S1 — 최종 판정 | ✅ **PASS** | HWP 5.x 경로 확정: `@rhwp/core` + HTML 엔티티 디코딩 |
 | S1 — HWPX / HWPML | ⬜ 미착수 | hwpjs 는 HWP 5.x(OLE2) 전용으로 확인됨 |
-| S2 PDF / S3 Fernet / S4 DOCX·PPTX / S5 메모리 | ⬜ 미착수 | — |
-| Task 0.6 판정표 → Phase 1 착수 승인 | ⬜ 대기 | S1~S5 완료 후 |
+| **S2 — PDF (`mupdf` 1.27.0)** | ✅ **PASS** | 페이지당 CPU 최대 **100.8ms**, 유사도 **1.0000**×7p, 다운스트림 **7/7 동등** |
+| S3 Fernet / S4 DOCX·PPTX / S5 메모리 | ⬜ 미착수 | — |
+| Task 0.6 판정표 → Phase 1 착수 승인 | ⬜ 대기 | S3~S5 완료 후 |
 
 ## 결정 사항
 
@@ -198,7 +199,8 @@ SharedArrayBuffer / Worker / `WebAssembly.Memory({initial:4000, shared:true})`(2
 1. **Edge 런타임이 emnapi 부트스트랩을 허용하는가** — SAB / `fetch(file:)` 로 번들 내 .wasm 읽기 / Worker 생성.
    로컬 Deno 는 셋 다 되지만 Edge 는 더 제한적이다. **`?kind=env` + `?kind=hwp-import` 한 번이면 판정된다.**
 2. HWPX/HWPML 경로 (위 참조) — 미착수
-3. S2(PDF span/bbox), S3(Fernet), S4(DOCX/PPTX), S5(메모리) — 전부 미착수
+3. ~~S2(PDF span/bbox)~~ → **2026-09-04 PASS**. S3(Fernet), S4(DOCX/PPTX), S5(메모리)는 미착수.
+   S5 는 방법부터 막혀 있다 — Edge 의 `Deno.memoryUsage()` 가 0 을 반환한다.
 4. `DEBUG_LINESEG:` 디버그 로그가 stdout 을 오염시킨다 — 운영 투입 전 처리 필요
 5. HWP 샘플이 985자 1건뿐이다. 유사도 1.0000 의 신뢰구간이 넓다 — 더 큰 실문서 필요
 
@@ -260,14 +262,115 @@ wasm-bindgen 계열이라 SAB·Worker 를 요구하지 않는 것이 갈린 지�
 - **교훈: 로컬 Deno 통과는 Edge 통과의 근거가 되지 못한다.** 남은 스파이크(S2~S5)는
   로컬 프로브를 건너뛰고 **처음부터 배포해서 재는 편이 빠르다.** 배포는 20초면 된다.
 
+## 4차 세션 (2026-09-04) — **S2(PDF) 판정 완료. PASS**
+
+S1 교훈대로 로컬 프로브를 건너뛰고 바로 배포해서 쟀다. 배포 6회, 총 소요 1세션.
+
+### 관문 — `mupdf`(mupdf.js) Edge **로드 성공**
+
+| 지표 | 값 |
+|---|---|
+| import | 43~56ms |
+| exports | 38개 (`Document`, `StructuredText`, `Page` …) |
+| shared memory·Worker 요구 | **없음** — Emscripten 단일 스레드 빌드라 S1 을 죽인 조건에 안 걸린다 |
+
+대안 후보 `unpdf`(pdfjs 서버리스, 순수 JS)도 로드된다(3.7ms). 폴백이 실재한다.
+
+### 판정을 두 층으로 나눴다
+
+구조가 같다고 이관 가능이 아니다. 제품이 실제로 읽는 건 **섹션**과 **vision 호출 여부**다.
+그래서 채점기를 둘 만들었다.
+
+**① 필드 단위 대조** (`spike_pdf_compare.py`) — 기준선 PyMuPDF 1.27.2 대비
+
+| 샘플 | block | span | bboxΔ(pt) | 유사도 | cpuMs |
+|---|---|---|---|---|---|
+| law sample3 p0 | 11/11 | 34/34 | 0.205 | **1.0000** | 70.3 |
+| law sample3 p1 | 15/15 | 27/27 | 0.205 | **1.0000** | 63.8 |
+| 데이터센터 안내서 p0 | 10/10 | 10/10 | 0.966 | **1.0000** | 46.0 |
+| 데이터센터 안내서 p39(표) | 35/35 | 96/96 | 0.360 | **1.0000** | 78.6 |
+| sample-report p0(이미지) | 7/7 | 7/**9** | 0.004 | **1.0000** | 152.7 |
+| 삼성 사업보고서 p0 | 46/46 | 46/46 | 0.012 | **1.0000** | 90.8 |
+| 삼성 사업보고서 p100(표) | 70/70 | 105/**97** | 0.008 | **1.0000** | 84.0 |
+
+**② 다운스트림 동등성** (`spike_pdf_downstream.py`) — 양쪽 dict 를 프로덕션 함수에 그대로 투입
+
+`pymupdf_parser._extract_dict_blocks` + `vision_need_score.score_page` 결과:
+
+| 항목 | 결과 |
+|---|---|
+| 섹션 수·제목·본문 | **7/7 완전일치** |
+| 섹션 bbox | **7/7** (Δ ≤ 1pt) |
+| `needs_vision` | **7/7 동일** — vision 호출 비용 변화 없음 |
+| `triggers` | **7/7 동일** |
+| `composite_score` | 최대 편차 **0.0006** |
+
+즉 **span 수가 어긋난 2페이지에서도 산출물은 같다.**
+
+### 도중 잡은 함정 4건
+
+1. **`asJSON()` 은 bbox 를 정수로 반올림한다** — 기준선 대비 최대 1.93pt 편차. `walk()` 는 float 원본을 준다.
+2. **`preserve-spans` 는 블록 분할 자체를 바꾼다** — `sample-report` p0 에서 7블록(text 5) → 6블록(text 4).
+   line 층·span 층을 따로 불러 인덱스로 짝지으려던 최초 설계가 여기서 깨졌다.
+   처음 확인한 2페이지에서 우연히 성립했을 뿐이다 — **2개 표본으로 구조 가정을 세우면 안 된다.**
+3. **`walk` 의 `font` 는 글자마다 새 JS 래퍼다.** 객체 동일성(`!==`)으로 span 경계를 재면
+   모든 글자가 경계가 되어 span 수 = 글자 수(1,543)가 된다. `pointer` 값으로 비교해야 한다.
+4. **메서드를 변수에 담아 호출하면 `this` 가 끊긴다** — mupdf 내부에서
+   `Cannot read properties of undefined (reading 'pointer')`. 수신자를 붙여 호출해야 한다.
+
+### 버전이 갈림돌이었다
+
+`mupdf@1.28.0` 은 블록을 병합해 기준선과 어긋났다(데이터센터 p0 10→9, 삼성 p100 70→62).
+기준선이 PyMuPDF 1.27.2(MuPDF 1.27.2)라서 **같은 계열인 `1.27.0` 으로 내리자 block 7/7 일치**.
+→ `deno.json` 에 `npm:mupdf@1.27.0` 고정. Phase 1 에서 올릴 때는 이 채점기를 다시 돌려야 한다.
+
+### 처리 규모 (573p 삼성 사업보고서 · 한 요청 안에서 연속 처리)
+
+| 페이지 수 | 총 CPU | 페이지당 max | 페이지당 avg | 결과 |
+|---|---|---|---|---|
+| 50p | 296ms | 78.4ms | 5.7ms | OK |
+| 200p | 725ms | 79.4ms | 3.6ms | OK |
+| 400p | **1,421ms** | 100.8ms | 3.5ms | OK |
+| 573p(전체) | — | — | — | **`WORKER_RESOURCE_LIMIT`** |
+
+9MB/93p 이미지 문서(`sample-report`)는 50p 에 1,212ms 로 가장 무겁다.
+41p 데이터센터 안내서는 전체 392ms.
+
+**먼저 걸리는 건 메모리가 아니라 CPU 2s 다.** 메모리는 직접 계측하지 못했다 —
+Edge 의 `Deno.memoryUsage()` 가 0 을 반환한다(**미검증**). 다만 400페이지를 한 워커에서
+연속 처리하고도 죽지 않았으므로 페이지 해제(`destroy()`)는 동작하는 것으로 본다.
+
+### 남은 잔차 — 합성 공백 (닫음, 영향 0으로 측정)
+
+PyMuPDF 는 MuPDF 가 **간격 때문에 끼워 넣은 공백**을 독립 span 으로 둔다
+(`'52,966,362' / ' ' / '20,138,323'` — 표 컬럼 신호). `walk` 의 6개 인자
+(char, origin, font, size, quad, color)에는 그 플래그가 없어 우리 쪽은 한 span 으로 합친다.
+반대로 줄 끝 실공백은 우리가 더 쪼갠다(`'경제전망 '` → `'경제전망'` + `' '`).
+
+- "공백이면 무조건 분리" 규칙을 세워 검증했더니 **7페이지 전부 불일치**했다(진짜 공백까지 쪼갠다). 규칙이 아니다.
+- `color` 를 span 키에 추가해도 두 페이지의 span 수는 그대로였다 — 원인이 색이 아니라는 뜻이다.
+- 실측 영향: 다운스트림 7/7 동일. **지금 더 파지 않고 닫되**, Phase 1 에서 표 페이지
+  회귀 테스트로 고정한다(`_is_table_like_block` 이 span 수를 직접 읽으므로).
+
+### 기준선 커밋 범위
+
+`assets/private/` 는 `.gitignore` 대상이라 그 본문이 저장소로 새면 안 된다.
+기준선 JSON 은 **공개 자산 3건(5페이지)만** 담고, 삼성 사업보고서는
+`--include-private` 옵트인으로 분리했다. 위 표의 7페이지는 로컬에서 잰 값이다.
+공개 세트만으로 재현하면 5페이지가 나오고 결과는 동일하다(다운스트림 5/5 PASS).
+
 ## 산출물 지도
 
 | 파일 | 역할 |
 |---|---|
 | `docs/superpowers/plans/2026-08-24-railway-제거-supabase-전면이관.md` | 마스터 플랜 |
 | `docs/superpowers/plans/2026-08-24-phase1-기반-계층.md` | Phase 1 상세 (실행 가능 코드 포함) |
-| `supabase/functions/spike/index.ts` | CPU 계측 하네스. `noop`/`burn`/`env`/`hwp-import`/`hwp`/`hwp-rhwp` |
-| `supabase/functions/_shared/hwp_text.ts` | **toJson 텍스트 추출기 — Phase 1 에서 그대로 쓸 코드** |
+| `supabase/functions/spike/index.ts` | CPU 계측 하네스. `noop`/`burn`/`env`/`hwp*`/`pdf-import`/`pdf`/`pdf-walk`/`pdf-dict`/`pdf-pages`/`pdf-unpdf` |
+| `supabase/functions/_shared/hwp_text.ts` | toJson 텍스트 추출기 — **Edge 에서는 무용지물**(경고 주석 참조) |
+| `supabase/functions/_shared/pdf_dict.ts` | **mupdf → PyMuPDF dict 변환기 — Phase 1 에서 그대로 쓸 코드** |
+| `api/scripts/spike_pdf_baseline.py` · `.json` | PDF 기준선 생성기 / 공개 자산 3건 5페이지 |
+| `api/scripts/spike_pdf_compare.py` | **필드 단위 채점기 — mupdf 버전 올릴 때 반드시 재실행** |
+| `api/scripts/spike_pdf_downstream.py` | **다운스트림 동등성 채점기 (섹션·needs_vision)** |
 | `scripts/spike_hwp_extract.ts` | WASM 파싱 → 산출물 덤프 (`toJson`/`toHtml`/`toMarkdown`/`extracted`) |
 | `scripts/spike_wasm_probe.ts` · `probe2` · `probe3` | 후보 탐색 1·2차 / WASM 경로 강제 검증 |
 | `scripts/deno.json` | `nodeModulesDir: auto` + WASM 서브패키지 버전 고정 |
@@ -278,14 +381,23 @@ wasm-bindgen 계열이라 SAB·Worker 를 요구하지 않는 것이 갈린 지�
 재현 명령 (2건 모두 로그인 불필요):
 
 ```bash
+# S1 (로그인 불필요)
 cd scripts && deno run -A spike_hwp_extract.ts ../assets/public/law_sample1.hwp /tmp/hwpout
 python3 api/scripts/spike_hwp_similarity.py /tmp/hwpout      # → 최고 유사도 1.0000 PASS
+
+# S2 (배포된 spike 함수 호출 — anon key 는 .env 에서 자동으로 읽는다)
+api/.venv/bin/python api/scripts/spike_pdf_baseline.py       # 기준선 재생성
+python3 api/scripts/spike_pdf_compare.py --dump /tmp/edge    # 필드 단위 대조
+api/.venv/bin/python api/scripts/spike_pdf_downstream.py /tmp/edge   # → FAIL 0
 ```
 
 ## 커밋 이력 (최신순)
 
 | 해시 | 메시지 |
 |---|---|
+| `9226328` | feat(spike-s2): PDF Edge 판정 PASS — mupdf 1.27.0, 다운스트림 7/7 동등 |
+| `b7ad26c` | feat(spike-s1): Edge 실측으로 HWP 파서 확정 — @rhwp/core, 유사도 1.0000 |
+| `ae2c59f` | docs(work-log): 2026-08-24 세션 종합 — Phase 0 S1 스파이크 재진입 런북·산출물 지도·다음 후보 |
 | `d528aa3` | docs(work-log): S1 2차 세션 — WASM 경로 확보·유사도 1.0000·HWPX 미지원 발견 기록 |
 | `a1e8dc9` | chore(spike-s1): deno.lock 커밋 — WASM 후보 버전 고정 |
 | `155cd92` | feat(spike-s1): HWP 순수 WASM 경로 확보 + toJson 텍스트 추출기 유사도 1.0000 |
@@ -343,15 +455,19 @@ curl -s -X POST --data-binary @assets/public/law_sample1.hwp \
 | `hasWorker: false` | emnapi 비동기 워커 풀 생성 불가 | 동기 호출만 쓰면 우회 가능한지 확인 |
 | 전부 true 인데 import 실패 | `fetch(file:)` 로 번들 내 .wasm 읽기 실패 | .wasm 을 base64 인라인하거나 Storage 에서 받아 `WebAssembly.instantiate` |
 
-## 다음 후보
+## 다음 후보 (2026-09-04 갱신 — S1·S2 완료 후)
 
 | 후보 | 내용 | 근거 |
 |---|---|---|
-| **A (권고)** | **S2 — PDF span/bbox** 를 Edge 에 바로 배포해 판정 | 파서 중 가장 무겁고(비전 need score·bbox 의존) 실패 시 설계 영향이 가장 크다. S1 처럼 라이브러리 선택이 갈릴 수 있어 일찍 알아야 한다 |
-| B | S3 Fernet + S4 DOCX/PPTX 묶어서 판정 | 둘 다 가볍고 후보가 명확하다(WebCrypto / 순수 JS). 한 번의 배포로 두 개를 끝낼 수 있다 |
-| C | HWPX/HWPML Edge 경로 (ZIP+XML / XML) | `@rhwp/core` 에 `exportHwpx` 가 있으니 읽기도 되는지 먼저 확인 — 3경로가 2경로로 줄 수 있다 |
+| **A (권고)** | **S3 Fernet + S4 DOCX/PPTX 묶어서 판정** | 남은 파서 리스크. 후보가 명확하고(WebCrypto / 순수 JS) 배포 1회로 둘을 끝낼 수 있다. S1·S2 가 다 PASS 라 Task 0.6 판정표까지 가는 최단 경로다 |
+| B | HWPX/HWPML Edge 경로 (ZIP+XML / XML) | 기준선 6샘플 중 3건이 여기 걸린다. `@rhwp/core` 에 `exportHwpx` 가 있으니 읽기도 되는지 먼저 확인 — HWP 3경로가 2경로로 줄 수 있다 |
+| C | S5 메모리 판정 방법부터 정하기 | 이번에 `Deno.memoryUsage()` 가 0 을 반환해 직접 계측이 막혔다. 간접 지표(대량 처리 생존·`WORKER_RESOURCE_LIMIT` 유형)로 대체할지 결정이 필요하다 |
 
-**권고: A** — 남은 스파이크 중 위험이 가장 크고, S1 에서 배운 대로 **로컬을 건너뛰고 바로 배포해서 잰다.**
+**권고: A** — S2 까지 통과해 "파서가 물리적으로 불가"라는 중단 조건은 이미 벗어났다.
+남은 두 파서를 빨리 닫고 Task 0.6 판정표로 가는 편이 낫다.
 
-> S1 이 남긴 절차 변경: 로컬 Deno 통과는 Edge 통과의 근거가 아니다. S2~S5 는 로컬 프로브
-> 없이 `spike` 함수에 case 를 추가해 배포(약 20초)하고 실측한다.
+> S1 이 남긴 절차 변경(S2 에서 재확인됨): 로컬 Deno 통과는 Edge 통과의 근거가 아니다.
+> S3~S5 도 로컬 프로브 없이 `spike` 함수에 case 를 추가해 배포(약 20초)하고 실측한다.
+>
+> S2 가 덧붙인 것: **라이브러리 출력의 구조를 상상해서 파서를 쓰지 말 것.** 원본을 1회
+> 덤프해 읽고 나서 매핑을 정한다. 표본 2개로 세운 구조 가정은 3번째 표본에서 깨졌다.
