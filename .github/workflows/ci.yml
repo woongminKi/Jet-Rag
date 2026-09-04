@@ -152,3 +152,7 @@ jobs:
       - name: search rrf
         working-directory: api
         run: uv run python scripts/verify_search_rrf_parity.py
+      # `--live` 는 뺀다 — 운영 청크를 읽는다.
+      - name: search snippet/assemble
+        working-directory: api
+        run: uv run python scripts/verify_search_snippet_parity.py
