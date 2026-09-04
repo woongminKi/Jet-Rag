@@ -142,7 +142,7 @@ export function decodeXml(s: string): string {
     .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
     .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
     .replace(/&amp;/g, "&"); // amp 는 마지막 — 먼저 풀면 `&amp;lt;` 가 `<` 로 잘못 된다
-  }
+}
 
 /**
  * `<w:t>`/`<a:t>` 텍스트를 문서 순서대로 모은다.
@@ -168,7 +168,6 @@ export function collectText(xml: string, textTag: string, ns: string): string {
   }
   return out;
 }
-
 
 /**
  * 이름이 같은 **모든 후손**을 문서 순서(pre-order)로. 중첩도 전부 낸다.

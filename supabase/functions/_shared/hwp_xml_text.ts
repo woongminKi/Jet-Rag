@@ -32,14 +32,7 @@
 
 import { unzipSync } from "fflate";
 
-import {
-  allDescendants,
-  attrValue,
-  decodeXml,
-  directChildren,
-  scanTags,
-  stripComments,
-} from "./xml_scan.ts";
+import { allDescendants, attrValue, decodeXml, directChildren, scanTags, stripComments } from "./xml_scan.ts";
 
 export interface HwpSection {
   text: string;
