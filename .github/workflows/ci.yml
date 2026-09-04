@@ -140,3 +140,7 @@ jobs:
       - name: search params/pgroonga
         working-directory: api
         run: uv run python scripts/verify_search_params_parity.py --offline
+      # 4.6 만 건 fuzz. 네트워크를 안 타므로 매 push 마다 돌려도 된다.
+      - name: iso datetime (fuzz)
+        working-directory: api
+        run: uv run python scripts/verify_iso_datetime_parity.py

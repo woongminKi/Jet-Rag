@@ -49,7 +49,7 @@ export function stripKoreanParticle(token: string): string {
  *
  * 인자 없는 `split()` 은 **모든 유니코드 공백**을 구분자로 보고 연속 공백을 하나로 묶으며
  * 앞뒤 빈 토큰을 만들지 않는다. `split(" ")` 과 다르다 — 전각 공백(U+3000)·탭·개행이 섞인
- * 질의에서 갈린다(운영 실측: `q=　` 도 빈 질의로 처리된다).
+ * 질의에서 갈린다(운영 실측: `q=U+3000` 도 빈 질의로 처리된다).
  */
 function pythonSplit(s: string): string[] {
   return s.split(/\s+/u).filter((t) => t !== "");

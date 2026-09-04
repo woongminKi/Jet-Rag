@@ -55,23 +55,30 @@ Deno.test("doc_id 는 trim 해서 담는다", () => {
   assertEquals(ok("q=a&doc_id=" + encodeURIComponent("  abc  ")).docId, "abc");
 });
 
-Deno.test("날짜는 UTC 로 해석한다", () => {
-  // 날짜만 오면 UTC 0시. 로컬 타임존으로 해석하면 경계 하루가 밀린다.
-  assertEquals(ok("q=a&from_date=2026-04-01").fromDate?.toISOString(), "2026-04-01T00:00:00.000Z");
+Deno.test("날짜는 PostgREST 에 넣을 isoformat 문자열로 담는다", () => {
+  // 원본은 `from_dt.isoformat()` 을 그대로 필터에 넣는다(`search.py` 1367).
+  // `Date` 로 들고 있으면 오프셋이 UTC 로 정규화되고 마이크로초가 잘려서 요청이 달라진다.
+  const from = (qs: string) => ok("q=a&from_date=" + encodeURIComponent(qs)).fromDate;
+
+  // 날짜만 오면 UTC 0시. 로컬 타임존으로 해석하면 경계가 하루 밀린다.
+  assertEquals(from("2026-04-01"), "2026-04-01T00:00:00+00:00");
   // 타임존이 없는 datetime 도 UTC 로 본다.
-  assertEquals(
-    ok("q=a&from_date=2026-04-01T09:00:00").fromDate?.toISOString(),
-    "2026-04-01T09:00:00.000Z",
-  );
-  // 오프셋이 있으면 그대로 존중한다.
-  assertEquals(
-    ok("q=a&from_date=" + encodeURIComponent("2026-04-01T09:00:00+09:00")).fromDate?.toISOString(),
-    "2026-04-01T00:00:00.000Z",
-  );
-  assertEquals(
-    ok("q=a&to_date=2026-04-01T00:00:00Z").toDate?.toISOString(),
-    "2026-04-01T00:00:00.000Z",
-  );
+  assertEquals(from("2026-04-01T09:00:00"), "2026-04-01T09:00:00+00:00");
+  // 오프셋은 **변환이 아니라 보존**이다 — 원본이 tz-aware datetime 을 그대로 넘긴다.
+  assertEquals(from("2026-04-01T09:00:00+09:00"), "2026-04-01T09:00:00+09:00");
+  assertEquals(from("2026-04-01T00:00:00Z"), "2026-04-01T00:00:00+00:00");
+  // 마이크로초는 6 자리까지 살고 넘치면 절삭한다. `Date` 였으면 밀리초에서 잘렸다.
+  assertEquals(from("2026-04-01T09:00:00.123456"), "2026-04-01T09:00:00.123456+00:00");
+  assertEquals(from("2026-04-01T09:00:00.1234567"), "2026-04-01T09:00:00.123456+00:00");
+  assertEquals(ok("q=a&to_date=2026-04-01").toDate, "2026-04-01T00:00:00+00:00");
+});
+
+Deno.test("존재하지 않는 날짜를 롤오버하지 않는다", () => {
+  // `new Date("2026-02-30")` 은 3 월 2 일로 넘어간다 — 400 대신 엉뚱한 필터가 된다.
+  for (const bad of ["2026-02-30", "2026-04-31", "2026-13-01", "2026-04-01T24:00:00"]) {
+    const r = validateSearchParams(new URLSearchParams({ q: "a", from_date: bad }));
+    assertEquals(r.ok, false, `${bad} 는 거부해야 한다`);
+  }
 });
 
 Deno.test("limit·offset 경계값을 그대로 담는다", () => {

@@ -37,6 +37,8 @@
  * 즉 "빈 질의" 판정은 422 가 아니라 400 이다.
  */
 
+import { parseSearchDate } from "./iso_datetime.ts";
+
 /** pydantic 이 만드는 422 항목. */
 export interface ValidationErrorItem {
   type: string;
@@ -57,8 +59,9 @@ export interface SearchParams {
   offset: number;
   tags: string[] | null;
   docType: string | null;
-  fromDate: Date | null;
-  toDate: Date | null;
+  /** 정규화된 isoformat 문자열. PostgREST `created_at` 필터에 그대로 넣는다. */
+  fromDate: string | null;
+  toDate: string | null;
   docId: string | null;
   mode: SearchMode;
 }
@@ -140,29 +143,6 @@ function intField(
   return n;
 }
 
-/**
- * `_parse_iso_date` 포팅. 실패는 400 을 던지지 않고 `undefined` 를 돌려주며,
- * 호출부가 필드 이름을 넣어 메시지를 만든다.
- *
- * 원본 규칙: 길이 10 이면 `YYYY-MM-DD` 로 보고 UTC 0시. 끝이 `Z` 면 `+00:00` 으로 바꾼다.
- * 타임존이 없으면 UTC 로 간주한다.
- */
-function parseIsoDate(value: string | null): Date | null | undefined {
-  if (!value) return null;
-
-  if (value.length === 10) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
-    const d = new Date(`${value}T00:00:00Z`);
-    return Number.isNaN(d.getTime()) ? undefined : d;
-  }
-
-  const normalized = value.endsWith("Z") ? `${value.slice(0, -1)}+00:00` : value;
-  // 타임존이 없으면 UTC 로 본다 — `new Date("...T00:00:00")` 는 로컬로 해석하므로 직접 붙인다.
-  const hasTz = /(?:[+-]\d{2}:?\d{2})$/.test(normalized);
-  const d = new Date(hasTz ? normalized : `${normalized}Z`);
-  return Number.isNaN(d.getTime()) ? undefined : d;
-}
-
 export function validateSearchParams(sp: URLSearchParams): ValidationResult {
   const errors: ValidationErrorItem[] = [];
 
@@ -222,12 +202,12 @@ export function validateSearchParams(sp: URLSearchParams): ValidationResult {
   }
 
   const rawFrom = sp.get("from_date");
-  const fromDate = parseIsoDate(rawFrom);
+  const fromDate = parseSearchDate(rawFrom);
   if (fromDate === undefined) {
     return { ok: false, status: 400, detail: `from_date='${rawFrom}' 가 ISO 8601 형식이 아닙니다.` };
   }
   const rawTo = sp.get("to_date");
-  const toDate = parseIsoDate(rawTo);
+  const toDate = parseSearchDate(rawTo);
   if (toDate === undefined) {
     return { ok: false, status: 400, detail: `to_date='${rawTo}' 가 ISO 8601 형식이 아닙니다.` };
   }
