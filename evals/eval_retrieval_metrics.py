@@ -129,6 +129,15 @@ def _resolve_sonata_doc_id() -> str | None:
     return None
 
 
+# 검색 대상 사용자. `--user-id` 또는 `OWNER_USER_ID` ENV 로 정한다.
+#
+# **이게 없으면 전 지표가 0 이 된다.** search() 의 current_user 기본값은
+# LEGACY_DEFAULT_USER(00000000-...-0001) 인데, D1 사용자 격리 이후 문서는 전부 owner
+# 소유라 그 사용자로는 한 건도 안 잡힌다. 2026-09-04 에 Phase 2 회귀 기준선을 찍으려다
+# 발견했다 — 그 전까지 이 스위트는 조용히 R@10 0.000 만 내고 있었다.
+_SEARCH_USER_ID: str | None = None
+
+
 def _call_search(
     query: str, doc_id: str | None, limit: int = 50
 ) -> dict:
@@ -137,8 +146,10 @@ def _call_search(
     - doc-scope: _RPC_TOP_K_DOC_FILTER (200) + chunk cap 으로 단일 doc 내 chunks 다수 노출.
     - multi-doc: doc_id 미지정, top-K docs (doc-level ranking) + 각 doc 의 cap 3 chunks.
     """
+    from app.auth.dependencies import CurrentUser  # noqa: E402
     from app.routers.search import search  # noqa: E402
-    resp = search(
+
+    kwargs: dict = dict(
         q=query,
         limit=limit,
         offset=0,
@@ -149,6 +160,11 @@ def _call_search(
         doc_id=doc_id,
         mode="hybrid",
     )
+    if _SEARCH_USER_ID:
+        kwargs["current_user"] = CurrentUser(
+            user_id=_SEARCH_USER_ID, email=None, is_authenticated=True
+        )
+    resp = search(**kwargs)
     return resp.model_dump()
 
 
@@ -380,11 +396,32 @@ def main() -> int:
     )
     parser.add_argument("--k", type=int, default=10, help="top-K (default 10)")
     parser.add_argument(
+        "--user-id",
+        type=str,
+        default=None,
+        help=(
+            "검색 대상 사용자 UUID (default: OWNER_USER_ID ENV). "
+            "미지정 시 search() 의 기본 사용자로 검색되어 **전 지표가 0** 이 된다."
+        ),
+    )
+    parser.add_argument(
         "--goldenset", type=str,
         default=None,
         help="골든셋 CSV 경로 (default fallback chain: v1 → v0.7 → v0.5 → v0.4)",
     )
     args = parser.parse_args()
+
+    # 사용자 격리 이후로는 이 값이 없으면 검색이 0건이 된다 — 조용히 0 을 내지 않도록
+    # 여기서 정하고, 못 정하면 경고를 띄운다.
+    global _SEARCH_USER_ID
+    _SEARCH_USER_ID = args.user_id or os.environ.get("OWNER_USER_ID")
+    if _SEARCH_USER_ID:
+        print(f"검색 사용자: {_SEARCH_USER_ID}")
+    else:
+        print(
+            "[경고] --user-id 도 OWNER_USER_ID 도 없습니다. search() 기본 사용자로 검색되며 "
+            "문서가 owner 소유라면 **전 지표가 0** 으로 나옵니다."
+        )
 
     # golden CSV 결정 — args > v1 > v0.7 > v0.5 > v0.4 (가장 신선한 것 우선)
     if args.goldenset:
