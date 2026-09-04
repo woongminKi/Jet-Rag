@@ -148,3 +148,7 @@ jobs:
       - name: search guards/filters
         working-directory: api
         run: uv run python scripts/verify_search_guards_parity.py
+      # `--live` 는 뺀다 — 운영 RPC 를 건다.
+      - name: search rrf
+        working-directory: api
+        run: uv run python scripts/verify_search_rrf_parity.py
