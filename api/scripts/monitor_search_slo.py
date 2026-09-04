@@ -32,9 +32,22 @@ from pathlib import Path
 # CI / cron 에서 `JET_RAG_API_BASE=https://api.example.com` 으로 override.
 _BASE = os.environ.get("JET_RAG_API_BASE", "http://localhost:8000").rstrip("/")
 
+# 2026-09-04 — Cloudflare 프록시 전환(Phase 1 Task 1.7) 이후 `Python-urllib/*` UA 가
+# 403(Cloudflare error 1010)으로 차단된다. 실측: urllib 만 막히고 requests·httpx·Go·
+# node-fetch·Deno 는 통과한다. 도메인이 오렌지 구름으로 바뀌며 Cloudflare 기본 보호가
+# 걸린 결과다. 클라이언트 이름을 명시해 우회한다 — 어차피 자기 트래픽을 밝히는 게 맞다.
+_USER_AGENT = "Jet-Rag-Ops/1.0 (+https://jetrag.woong-s.com)"
+
+
+def _open(url: str, timeout: int):
+    """UA 를 붙여서 연다. 맨 urlopen 을 쓰면 Cloudflare 가 막는다."""
+    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 
 def _fetch_stats() -> dict:
-    with urllib.request.urlopen(f"{_BASE}/stats", timeout=15) as resp:
+    with _open(f"{_BASE}/stats", 15) as resp:
         return json.load(resp)
 
 
@@ -44,7 +57,7 @@ def _warm_ring_buffer(queries: list[str], limit: int = 5) -> list[int]:
     for q in queries:
         try:
             qs = urllib.parse.urlencode({"q": q, "limit": str(limit)})
-            with urllib.request.urlopen(f"{_BASE}/search?{qs}", timeout=20) as resp:
+            with _open(f"{_BASE}/search?{qs}", 20) as resp:
                 d = json.load(resp)
             took_ms_list.append(int(d.get("took_ms", 0)))
         except Exception as exc:  # noqa: BLE001

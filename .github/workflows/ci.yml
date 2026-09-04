@@ -135,3 +135,8 @@ jobs:
       - name: cors
         working-directory: api
         run: uv run python scripts/verify_cors_parity.py
+      # --offline: 이 검사기의 파라미터 검증 부분은 운영 엔드포인트를 때린다.
+      # CI 를 운영 가용성에 묶지 않으려고 순수 함수(PGroonga 질의 빌드)만 돌린다.
+      - name: search params/pgroonga
+        working-directory: api
+        run: uv run python scripts/verify_search_params_parity.py --offline
