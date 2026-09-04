@@ -1,0 +1,118 @@
+/**
+ * 프록시는 배포해 봐야 아는 부분이 많지만, **경로 매핑과 요청 변환**은 배포 없이 고정할 수 있다.
+ * 여기가 틀리면 증상이 "전 API 가 404" 또는 "쿠키가 안 붙어 전원 로그아웃" 이라 크게 터진다.
+ *
+ * `fetch` 를 가로채 나가는 요청을 그대로 들여다본다.
+ */
+
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import handler from "./index.js";
+import { resolveTarget } from "./routes.js";
+
+const ENV = {
+  SUPABASE_FUNCTIONS_BASE: "https://ref.supabase.co/functions/v1",
+  LEGACY_ORIGIN: "https://jet-rag-production.up.railway.app",
+};
+
+/** 나가는 요청을 붙잡아 돌려준다. 실제 네트워크는 타지 않는다. */
+async function capture(request, env = ENV) {
+  const original = globalThis.fetch;
+  let sent = null;
+  globalThis.fetch = (input, init) => {
+    sent = input instanceof Request ? input : new Request(input, init);
+    return Promise.resolve(new Response("upstream", { status: 200 }));
+  };
+  try {
+    const response = await handler.fetch(request, env);
+    return { sent, response };
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+function req(path, init = {}) {
+  return new Request(`https://jetrag-api.woong-s.com${path}`, init);
+}
+
+/* ------------------------------------------------------------------ 경로 매핑 */
+
+Deno.test("이관된 경로만 Edge 로 간다", () => {
+  assertEquals(resolveTarget("/auth/me"), "api-account");
+  assertEquals(resolveTarget("/health"), "api-account");
+  // Phase 2 이후에 열릴 경로들 — 지금은 기존 백엔드로 가야 한다.
+  for (const p of ["/search", "/answer", "/documents", "/stats/overview", "/payments/ready"]) {
+    assertEquals(resolveTarget(p), null, p);
+  }
+});
+
+Deno.test("`/health` 는 정확히 일치할 때만 (접두어 오매칭 방지)", () => {
+  assertEquals(resolveTarget("/health"), "api-account");
+  assertEquals(resolveTarget("/healthz"), null);
+  assertEquals(resolveTarget("/health/deep"), null);
+});
+
+Deno.test("`/auth/` 는 하위 경로 전체", () => {
+  assertEquals(resolveTarget("/auth/me"), "api-account");
+  assertEquals(resolveTarget("/auth/callback"), "api-account");
+  // `/auth` 만 오면 슬래시가 없어 매칭되지 않는다 — 원본에도 그런 라우트가 없다.
+  assertEquals(resolveTarget("/auth"), null);
+});
+
+/* ------------------------------------------------------------------ Edge 로 전달 */
+
+Deno.test("Edge 대상 URL 을 함수명 + 원본 경로로 만든다", async () => {
+  const { sent } = await capture(req("/auth/me?x=1"));
+  assertEquals(sent.url, "https://ref.supabase.co/functions/v1/api-account/auth/me?x=1");
+});
+
+Deno.test("원본 경로를 X-Forwarded-Path 로 넘긴다", async () => {
+  const { sent } = await capture(req("/auth/me?x=1"));
+  // 쿼리는 빼고 경로만 — 함수는 경로로 라우팅한다.
+  assertEquals(sent.headers.get("X-Forwarded-Path"), "/auth/me");
+});
+
+Deno.test("쿠키와 Authorization 을 그대로 넘긴다", async () => {
+  // 이게 안 넘어가면 세션이 통째로 끊긴다. 프록시의 존재 이유다.
+  const { sent } = await capture(
+    req("/auth/me", {
+      headers: { Cookie: "sb-ref-auth-token=abc", Authorization: "Bearer token-123" },
+    }),
+  );
+  assertEquals(sent.headers.get("Cookie"), "sb-ref-auth-token=abc");
+  assertEquals(sent.headers.get("Authorization"), "Bearer token-123");
+});
+
+Deno.test("POST 의 본문과 메서드를 보존한다", async () => {
+  const { sent } = await capture(
+    req("/auth/me", { method: "POST", body: '{"a":1}', headers: { "content-type": "application/json" } }),
+  );
+  assertEquals(sent.method, "POST");
+  assertEquals(await sent.text(), '{"a":1}');
+});
+
+/* ------------------------------------------------------------------ 기존 백엔드로 전달 */
+
+Deno.test("미이관 경로는 기존 백엔드로, 경로·쿼리를 유지한다", async () => {
+  const { sent } = await capture(req("/stats/overview?range=7d"));
+  assertEquals(sent.url, "https://jet-rag-production.up.railway.app/stats/overview?range=7d");
+  // 기존 백엔드로 갈 때는 이 헤더를 붙이지 않는다 — 원본이 모르는 헤더다.
+  assertEquals(sent.headers.get("X-Forwarded-Path"), null);
+});
+
+Deno.test("LEGACY_ORIGIN 이 비면 404 (Phase 6 의 종료 상태)", async () => {
+  const { sent, response } = await capture(req("/stats/overview"), { ...ENV, LEGACY_ORIGIN: "" });
+  assertEquals(sent, null, "네트워크 호출이 없어야 한다");
+  assertEquals(response.status, 404);
+  assertEquals(await response.json(), { detail: "Not Found" });
+});
+
+Deno.test("LEGACY_ORIGIN 이 자기 자신이면 루프 대신 500", async () => {
+  // 설정 실수로 jetrag-api.woong-s.com 을 넣으면 Worker 가 자기를 부른다.
+  const { sent, response } = await capture(req("/stats/overview"), {
+    ...ENV,
+    LEGACY_ORIGIN: "https://jetrag-api.woong-s.com",
+  });
+  assertEquals(sent, null, "루프를 만들지 않아야 한다");
+  assertEquals(response.status, 500);
+  assertStringIncludes((await response.json()).detail, "설정 오류");
+});
