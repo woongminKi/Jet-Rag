@@ -115,6 +115,34 @@ Deno.test("선택 ENV 의 기본값이 Python 과 같다", () => {
   assertEquals(s.supabaseJwksUrl, null);
 });
 
+Deno.test("Edge 별칭 — 원래 이름이 없을 때만 쓰인다", () => {
+  // Supabase Edge 는 `SUPABASE_` 로 시작하는 secret 을 거부한다(실측). 그래서 별칭을 둔다.
+  const s = loadSettings(baseEnv({
+    SUPABASE_ANON_KEY: "anon-from-edge",
+    JETRAG_SUPABASE_JWT_SECRET: "secret-alias",
+    JETRAG_SUPABASE_JWT_ALGORITHM: "ES256",
+    JETRAG_SUPABASE_JWKS_URL: "https://abc.supabase.co/auth/v1/.well-known/jwks.json",
+    JETRAG_SUPABASE_STORAGE_BUCKET: "bucket-alias",
+  }));
+  assertEquals(s.supabaseAnonKey, "anon-from-edge");
+  assertEquals(s.supabaseJwtSecret, "secret-alias");
+  assertEquals(s.supabaseJwtAlgorithm, "ES256");
+  assertEquals(s.supabaseJwksUrl, "https://abc.supabase.co/auth/v1/.well-known/jwks.json");
+  assertEquals(s.supabaseStorageBucket, "bucket-alias");
+});
+
+Deno.test("Edge 별칭 — 원래 이름이 있으면 그쪽이 이긴다", () => {
+  // Railway·로컬에서는 원래 이름이 설정돼 있으므로 동작이 그대로여야 한다.
+  const s = loadSettings(baseEnv({
+    SUPABASE_KEY: "anon-real",
+    SUPABASE_ANON_KEY: "anon-alias",
+    SUPABASE_JWT_ALGORITHM: "HS512",
+    JETRAG_SUPABASE_JWT_ALGORITHM: "ES256",
+  }));
+  assertEquals(s.supabaseAnonKey, "anon-real");
+  assertEquals(s.supabaseJwtAlgorithm, "HS512");
+});
+
 Deno.test("빈 문자열로 설정된 선택 ENV 는 null 이다", () => {
   // Python 의 `os.environ.get(...) or None` 과 같은 동작. `""` 를 값으로 취급하면
   // JWT 검증이 빈 시크릿으로 진행돼 조용히 실패한다.

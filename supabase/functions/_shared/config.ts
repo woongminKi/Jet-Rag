@@ -16,6 +16,24 @@
  * 흔한 실패 모드고, 빈 문자열로 진행하면 "인증은 통과했는데 데이터가 안 보인다" 같은
  * 진단하기 어려운 상태가 된다. 나머지 항목은 전부 Python 동작을 그대로 따른다.
  *
+ * ## Edge 는 `SUPABASE_` 로 시작하는 secret 을 거부한다 (2026-09-04 실측)
+ * `supabase secrets set SUPABASE_JWT_ALGORITHM=...` 은
+ * `Env name cannot start with SUPABASE_, skipping` 으로 무시된다. 예약 접두어라서다.
+ * Railway 는 그 이름으로 설정돼 있으므로 **이름을 바꿀 수는 없다** — 대신 읽는 쪽에서
+ * `JETRAG_` 접두어 별칭을 함께 본다:
+ *
+ * | 원래 이름 | Edge 대체 |
+ * |---|---|
+ * | `SUPABASE_KEY` | `SUPABASE_ANON_KEY` (Edge 가 자동 주입) |
+ * | `SUPABASE_JWT_SECRET` | `JETRAG_SUPABASE_JWT_SECRET` |
+ * | `SUPABASE_JWT_ALGORITHM` | `JETRAG_SUPABASE_JWT_ALGORITHM` |
+ * | `SUPABASE_JWKS_URL` | `JETRAG_SUPABASE_JWKS_URL` |
+ * | `SUPABASE_STORAGE_BUCKET` | `JETRAG_SUPABASE_STORAGE_BUCKET` |
+ *
+ * **원래 이름을 먼저 본다.** 그래야 Railway·로컬에서 동작이 그대로고, Edge 에서만 별칭이 쓰인다.
+ * 값을 유도하지 않는 이유: `SUPABASE_URL` 에서 JWKS URL 을 만들어낼 수도 있지만, 그러면
+ * ENV 가 비었을 때 Python 은 실패하고 Edge 는 성공해 조용히 갈린다.
+ *
  * ## 플랜 초안에서 고친 것 3건 (2026-09-04, 원본 대조)
  * 1. `DEFAULT_USER_ID` — 초안은 `JETRAG_DEFAULT_USER_ID` 라고 썼지만 원본에 접두어가 없다.
  *    Railway 변수 목록도 `DEFAULT_USER_ID` 다. 이름이 틀리면 익명 사용자 UUID 가 통째로 바뀐다.
@@ -59,6 +77,11 @@ const DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001";
 const BOOL_TRUE = new Set(["true", "1", "yes", "on"]);
 const BOOL_FALSE = new Set(["false", "0", "no", "off"]);
 
+/** 원래 이름 → Edge 별칭 순으로 본다. §Edge 예약 접두어 참조. */
+function aliased(read: EnvReader, key: string, alias: string): string | undefined {
+  return read(key) ?? read(alias);
+}
+
 function required(read: EnvReader, key: string): string {
   const v = read(key);
   if (!v) throw new Error(`${key} 가 설정되지 않았습니다 (Edge Function secrets 를 확인하세요).`);
@@ -101,18 +124,20 @@ function clamp(n: number, min: number, max: number): number {
 export function loadSettings(read: EnvReader = (k) => Deno.env.get(k)): Settings {
   return {
     supabaseUrl: required(read, "SUPABASE_URL"),
-    supabaseAnonKey: read("SUPABASE_KEY") ?? "",
+    supabaseAnonKey: aliased(read, "SUPABASE_KEY", "SUPABASE_ANON_KEY") ?? "",
     supabaseServiceRoleKey: required(read, "SUPABASE_SERVICE_ROLE_KEY"),
-    supabaseStorageBucket: read("SUPABASE_STORAGE_BUCKET") ?? "documents",
+    supabaseStorageBucket: aliased(read, "SUPABASE_STORAGE_BUCKET", "JETRAG_SUPABASE_STORAGE_BUCKET") ??
+      "documents",
     geminiApiKey: read("GEMINI_API_KEY") ?? "",
     hfApiToken: read("HF_API_TOKEN") ?? "",
     // 접두어 없음 — §플랜 초안에서 고친 것 1 참조.
     defaultUserId: read("DEFAULT_USER_ID") ?? DEFAULT_USER_ID,
     ownerUserId: optional(read, "OWNER_USER_ID"),
     authEnabled: bool(read, "JETRAG_AUTH_ENABLED", false),
-    supabaseJwtSecret: optional(read, "SUPABASE_JWT_SECRET"),
-    supabaseJwtAlgorithm: read("SUPABASE_JWT_ALGORITHM") ?? "HS256",
-    supabaseJwksUrl: optional(read, "SUPABASE_JWKS_URL"),
+    supabaseJwtSecret: aliased(read, "SUPABASE_JWT_SECRET", "JETRAG_SUPABASE_JWT_SECRET") || null,
+    supabaseJwtAlgorithm: aliased(read, "SUPABASE_JWT_ALGORITHM", "JETRAG_SUPABASE_JWT_ALGORITHM") ??
+      "HS256",
+    supabaseJwksUrl: aliased(read, "SUPABASE_JWKS_URL", "JETRAG_SUPABASE_JWKS_URL") || null,
     // 비숫자면 default 24 로 떨어진 **뒤에** clamp — 1 이 아니다.
     staleIngestJobHours: clamp(
       int(read, "JETRAG_STALE_INGEST_JOB_HOURS", STALE_HOURS_DEFAULT),

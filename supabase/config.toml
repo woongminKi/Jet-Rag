@@ -423,3 +423,11 @@ entrypoint = "./functions/spike/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/spike/*.html" ]
+
+[functions.api-account]
+enabled = true
+# 게이트웨이가 Authorization JWT 를 먼저 검증하면 쿠키만 보내는 브라우저 요청이 함수 코드에
+# 닿기 전에 401 이 된다. 인증은 _shared/current_user.ts 가 직접 한다.
+verify_jwt = false
+import_map = "./functions/deno.json"
+entrypoint = "./functions/api-account/index.ts"

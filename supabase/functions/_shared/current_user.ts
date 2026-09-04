@@ -149,6 +149,16 @@ export function extractCookieToken(req: Request, settings: AuthSettings): string
   return extractAccessToken(cookies, projectRef);
 }
 
+/**
+ * 현 요청의 access_token 을 **검증 없이** 그대로 돌려준다 (`auth.py:_extract_request_token`).
+ *
+ * `getCurrentUser` 와 추출 순서가 같아야 한다 — 다르면 `/auth/me` 가 "검증한 토큰과 다른
+ * 토큰"을 프론트에 넘겨 Realtime 구독이 엉뚱한 컨텍스트로 붙는다.
+ */
+export function requestToken(req: Request, settings: AuthSettings): string | null {
+  return extractBearerToken(req) ?? extractCookieToken(req, settings);
+}
+
 /* ------------------------------------------------------------------ 3-way 분기 */
 
 export async function getCurrentUser(req: Request, settings: AuthSettings): Promise<CurrentUser> {
