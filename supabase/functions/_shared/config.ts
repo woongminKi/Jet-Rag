@@ -52,6 +52,10 @@ export interface Settings {
   supabaseStorageBucket: string;
   geminiApiKey: string;
   hfApiToken: string;
+  /** DeepInfra BGE-M3. `JETRAG_EMBED_PROVIDER=deepinfra` 일 때 필요하다. */
+  deepinfraApiToken: string;
+  /** `hf`(기본) 또는 `deepinfra`. 두 제공자의 벡터가 완전히 같지는 않다. */
+  embedProvider: string;
   defaultUserId: string;
   ownerUserId: string | null;
   authEnabled: boolean;
@@ -130,6 +134,8 @@ export function loadSettings(read: EnvReader = (k) => Deno.env.get(k)): Settings
       "documents",
     geminiApiKey: read("GEMINI_API_KEY") ?? "",
     hfApiToken: read("HF_API_TOKEN") ?? "",
+    deepinfraApiToken: read("DEEPINFRA_API_TOKEN") ?? "",
+    embedProvider: read("JETRAG_EMBED_PROVIDER") ?? "hf",
     // 접두어 없음 — §플랜 초안에서 고친 것 1 참조.
     defaultUserId: read("DEFAULT_USER_ID") ?? DEFAULT_USER_ID,
     ownerUserId: optional(read, "OWNER_USER_ID"),
