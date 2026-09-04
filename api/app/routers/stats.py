@@ -69,8 +69,11 @@ class SloBucketStats(BaseModel):
 class SearchSloStats(BaseModel):
     """`/search` SLO 측정값 — W3 Day 2 Phase 3.
 
-    `app/services/search_metrics.py` 의 in-memory ring buffer (최근 500건) 기반.
-    프로세스 재시작 시 휘발 — W4-Q-16 에서 DB 영속화 검토.
+    표본은 `search_metrics_log` 최근 500행(기본) 또는 프로세스 in-memory ring 에서 온다.
+    `source` 필드로 어느 쪽인지 알 수 있다 — `db` / `ring` / `ring_fallback`.
+
+    2026-09-05 Edge 이관 — 기본이 DB 가 된 이유: `/search` 가 Edge 로 넘어가면 이 프로세스의
+    ring 에는 아무것도 안 쌓여서, ring 을 읽으면 검색이 정상인데도 SLO 가 0 으로 보인다.
 
     `fallback_breakdown` 키:
       - transient_5xx: HF API 일시 오류 → sparse-only fallback (200 응답)
@@ -94,6 +97,8 @@ class SearchSloStats(BaseModel):
     # W14 Day 3 (한계 #77) — mode 별 분리 측정. 같은 schema 가 mode 별로 반복.
     # 키: hybrid / dense / sparse — 항상 노출 (sample 0 이라도).
     by_mode: dict[str, dict] = {}
+    # 표본 출처 — db / ring / ring_fallback (DB 조회 실패로 ring 으로 되돌아간 경우).
+    source: str = "ring"
 
 
 class IngestSloAggregate(BaseModel):
@@ -242,7 +247,7 @@ def stats(
     slo_buckets = _compute_slo_buckets(all_docs)
     ingest_slo_aggregate = _compute_slo_aggregate(slo_buckets)
 
-    # `/search` ring buffer — 외부 IO 0, 락 짧게 잡고 스냅샷만 계산.
+    # `/search` SLO — 기본은 `search_metrics_log` 조회(1 쿼리), ENV 로 ring 전환 가능.
     search_slo = SearchSloStats(**search_metrics.get_search_slo())
 
     # W8 Day 4 — Vision 호출 누적 (in-memory counter, 외부 IO 0).

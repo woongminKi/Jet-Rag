@@ -73,8 +73,20 @@ def _render_markdown(slo: dict, warm_took_ms: list[int] | None) -> str:
     lines.append(f"- 측정 시각 (UTC): `{now}`")
     lines.append(f"- API base: `{_BASE}`")
     lines.append("")
-    lines.append("## search_slo (in-memory ring buffer)")
+    # 2026-09-05 Edge 이관 — 표본 출처가 db / ring / ring_fallback 로 갈린다.
+    # `/search` 가 Edge 로 넘어간 뒤에도 db 여야 지표가 이어진다. ring 이면 그 프로세스가
+    # 처리한 검색만 보고 있다는 뜻이고, ring_fallback 이면 DB 조회가 실패한 것이다.
+    source = slo.get("source", "ring")
+    label = {
+        "db": "search_metrics_log (최근 500행)",
+        "ring": "in-memory ring buffer",
+        "ring_fallback": "in-memory ring buffer — **DB 조회 실패로 되돌아감**",
+    }.get(source, source)
+    lines.append(f"## search_slo · 표본 출처: {label}")
     lines.append("")
+    if source == "ring_fallback":
+        lines.append("> DB 조회가 실패해 ring 으로 되돌아갔다. 자격증명·마이그레이션 확인 필요.")
+        lines.append("")
     lines.append(f"- sample count: **{slo.get('sample_count', 0)}**")
     lines.append(f"- p50: **{slo.get('p50_ms', 0)}ms**")
     lines.append(f"- p95: **{slo.get('p95_ms', 0)}ms**")

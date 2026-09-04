@@ -233,8 +233,85 @@ def _persist_to_db_sync(
             logger.debug("search_metrics_log insert skip (graceful): %s", exc)
 
 
+# Edge 이관 (2026-09-05) — SLO 표본을 어디서 읽을지.
+#   "db"   : `search_metrics_log` 의 최근 _RING_MAXLEN 행 (기본값)
+#   "ring" : 이 프로세스의 in-memory ring
+# 기본을 DB 로 둔 이유: `/search` 가 Supabase Edge 로 넘어가면 **이 프로세스의 ring 에는
+# 아무것도 안 쌓인다.** 그런데 `/stats` 는 아직 여기서 돌아서, ring 을 읽으면 검색이
+# 정상인데도 SLO 가 0 으로 보인다 (매일 02:00 UTC cron 이 그 값을 본다).
+# DB 는 검색이 어디서 돌든 같은 테이블에 쌓이므로 이관 중에도 지표가 끊기지 않는다.
+_SLO_SOURCE_ENV_KEY = "JETRAG_SLO_SOURCE"
+
+
+def _slo_source() -> str:
+    """표본 출처. 명시 ENV 우선, 없으면 write-through 여부로 정한다.
+
+    write-through 가 꺼져 있으면 DB 에 쌓일 리가 없으므로 ring 이 유일한 소스다 —
+    단위 테스트가 `JET_RAG_METRICS_PERSIST_ENABLED=0` 으로 도는 환경이 여기 해당한다.
+    """
+    explicit = os.environ.get(_SLO_SOURCE_ENV_KEY, "").strip().lower()
+    if explicit in ("db", "ring"):
+        return explicit
+    return "db" if os.environ.get(_PERSIST_ENV_KEY, "1") != "0" else "ring"
+
+
+def _fetch_recent_from_db() -> list[dict] | None:
+    """`search_metrics_log` 최근 `_RING_MAXLEN` 행 → ring event 와 같은 모양.
+
+    ring 과 같은 창(최근 N 건)을 보도록 `recorded_at` 내림차순으로 자른다. 통계는
+    순서에 의존하지 않으므로(백분위는 값을 다시 정렬한다) 내림차순 그대로 쓴다.
+
+    DB 부재·권한·마이그 미적용은 graceful — None 을 돌려 호출자가 ring 으로 되돌아간다.
+    """
+    try:
+        from app.db import get_supabase_client
+
+        client = get_supabase_client()
+        resp = (
+            client.table("search_metrics_log")
+            .select(
+                "took_ms, dense_hits, sparse_hits, fused, has_dense, "
+                "fallback_reason, embed_cache_hit, mode"
+            )
+            .order("recorded_at", desc=True)
+            .limit(_RING_MAXLEN)
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001 — DB 부재 / 마이그 006 미적용 graceful
+        _warn_first_slo(f"search_metrics_log 조회 실패 → ring 으로 fallback: {exc}")
+        return None
+
+    rows = resp.data or []
+    out: list[dict] = []
+    for r in rows:
+        # 컬럼은 전부 NOT NULL 이지만(17,378행 실측 NULL 0), 방어적으로 형변환한다.
+        try:
+            out.append(
+                {
+                    "took_ms": int(r["took_ms"]),
+                    "dense_hits": int(r["dense_hits"]),
+                    "sparse_hits": int(r["sparse_hits"]),
+                    "fused": int(r["fused"]),
+                    "has_dense": bool(r["has_dense"]),
+                    "fallback_reason": r.get("fallback_reason"),
+                    "embed_cache_hit": bool(r.get("embed_cache_hit")),
+                    "mode": r.get("mode") or "hybrid",
+                }
+            )
+        except (KeyError, TypeError, ValueError):
+            # 한 행이 이상해도 나머지는 살린다.
+            continue
+    return out
+
+
+def _ring_snapshot() -> list[dict]:
+    with _lock:
+        # 락 보유 시간 최소화 — list copy 후 즉시 release.
+        return list(_ring)
+
+
 def get_search_slo() -> dict:
-    """현재 ring buffer 스냅샷에서 SLO 통계 계산.
+    """SLO 통계. 표본은 `search_metrics_log`(기본) 또는 in-memory ring 에서 온다.
 
     sample_count == 0 인 경우 모든 백분위/평균 필드는 None — 프론트는 "측정 데이터 없음" 표기.
     fallback_breakdown 은 항상 3개 키 (`transient_5xx`, `permanent_4xx`, `none`) 노출 — 0 이라도.
@@ -243,10 +320,18 @@ def get_search_slo() -> dict:
         - 전체 합산 (기존 필드) + by_mode dict (mode 별 동일 schema)
         - mode 키는 hybrid / dense / sparse 항상 노출 (sample 0 이라도)
         - 사용자가 mode 별 p50/p95 비교 → ablation 정확도↑
+
+    2026-09-05 (Edge 이관) — `source` 필드로 어디서 읽었는지 노출한다. DB 를 보려다
+    실패해 ring 으로 되돌아간 경우도 값이 달라지므로 조용히 넘기지 않는다.
     """
-    with _lock:
-        # ring 스냅샷 — 락 보유 시간 최소화 위해 list copy 후 즉시 release
-        snapshot = list(_ring)
+    source = _slo_source()
+    snapshot: list[dict] | None = None
+    if source == "db":
+        snapshot = _fetch_recent_from_db()
+        if snapshot is None:
+            source = "ring_fallback"
+    if snapshot is None:
+        snapshot = _ring_snapshot()
 
     overall = _compute_slo_for(snapshot)
     by_mode = {
@@ -254,6 +339,7 @@ def get_search_slo() -> dict:
         for m in _VALID_MODES
     }
     overall["by_mode"] = by_mode
+    overall["source"] = source
     return overall
 
 
@@ -308,12 +394,26 @@ def _compute_slo_for(samples: list[dict]) -> dict:
     }
 
 
+_first_slo_warn_logged: bool = False
+
+
+def _warn_first_slo(msg: str) -> None:
+    """첫 1회만 warn, 이후는 debug — persist 경로와 같은 패턴(로그 폭주 방지)."""
+    global _first_slo_warn_logged
+    if not _first_slo_warn_logged:
+        _first_slo_warn_logged = True
+        logger.warning(msg)
+    else:
+        logger.debug(msg)
+
+
 def reset() -> None:
     """테스트 전용 — ring buffer + first-warn flag 비움. 운영 코드에서 호출하지 말 것."""
-    global _first_persist_warn_logged
+    global _first_persist_warn_logged, _first_slo_warn_logged
     with _lock:
         _ring.clear()
         _first_persist_warn_logged = False
+        _first_slo_warn_logged = False
 
 
 # ---------------------- helpers ----------------------

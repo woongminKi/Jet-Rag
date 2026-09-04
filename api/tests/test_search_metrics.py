@@ -240,3 +240,168 @@ class SearchMetricsFirstWarnPatternTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SloSourceTest(unittest.TestCase):
+    """2026-09-05 Edge 이관 — SLO 표본 출처(DB / ring) 전환.
+
+    `/search` 가 Edge 로 넘어가면 이 프로세스의 ring 은 비어 있게 된다. 그때도 지표가
+    끊기지 않도록 `search_metrics_log` 를 기본 출처로 삼았다. 네트워크 없이 재려고
+    가짜 클라이언트를 끼워 넣는다.
+    """
+
+    SAMPLE_ROWS = [
+        {"took_ms": 100, "dense_hits": 1, "sparse_hits": 2, "fused": 3,
+         "has_dense": True, "fallback_reason": None, "embed_cache_hit": True,
+         "mode": "hybrid"},
+        {"took_ms": 300, "dense_hits": 0, "sparse_hits": 4, "fused": 4,
+         "has_dense": False, "fallback_reason": "transient_5xx",
+         "embed_cache_hit": False, "mode": "dense"},
+        {"took_ms": 200, "dense_hits": 2, "sparse_hits": 0, "fused": 2,
+         "has_dense": True, "fallback_reason": None, "embed_cache_hit": False,
+         "mode": "sparse"},
+    ]
+
+    def setUp(self) -> None:
+        search_metrics.reset()
+        self._saved = {
+            k: os.environ.get(k)
+            for k in ("JETRAG_SLO_SOURCE", "JET_RAG_METRICS_PERSIST_ENABLED")
+        }
+
+    def tearDown(self) -> None:
+        search_metrics.reset()
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    # --- 출처 결정 규칙 -----------------------------------------------------
+
+    def test_source_defaults_to_db_when_write_through_on(self) -> None:
+        os.environ.pop("JETRAG_SLO_SOURCE", None)
+        os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "1"
+        self.assertEqual(search_metrics._slo_source(), "db")
+
+    def test_source_defaults_to_ring_when_write_through_off(self) -> None:
+        # write-through 가 꺼져 있으면 DB 에 쌓일 리가 없다 → ring 이 유일한 소스.
+        os.environ.pop("JETRAG_SLO_SOURCE", None)
+        os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "0"
+        self.assertEqual(search_metrics._slo_source(), "ring")
+
+    def test_explicit_env_wins(self) -> None:
+        os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "0"
+        os.environ["JETRAG_SLO_SOURCE"] = "db"
+        self.assertEqual(search_metrics._slo_source(), "db")
+        os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "1"
+        os.environ["JETRAG_SLO_SOURCE"] = "ring"
+        self.assertEqual(search_metrics._slo_source(), "ring")
+        # 모르는 값은 무시하고 기본 규칙으로 돌아간다.
+        os.environ["JETRAG_SLO_SOURCE"] = "bogus"
+        self.assertEqual(search_metrics._slo_source(), "db")
+
+    # --- DB 경로 -----------------------------------------------------------
+
+    def _install_fake_db(self, rows, raise_on_call=False):
+        """`app.db.get_supabase_client` 를 가짜로 바꿔 끼운다."""
+        import app.db as app_db
+
+        captured = {}
+
+        class _Q:
+            def select(self, cols):
+                captured["cols"] = cols
+                return self
+
+            def order(self, col, desc=False):
+                captured["order"] = (col, desc)
+                return self
+
+            def limit(self, n):
+                captured["limit"] = n
+                return self
+
+            def execute(self):
+                return type("R", (), {"data": rows})()
+
+        class _C:
+            def table(self, name):
+                captured["table"] = name
+                return _Q()
+
+        def _factory():
+            if raise_on_call:
+                raise RuntimeError("DB 없음")
+            return _C()
+
+        original = app_db.get_supabase_client
+        app_db.get_supabase_client = _factory
+        self.addCleanup(lambda: setattr(app_db, "get_supabase_client", original))
+        return captured
+
+    def test_db_path_reads_recent_rows(self) -> None:
+        captured = self._install_fake_db(self.SAMPLE_ROWS)
+        os.environ["JETRAG_SLO_SOURCE"] = "db"
+        slo = search_metrics.get_search_slo()
+
+        self.assertEqual(slo["source"], "db")
+        self.assertEqual(slo["sample_count"], 3)
+        # ring 과 같은 창(최근 N 건)을 봐야 한다.
+        self.assertEqual(captured["table"], "search_metrics_log")
+        self.assertEqual(captured["order"], ("recorded_at", True))
+        self.assertEqual(captured["limit"], search_metrics._RING_MAXLEN)
+
+    def test_db_path_matches_ring_path_on_same_samples(self) -> None:
+        """출처만 바꾼 것이므로 같은 표본이면 값이 완전히 같아야 한다."""
+        self._install_fake_db(self.SAMPLE_ROWS)
+        os.environ["JETRAG_SLO_SOURCE"] = "db"
+        db_slo = search_metrics.get_search_slo()
+
+        search_metrics.reset()
+        for r in self.SAMPLE_ROWS:
+            search_metrics.record_search(
+                took_ms=r["took_ms"], dense_hits=r["dense_hits"],
+                sparse_hits=r["sparse_hits"], fused=r["fused"],
+                has_dense=r["has_dense"], fallback_reason=r["fallback_reason"],
+                embed_cache_hit=r["embed_cache_hit"], mode=r["mode"],
+            )
+        os.environ["JETRAG_SLO_SOURCE"] = "ring"
+        ring_slo = search_metrics.get_search_slo()
+
+        self.assertEqual(
+            {k: v for k, v in db_slo.items() if k != "source"},
+            {k: v for k, v in ring_slo.items() if k != "source"},
+        )
+
+    def test_db_failure_falls_back_to_ring_and_says_so(self) -> None:
+        """DB 를 못 읽으면 ring 으로 되돌아가되 `source` 로 그 사실을 드러낸다."""
+        self._install_fake_db([], raise_on_call=True)
+        search_metrics.record_search(
+            took_ms=42, dense_hits=1, sparse_hits=1, fused=2, has_dense=True,
+            fallback_reason=None, embed_cache_hit=False, mode="hybrid",
+        )
+        os.environ["JETRAG_SLO_SOURCE"] = "db"
+        slo = search_metrics.get_search_slo()
+        self.assertEqual(slo["source"], "ring_fallback")
+        self.assertEqual(slo["sample_count"], 1)
+        self.assertEqual(slo["p50_ms"], 42)
+
+    def test_db_path_empty_table_is_not_a_fallback(self) -> None:
+        """행이 0 건인 것과 조회 실패는 다르다 — 전자는 그대로 `db` 다."""
+        self._install_fake_db([])
+        search_metrics.record_search(
+            took_ms=42, dense_hits=1, sparse_hits=1, fused=2, has_dense=True,
+            fallback_reason=None, embed_cache_hit=False, mode="hybrid",
+        )
+        os.environ["JETRAG_SLO_SOURCE"] = "db"
+        slo = search_metrics.get_search_slo()
+        self.assertEqual(slo["source"], "db")
+        self.assertEqual(slo["sample_count"], 0)
+
+    def test_malformed_row_is_skipped_not_fatal(self) -> None:
+        rows = [*self.SAMPLE_ROWS, {"took_ms": None, "dense_hits": 1}]
+        self._install_fake_db(rows)
+        os.environ["JETRAG_SLO_SOURCE"] = "db"
+        slo = search_metrics.get_search_slo()
+        self.assertEqual(slo["sample_count"], 3)
