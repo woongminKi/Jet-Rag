@@ -156,3 +156,7 @@ jobs:
       - name: search snippet/assemble
         working-directory: api
         run: uv run python scripts/verify_search_snippet_parity.py
+      # `--live` 는 뺀다 — 운영 documents 임베딩을 읽는다.
+      - name: search intent/mmr
+        working-directory: api
+        run: uv run python scripts/verify_search_intent_mmr_parity.py
