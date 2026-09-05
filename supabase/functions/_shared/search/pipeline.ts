@@ -207,10 +207,9 @@ export async function runSearch(
               date_range: plan.dateRange,
             },
           },
-          headers: {
-            "X-Search-Path": "meta_fast",
-            "X-Reranker-Path": RERANKER_PATH_DISABLED,
-          },
+          // `X-Reranker-Path` 는 **일부러 뺐다.** 원본은 그 헤더를 2-c) 단계에서 붙이는데
+          // fast path 는 그 전에 반환하므로 헤더가 없다 (운영 실측으로 확인).
+          headers: { "X-Search-Path": "meta_fast" },
         };
       }
       metaFastFallback = true;

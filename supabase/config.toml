@@ -431,3 +431,11 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/deno.json"
 entrypoint = "./functions/api-account/index.ts"
+
+[functions.api-search]
+enabled = true
+# api-account 와 같은 이유 — 게이트웨이가 JWT 를 먼저 검증하면 쿠키만 보내는 브라우저
+# 요청과 익명 데모 요청이 함수 코드에 닿기 전에 401 이 된다. 인증은 current_user.ts 가 한다.
+verify_jwt = false
+import_map = "./functions/deno.json"
+entrypoint = "./functions/api-search/index.ts"

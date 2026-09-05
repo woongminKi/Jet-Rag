@@ -156,7 +156,11 @@ def call_python(qs: dict, user_id: str) -> dict:
     def _int(key, default):
         return int(qs[key]) if key in qs else default
 
+    from fastapi import Response as FastApiResponse
+
+    fastapi_resp = FastApiResponse()
     resp = search(
+        response=fastapi_resp,
         q=qs["q"],
         limit=_int("limit", 10),
         offset=_int("offset", 0),
@@ -168,7 +172,10 @@ def call_python(qs: dict, user_id: str) -> dict:
         mode=qs.get("mode", "hybrid"),
         current_user=CurrentUser(user_id=user_id, email=None, is_authenticated=True),
     )
-    return resp.model_dump()
+    # 헤더도 돌려준다 — 원본은 `response.headers` 에 직접 쓴다.
+    return resp.model_dump(), {
+        k: v for k, v in fastapi_resp.headers.items() if k.lower().startswith("x-")
+    }
 
 
 def path_of(q: str, qs: dict) -> str:
@@ -233,8 +240,11 @@ def main() -> None:
 
     # ① Python 을 먼저 돌린다 — 응답도 얻고, embed_query_cache 도 채운다.
     py_results: list[dict] = []
+    py_headers: list[dict] = []
     for name, qs in cases:
-        py_results.append(call_python(qs, user_id))
+        body, hdrs = call_python(qs, user_id)
+        py_results.append(body)
+        py_headers.append(hdrs)
 
     # ② 같은 질의를 TS 로. 캐시가 채워졌으므로 같은 dense 벡터를 읽는다.
     env = {
@@ -256,7 +266,7 @@ def main() -> None:
     fast_n = 0
     print()
     print("=== 응답 대조 (took_ms 제외 전 필드) ===")
-    for (name, qs), pv, tv in zip(cases, py_results, ts_results):
+    for (name, qs), pv, ph, tv in zip(cases, py_results, py_headers, ts_results):
         if (pv.get("meta") or {}).get("path") == "meta_fast":
             fast_n += 1
         if "error" in tv:
@@ -267,6 +277,9 @@ def main() -> None:
         pv2 = {k: v for k, v in pv.items() if k != "took_ms"}
         tv2 = {k: v for k, v in body.items() if k != "took_ms"}
         d = diff(pv2, tv2)
+        # 헤더 — 키는 대소문자 무시로 맞추고 값은 그대로 비교한다.
+        th = {k.lower(): v for k, v in (tv.get("headers") or {}).items()}
+        d += diff({k.lower(): v for k, v in ph.items()}, th, path="[headers]")
         if d:
             fails += 1
             print(f"  {name:<26} MISMATCH ({len(d)}건)")
