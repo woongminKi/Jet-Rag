@@ -19,10 +19,10 @@ DeepInfra 는 같은 질의에도 벡터가 미세하게 흔들린다(Task 2.7 �
 matched_chunks·스니펫·하이라이트·query_parsed·meta 전부. 바이트가 아니라 값으로 비교하는
 이유는 Task 2.4 에서 실측한 대로 pydantic 이 `1.0`, JS 가 `1` 을 쓰기 때문이다.
 
-## 이 스크립트가 아직 못 덮는 것
-`meta_filter_fast_path` 가 뜨는 질의는 원본이 임베딩·RPC 없이 답하는데 Edge 는 아직
-그 분기가 없다(Task 2.6 미이식). 그런 질의는 **건너뛰되 몇 건인지 출력한다** — 조용히
-빼면 "전부 통과" 로 읽힌다.
+## meta fast path 도 대조 대상이다
+Task 2.6 에서 이식했으므로 더 이상 건너뛰지 않는다. fast path 로 빠지는 질의는 응답
+`meta` 에 `path: "meta_fast"` 와 `matched_kind` 가 실리므로, 경로가 갈리면 그 필드에서
+바로 드러난다. 0 행이라 RAG 로 되돌아가는 경우(`meta_fast_fallback`)도 같은 방식으로 잡힌다.
 
 사용:
     api/.venv/bin/python api/scripts/verify_search_pipeline_parity.py [--limit N]
@@ -71,6 +71,12 @@ CASES: list[tuple[str, dict]] = [
     ("cover 가드 발동", {"q": "부문별 온도차"}),
     ("toc 가드 발동", {"q": "점선 목록"}),
     ("긴 질의", {"q": "데이터센터 지원 사업의 신청 자격과 제출 서류는 무엇인가요"}),
+    # meta fast path 가 실제로 결과를 내는 질의 — 경로 자체가 대조된다.
+    ("fast path 태그", {"q": "#대법원"}),
+    ("fast path 날짜 (다건·정렬)", {"q": "2026년 5월"}),
+    ("fast path 제목 ILIKE", {"q": "사업보고서"}),
+    ("fast path + 페이지", {"q": "2026년 5월 보여줘", "limit": "3", "offset": "2"}),
+    ("fast path 0건 → RAG fallback", {"q": "존재하지않는제목 보고서"}),
 ]
 
 RUNNER_TS = f"""
@@ -165,16 +171,21 @@ def call_python(qs: dict, user_id: str) -> dict:
     return resp.model_dump()
 
 
-def fires_meta_fast_path(q: str, qs: dict) -> bool:
-    """원본이 fast path 로 빠지는 질의인지 — 그러면 Edge 와 비교가 성립하지 않는다."""
-    if qs.get("doc_id") is not None:
-        return False
-    if qs.get("mode", "hybrid") != "hybrid":
-        return False
+def path_of(q: str, qs: dict) -> str:
+    """원본이 어느 경로를 타는지 — 출력에 찍어서 fast path 가 실제로 대조됐는지 보이게 한다."""
+    if qs.get("doc_id") is not None or qs.get("mode", "hybrid") != "hybrid":
+        return "rag"
+    import unicodedata
+
     from app.services import meta_filter_fast_path
 
-    import unicodedata
-    return meta_filter_fast_path.is_meta_only(unicodedata.normalize("NFC", q.strip())) is not None
+    try:
+        plan = meta_filter_fast_path.is_meta_only(
+            unicodedata.normalize("NFC", q.strip())
+        )
+    except Exception:
+        return "rag"
+    return "meta_fast?" if plan is not None else "rag"
 
 
 def diff(a, b, path="") -> list[str]:
@@ -221,16 +232,9 @@ def main() -> None:
     print(f"대상 사용자: {user_id}")
 
     # ① Python 을 먼저 돌린다 — 응답도 얻고, embed_query_cache 도 채운다.
-    py_results: list[dict | None] = []
-    skipped: list[str] = []
-    runnable: list[tuple[str, dict]] = []
+    py_results: list[dict] = []
     for name, qs in cases:
-        if fires_meta_fast_path(qs["q"], qs):
-            skipped.append(name)
-            py_results.append(None)
-            continue
         py_results.append(call_python(qs, user_id))
-        runnable.append((name, qs))
 
     # ② 같은 질의를 TS 로. 캐시가 채워졌으므로 같은 dense 벡터를 읽는다.
     env = {
@@ -243,20 +247,18 @@ def main() -> None:
     env["JET_RAG_METRICS_PERSIST_ENABLED"] = "0"
 
     ts_results = run_deno({
-        "cases": [qs for name, qs in cases if not fires_meta_fast_path(qs["q"], qs)],
+        "cases": [qs for _, qs in cases],
         "user_id": user_id,
         "env": env,
     })
 
     fails = 0
-    ti = 0
+    fast_n = 0
     print()
     print("=== 응답 대조 (took_ms 제외 전 필드) ===")
-    for (name, qs), pv in zip(cases, py_results):
-        if pv is None:
-            continue
-        tv = ts_results[ti]
-        ti += 1
+    for (name, qs), pv, tv in zip(cases, py_results, ts_results):
+        if (pv.get("meta") or {}).get("path") == "meta_fast":
+            fast_n += 1
         if "error" in tv:
             fails += 1
             print(f"  {name:<26} TS 오류: {tv['error']} {tv.get('detail')}")
@@ -274,15 +276,12 @@ def main() -> None:
                 print(f"      ... 외 {len(d) - 6}건")
         else:
             n = len(pv.get("items") or [])
-            print(f"  {name:<26} OK   total={pv['total']} items={n} "
+            path = (pv.get("meta") or {}).get("path") or "rag"
+            print(f"  {name:<26} OK   [{path:<9}] total={pv['total']} items={n} "
                   f"fused={pv['query_parsed']['fused']}")
 
     print()
-    print(f"대조 {len(runnable)}건 / 건너뜀 {len(skipped)}건")
-    if skipped:
-        print("  건너뛴 질의 — 원본이 meta fast path 로 빠진다 (Task 2.6 미이식):")
-        for n in skipped:
-            print(f"    - {n}")
+    print(f"대조 {len(cases)}건 — 그중 원본이 meta fast path 로 답한 질의 {fast_n}건")
     print()
     print("FAIL 0" if fails == 0 else f"FAIL {fails}")
     sys.exit(1 if fails else 0)

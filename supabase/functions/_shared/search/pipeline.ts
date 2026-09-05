@@ -9,6 +9,7 @@
  * | # | 하는 일 | 모듈 |
  * |---|---|---|
  * | 0 | 질의 의도 신호 | `intent.ts` |
+ * | 0-a | 메타 필터 fast path | `meta_fast_path.ts` |
  * | 1 | dense 임베딩 | `embed.ts` |
  * | 2 | mode 별 RPC + 행 필터 | `rpc.ts`, `pgroonga.ts` |
  * | 2-b | 후보 청크 본문 fetch | `chunks.ts` |
@@ -18,11 +19,10 @@
  * | 6·7 | 청크 cap + 응답 조립 | `assemble.ts` |
  * | — | 지표 기록 | `metrics.ts` |
  *
- * ## 아직 없는 것 — meta fast path
- * 원본은 빈 질의 검사 직후 `meta_filter_fast_path` 를 돌리고, 결과가 있으면 임베딩·RPC
- * 없이 바로 답한다. 그건 ENV 토글이 아니라 **항상 켜진 분기**라 `unsupported.ts` 로
- * 막을 수 없다. 아직 이식하지 않았으므로 **전환(Task 2.9) 전에 반드시 채워야 한다.**
- * 아래 `META_FAST_PATH_HOOK` 주석 자리가 그 자리다.
+ * ## meta fast path 는 항상 켜진 분기다
+ * ENV 토글이 아니라 질의 모양으로 갈린다. `doc_id` 미지정 + `mode=hybrid` 일 때만 보고,
+ * 결과가 0 행이면 **버리고 RAG 로 계속 간다**(헤더 `meta_fast_fallback`).
+ * 이 경로는 지표를 기록하지 않는다 — 원본도 그렇다.
  *
  * ## 조기 반환이 두 군데다
  * RPC 결과가 0 행일 때와, 페이지에 문서가 하나도 없을 때. 둘 다 `total` 값이 다르고
@@ -44,6 +44,7 @@ import { coerceEmbedding, isDisabled as mmrDisabled, rerank, resolveLambda } fro
 import { buildItems, chunkCapFor, type ChunkOrder, type DocMetaRow } from "./assemble.ts";
 import { recordSearch } from "./metrics.ts";
 import { findEnabledUnsupported, unsupportedDetail } from "./unsupported.ts";
+import { isMetaOnly, runFastPath } from "./meta_fast_path.ts";
 
 /** 원본 기본값. `doc_id` 지정(200) · mode ablation(100) · 기본(50). */
 const RPC_TOP_K = 50;
@@ -158,8 +159,63 @@ export async function runSearch(
   const wantsToc = queryWantsToc(cleanQ);
   const tocOn = tocGuardEnabled(deps.read);
 
-  // META_FAST_PATH_HOOK — 원본은 여기서 `meta_filter_fast_path` 를 돌리고 결과가 있으면
-  // 임베딩·RPC 없이 반환한다. 미이식 (Task 2.6). 전환 전에 채워야 한다.
+  // 0-a) 메타 필터 fast path — 임베딩·RPC 없이 documents 만 보고 답한다.
+  //   `doc_id` 지정이나 mode ablation 은 의도가 명확하므로 RAG 를 강제한다.
+  //   0 행이면 fast path 를 **버리고** RAG 로 계속 간다(`meta_fast_fallback`) —
+  //   "SK 사업보고서 매출" 처럼 제목 ILIKE 가 0 건이 되는 질의를 빈 결과로 돌려주지
+  //   않으려는 설계다. 이 경로는 지표를 기록하지 않는다(원본도 그렇다).
+  let metaFastFallback = false;
+  if (docId === null && mode === "hybrid") {
+    const plan = isMetaOnly(cleanQ);
+    if (plan !== null) {
+      const rows = await runFastPath(deps.client, plan, userId);
+      if (rows.length > 0) {
+        const paged = rows.slice(offset, offset + limit);
+        return {
+          body: {
+            query: cleanQ,
+            total: rows.length,
+            limit,
+            offset,
+            items: paged.map((r) => ({
+              doc_id: r.id,
+              doc_title: r.title ?? "",
+              doc_type: r.doc_type ?? "",
+              tags: r.tags ?? [],
+              summary: r.summary ?? null,
+              created_at: r.created_at ?? "",
+              // 메타 매칭은 boolean 이라 전부 같은 점수다.
+              relevance: 1.0,
+              matched_chunk_count: 0,
+              matched_chunks: [],
+            })),
+            took_ms: elapsedMs(),
+            query_parsed: {
+              has_dense: false,
+              has_sparse: false,
+              dense_hits: 0,
+              sparse_hits: 0,
+              fused: rows.length,
+              fallback_reason: null,
+              ...inactiveQueryParsed(),
+            },
+            meta: {
+              path: "meta_fast",
+              matched_kind: plan.matchedKind,
+              tags: plan.tags,
+              title_ilike: plan.titleIlike,
+              date_range: plan.dateRange,
+            },
+          },
+          headers: {
+            "X-Search-Path": "meta_fast",
+            "X-Reranker-Path": RERANKER_PATH_DISABLED,
+          },
+        };
+      }
+      metaFastFallback = true;
+    }
+  }
 
   // 1) dense 임베딩. transient 면 sparse-only 로 낮추고, 영구 실패면 503 이다.
   let denseVec: number[] | null = null;
@@ -225,7 +281,7 @@ export async function runSearch(
     ...inactiveQueryParsed(),
   };
   const headers = {
-    "X-Search-Path": "rag",
+    "X-Search-Path": metaFastFallback ? "meta_fast_fallback" : "rag",
     "X-Reranker-Path": RERANKER_PATH_DISABLED,
   };
 

@@ -164,3 +164,7 @@ jobs:
       - name: search embed/rpc/metrics
         working-directory: api
         run: uv run python scripts/verify_search_io_parity.py
+      # `--live` 는 뺀다 — 운영 documents 를 읽는다. 요청 URL 대조는 네트워크 없이 돈다.
+      - name: search meta fast path
+        working-directory: api
+        run: uv run python scripts/verify_meta_fast_path_parity.py
