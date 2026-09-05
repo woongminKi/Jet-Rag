@@ -27,7 +27,8 @@ function isSelf(targetUrl, requestUrl) {
 export default {
   /**
    * @param {Request} request
-   * @param {{ SUPABASE_FUNCTIONS_BASE: string, LEGACY_ORIGIN: string }} env
+   * @param {{ SUPABASE_FUNCTIONS_BASE: string, LEGACY_ORIGIN: string,
+   *           SUPABASE_FUNCTION_REGION?: string }} env
    */
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -57,6 +58,21 @@ export default {
     // Edge Function 이 원본 경로로 라우팅한다. 이게 없으면 함수는
     // `/api-account/auth/me` 를 보게 되고, 프록시를 거치지 않은 호출과 경로가 갈린다.
     proxied.headers.set("X-Forwarded-Path", url.pathname);
+    // 함수를 **DB 와 같은 지역**에서 돌린다.
+    //
+    // Supabase 는 기본적으로 *호출자* 에 가까운 지역으로 함수를 보낸다. 그런데 호출자는
+    // 사용자가 아니라 이 Worker 고, Worker 는 사용자 근처 Cloudflare PoP 에서 돈다.
+    // 그래서 미국에서 접속하면 함수가 us-west-1 에서 뜨고, DB(ap-northeast-2)까지
+    // 요청마다 태평양을 건넌다 — 검색은 DB 왕복이 여러 번이라 그대로 지연이 된다.
+    //
+    // 실측(2026-09-05, 같은 함수·같은 질의):
+    //   x-region: ap-northeast-2 → 서버 처리 132ms
+    //   x-region: us-west-1      → 서버 처리 828ms  (6.3 배)
+    //
+    // 미설정이면 헤더를 안 붙여 Supabase 기본 라우팅을 그대로 쓴다.
+    if (env.SUPABASE_FUNCTION_REGION) {
+      proxied.headers.set("x-region", env.SUPABASE_FUNCTION_REGION);
+    }
     return fetch(proxied);
   },
 };

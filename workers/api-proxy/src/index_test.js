@@ -39,10 +39,22 @@ function req(path, init = {}) {
 Deno.test("이관된 경로만 Edge 로 간다", () => {
   assertEquals(resolveTarget("/auth/me"), "api-account");
   assertEquals(resolveTarget("/health"), "api-account");
-  // Phase 2 이후에 열릴 경로들 — 지금은 기존 백엔드로 가야 한다.
-  for (const p of ["/search", "/answer", "/documents", "/stats/overview", "/payments/ready"]) {
+  // 2026-09-05 전환 — Phase 2 의 `/search`.
+  assertEquals(resolveTarget("/search"), "api-search");
+  // 아직 안 열린 경로들 — 기존 백엔드로 가야 한다. 여기가 통째로 초록이 되면
+  // "다 옮겼다" 로 착각하게 되므로 한 줄씩 지우면서 연다.
+  for (const p of ["/answer", "/documents", "/stats/overview", "/payments/ready"]) {
     assertEquals(resolveTarget(p), null, p);
   }
+});
+
+Deno.test("`/search` 는 후행 슬래시·하위 경로까지 Edge 로", () => {
+  // 규칙에 `$` 를 안 붙였다 — 원본이 `/search/` 에 307 을 내주므로 그 경로도 받아야 한다.
+  // 함수 쪽이 후행 슬래시를 떼고 `/search` 로 처리한다.
+  assertEquals(resolveTarget("/search"), "api-search");
+  assertEquals(resolveTarget("/search/"), "api-search");
+  // 접두어 오매칭도 Edge 로 가지만, 함수가 404 를 낸다 — 원본과 같은 결과다(실측).
+  assertEquals(resolveTarget("/searchfoo"), "api-search");
 });
 
 Deno.test("`/health` 는 정확히 일치할 때만 (접두어 오매칭 방지)", () => {
@@ -69,6 +81,22 @@ Deno.test("원본 경로를 X-Forwarded-Path 로 넘긴다", async () => {
   const { sent } = await capture(req("/auth/me?x=1"));
   // 쿼리는 빼고 경로만 — 함수는 경로로 라우팅한다.
   assertEquals(sent.headers.get("X-Forwarded-Path"), "/auth/me");
+});
+
+Deno.test("함수를 DB 와 같은 지역에서 돌리도록 x-region 을 붙인다", async () => {
+  // Supabase 기본 라우팅은 *호출자*(= 이 Worker) 근처를 고른다. Worker 는 사용자 근처
+  // PoP 에서 돌므로 DB 와 멀어질 수 있고, 검색은 DB 왕복이 여러 번이라 그대로 지연이 된다.
+  // 실측(2026-09-05): 같은 함수가 서울 132ms vs 미국서부 828ms.
+  const { sent } = await capture(req("/search?q=a"), {
+    ...ENV,
+    SUPABASE_FUNCTION_REGION: "ap-northeast-2",
+  });
+  assertEquals(sent.headers.get("x-region"), "ap-northeast-2");
+});
+
+Deno.test("지역이 미설정이면 헤더를 안 붙인다 (Supabase 기본 라우팅)", async () => {
+  const { sent } = await capture(req("/search?q=a"), ENV);
+  assertEquals(sent.headers.get("x-region"), null);
 });
 
 Deno.test("쿠키와 Authorization 을 그대로 넘긴다", async () => {

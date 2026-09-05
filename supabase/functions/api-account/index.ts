@@ -41,9 +41,26 @@ const FUNCTION_PREFIX = "/api-account";
  */
 function resolvePath(req: Request): string {
   const forwarded = req.headers.get("X-Forwarded-Path");
-  if (forwarded) return forwarded;
-  const path = new URL(req.url).pathname;
-  return path.startsWith(FUNCTION_PREFIX) ? path.slice(FUNCTION_PREFIX.length) || "/" : path;
+  const path = forwarded ?? new URL(req.url).pathname;
+  const stripped = !forwarded && path.startsWith(FUNCTION_PREFIX)
+    ? path.slice(FUNCTION_PREFIX.length) || "/"
+    : path;
+  return stripTrailingSlash(stripped);
+}
+
+/**
+ * 후행 슬래시를 하나 떼어낸다.
+ *
+ * 원본(FastAPI)은 `redirect_slashes` 로 `/search/` → **307** 리다이렉트를 낸다. 그런데
+ * 그 `Location` 이 `http://jet-rag-production.up.railway.app/...` 라 **Railway 호스트를
+ * 직접 가리킨다**(실측). 제거 대상 호스트로 보내는 리다이렉트를 재현하는 건 이관 목적에
+ * 역행하므로, 여기서는 **그냥 받아서 200 을 준다.** 리다이렉트를 따르는 클라이언트
+ * (브라우저 `fetch` 포함)에게는 최종 결과가 같다.
+ *
+ * 안 맞추면 `/search/` 가 Railway 200, Edge 404 로 갈린다 — 실제로 그랬다.
+ */
+function stripTrailingSlash(path: string): string {
+  return path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
 }
 
 Deno.serve(async (req: Request) => {

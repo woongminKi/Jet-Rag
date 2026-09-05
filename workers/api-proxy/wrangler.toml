@@ -14,6 +14,10 @@ SUPABASE_FUNCTIONS_BASE = "https://mpmtydudhojpukuuadrd.supabase.co/functions/v1
 # 그걸 쓰면 자기 자신을 부르는 무한 루프가 된다.
 # Phase 6 에서 이 값을 "" 로 바꾸면 Railway 의존이 끝난다.
 LEGACY_ORIGIN = "https://jet-rag-production.up.railway.app"
+# 함수를 DB 와 같은 지역에서 돌린다 (실측: 서울 132ms vs 미국서부 828ms).
+# Supabase 기본 라우팅은 *호출자*(= 이 Worker) 근처를 고르는데, Worker 는 사용자
+# 근처 PoP 에서 돌기 때문에 DB 와 멀어질 수 있다.
+SUPABASE_FUNCTION_REGION = "ap-northeast-2"
 
 [[routes]]
 pattern = "jetrag-api.woong-s.com/*"
