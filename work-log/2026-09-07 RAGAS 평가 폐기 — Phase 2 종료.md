@@ -2,9 +2,9 @@
 
 > **범위**: Edge 로 옮길 수 없던 4 라우트(`ragas` 의존)를 **폐기**해 Phase 6 의 차단 요인을
 > 없애고, Phase 2 를 닫기까지.
-> **다음 세션 재진입**: **pgmq 큐 설계**(마이그 026). 선행 3 개는 끝났다 —
-> §10 샌드박스 하네스, §11 기준선, §12 CPU 계측. 작업 단위는 **vision 페이지 1~2p** 로
-> 실측 확정됐다.
+> **다음 세션 재진입**: **마이그 027** — pg_cron 드레인 + pg_net 으로 Edge `ingest-worker`
+> 호출. 그 전에 워커 골격이 필요하다(없는 엔드포인트를 부르는 cron 은 실패 로그만 쌓는다).
+> 026(큐 + 래퍼)은 **운영 적용 완료**(§13).
 
 ## 0. 한눈에 보기
 
@@ -18,6 +18,7 @@
 | Phase 3 선행 — 인제스트 샌드박스 하네스 | ✅ (111d05f) |
 | Phase 3 선행 — 현행 인제스트 기준선 3 포맷 | ✅ (0f365b8) |
 | Phase 3 선행 — vision 래스터화 CPU 실측 | ✅ (ca6dae6) |
+| Phase 3 — 마이그 026 (pgmq 큐 + public 래퍼) | ✅ **운영 적용** (13ed304) |
 
 ## 1. 왜 폐기했나
 
@@ -334,3 +335,57 @@ Phase 0 S2 는 **텍스트+span 추출만** 쟀다. 현행은 vision 대상 페�
 
 같은 페이지 재측정에서 371.6ms → 258.8ms 로 흔들렸다(콜드/워ם 추정). 표본이 적어
 **최악값 기준으로 설계**한다. 분포를 좁히는 건 큐 구현 후에 해도 늦지 않다.
+
+
+## 13. Phase 3 — 마이그 026 운영 적용 (pgmq 큐)
+
+사용자 승인 후 **직접 적용**했다. 로컬에 SQL 경로가 없어(PostgREST DDL 불가 · PAT 없음 ·
+psycopg 미설치) **일회용 Edge 함수**로 실행하고 **끝나고 삭제**했다(HTTP 404 확인).
+그 함수는 `SUPABASE_DB_URL` 로 DB 에 직결해 **service_role key 보다 강한 권한**이라
+오래 두면 안 된다.
+
+### STEP 0 을 먼저 돌리길 잘했다 — 가정 2 개가 틀렸다
+
+| 항목 | 내 가정 | 실제 |
+|---|---|---|
+| `pgmq.send` | `bigint` | **`SETOF bigint`** |
+| `pgmq.message_record` | 5 컬럼 | **6 컬럼** (`headers` 추가) |
+| `pgmq.read` 4번째 인자 | 없음 | `conditional jsonb DEFAULT '{}'` (기본값 있어 3인자 OK) |
+
+그대로 갔으면 STEP 3 래퍼가 깨졌다.
+
+### 🔴 보안 결함 1건 — `REVOKE FROM PUBLIC` 만으로는 안 막힌다
+
+`SET LOCAL ROLE anon` 상태에서 `ingest_queue_send` 가 **성공했다**(msg_id 반환).
+Supabase 는 `public` 스키마 새 함수에 `anon`/`authenticated` 로 **직접** EXECUTE 를
+부여하는 default privileges 를 둔다 — PUBLIC 회수로는 그 부여분이 남는다.
+
+```sql
+REVOKE ALL ON FUNCTION ... FROM PUBLIC, anon, authenticated;   -- 롤을 명시해야 한다
+```
+
+**앞으로 `public` 에 SECURITY DEFINER 함수를 만들 때마다 이 함정이 있다.**
+
+### 그 밖에 잡은 것 3건
+
+- 실행기가 BigInt 를 직렬화 못 해 던진 예외가 **"SQL 실패" 로 보여** 원인 파악이 꼬였다.
+  `msg_id` 가 bigint 라 실제로 밟았다 — SQL 은 성공했는데 실패로 읽었다.
+- **`SET LOCAL` 은 트랜잭션 안에서만 유효하다.** BEGIN 없이 쓰면 조용히 무시돼
+  첫 권한 테스트가 무의미했다.
+- `read` 는 FIFO 다. 큐를 비우지 않으면 "방금 넣은 것" 이 아니라 가장 오래된 게 읽힌다.
+
+### 최종 검증 — 실패 0
+
+| 항목 | 결과 |
+|---|---|
+| 확장 3종 | `pg_cron 1.6.4` · `pg_net 0.20.0` · `pgmq 1.5.1` |
+| 큐 테이블 | `pgmq.q_ingest_tasks` · `pgmq.a_ingest_tasks` |
+| `ingest_jobs` 신규 컬럼 | `pending_tasks` · `last_heartbeat_at` |
+| 래퍼 왕복 | send(5) → read(일치) → delete(true) → depth(0) |
+| 권한 | anon 차단 · authenticated 차단 · **service_role 허용(대조군)** |
+| 최종 큐 깊이 | 0 |
+
+### 027 로 남긴 것
+
+pg_cron 드레인 + pg_net Edge 호출, Vault 키, 고아 잡 sweep.
+**워커가 아직 없다** — 없는 엔드포인트를 부르는 cron 을 먼저 만들면 실패 로그만 쌓인다.
