@@ -34,6 +34,55 @@ function req(path, init = {}) {
   return new Request(`https://jetrag-api.woong-s.com${path}`, init);
 }
 
+/* --------------------------------------------------- 이관 선언 vs 원본 라우트 */
+
+/**
+ * Edge 로 실제 옮긴 원본 경로. 프록시 규칙이 여기 없는 경로를 Edge 로 보내면 그 경로는
+ * **운영에서 404 가 된다** — 실제로 `/search/eval-precision` 이 그렇게 죽었다.
+ *
+ * 목록을 손으로 적는 게 핵심이다. 규칙에서 자동으로 뽑으면 규칙이 틀렸을 때 같이 틀린다.
+ */
+const MIGRATED_PATHS = new Set([
+  "/auth/me",
+  "/health",
+  "/search",
+  "/stats",
+  "/stats/trend",
+  "/me/plan",
+  "/me/subscription",
+  "/me/email-ingest",
+  "/me/email-ingest/rotate",
+  "/admin/queries/stats",
+  "/admin/feedback/stats",
+]);
+
+Deno.test("프록시가 Edge 로 보내는 원본 라우트는 전부 이관돼 있어야 한다", async () => {
+  // `api/scripts/fixtures/fastapi_routes.json` 은 FastAPI 앱에서 뽑은 실제 라우트 전수다.
+  // 원본에 라우트가 추가됐는데 프록시 규칙이 그걸 삼키면 여기서 터진다.
+  const url = new URL("../../../api/scripts/fixtures/fastapi_routes.json", import.meta.url);
+  const routes = JSON.parse(await Deno.readTextFile(url));
+  const swallowed = [];
+  for (const { path } of routes) {
+    const target = resolveTarget(path);
+    if (target !== null && !MIGRATED_PATHS.has(path)) swallowed.push(`${path} → ${target}`);
+  }
+  assertEquals(swallowed, [], `Edge 로 가는데 이관되지 않은 경로: ${swallowed.join(", ")}`);
+});
+
+Deno.test("이관 선언 목록은 원본에 실재하는 경로여야 한다", async () => {
+  const url = new URL("../../../api/scripts/fixtures/fastapi_routes.json", import.meta.url);
+  const routes = JSON.parse(await Deno.readTextFile(url));
+  const known = new Set(routes.map((r) => r.path));
+  // 오타나 이미 사라진 경로를 이관했다고 적어 두면 위 테스트가 헐거워진다.
+  const ghosts = [...MIGRATED_PATHS].filter((p) => !known.has(p));
+  assertEquals(ghosts, [], `원본에 없는 경로를 이관 목록에 적었다: ${ghosts.join(", ")}`);
+});
+
+Deno.test("이관 선언 경로는 프록시가 실제로 Edge 로 보내야 한다", () => {
+  const orphans = [...MIGRATED_PATHS].filter((p) => resolveTarget(p) === null);
+  assertEquals(orphans, [], `이관했다고 적었는데 프록시가 안 보내는 경로: ${orphans.join(", ")}`);
+});
+
 /* ------------------------------------------------------------------ 경로 매핑 */
 
 Deno.test("이관된 경로만 Edge 로 간다", () => {
@@ -59,13 +108,14 @@ Deno.test("이관된 경로만 Edge 로 간다", () => {
   }
 });
 
-Deno.test("`/search` 는 후행 슬래시·하위 경로까지 Edge 로", () => {
-  // 규칙에 `$` 를 안 붙였다 — 원본이 `/search/` 에 307 을 내주므로 그 경로도 받아야 한다.
-  // 함수 쪽이 후행 슬래시를 떼고 `/search` 로 처리한다.
+Deno.test("`/search` 는 자기 자신과 후행 슬래시만", () => {
+  // 원본이 `/search/` 에 307 을 내주므로 그 경로도 받는다. 함수가 슬래시를 뗀다.
   assertEquals(resolveTarget("/search"), "api-search");
   assertEquals(resolveTarget("/search/"), "api-search");
-  // 접두어 오매칭도 Edge 로 가지만, 함수가 404 를 낸다 — 원본과 같은 결과다(실측).
-  assertEquals(resolveTarget("/searchfoo"), "api-search");
+  // **하위 경로는 넘기지 않는다.** `/search/eval-precision` 은 원본에 실재하는 라우트인데
+  // 예전 접두어 규칙이 이걸 삼켜 운영에서 404 를 냈다. 회귀 고정.
+  assertEquals(resolveTarget("/search/eval-precision"), null);
+  assertEquals(resolveTarget("/searchfoo"), null);
 });
 
 Deno.test("`/health` 는 정확히 일치할 때만 (접두어 오매칭 방지)", () => {
