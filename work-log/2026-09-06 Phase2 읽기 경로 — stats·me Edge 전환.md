@@ -3,8 +3,9 @@
 > **범위**: `/stats`, `/stats/trend`, `/me/*` 4개, `/admin/*` 4개를 Supabase Edge Function
 > 으로 이관하고 Cloudflare 프록시 스위치를 열기까지. 선행 조건이던 `vision_usage` 의
 > 프로세스 로컬 상태를 DB 기준으로 옮기는 작업 포함.
-> **다음 세션 재진입**: `/answer` **HTTP shell + 배포 + 프록시 개방**부터.
-> 모듈 포팅과 대조는 끝났고(d4029da) 라우팅·배포만 남았다.
+> **다음 세션 재진입**: **Edge secrets 에 `GEMINI_API_KEY` 설정**(사용자 작업, 키 교체 후)
+> → `/answer` 200 경로 대조 → 프록시 `[/^\/answer$/, "api-answer"]` 개방.
+> 함수는 배포돼 있고 LLM 미호출 경로 11건은 이미 일치 확인됐다.
 > (정정 — 앞선 기록에 "스트리밍이라 별도 함수 검토 필요"라고 썼는데 **틀렸다**.
 > `answer.py` 헤더의 설계 결정 Q6 이 "동기 호출, streaming 은 v1.5 이후"이고
 > `StreamingResponse`·`yield` 가 하나도 없다. 원본을 안 읽고 쓴 가정이었다.)
@@ -19,7 +20,9 @@
 | 프록시 `ROUTES` 에 `/stats`, `/me/` 개방 | ✅ 배포됨 |
 | `/admin/queries/stats` · `/admin/feedback/stats` 포팅 + 전환 | ✅ 완료 (d6bc9e6) |
 | `/admin/subscriptions` (GET+POST) 포팅 + 대조 | ✅ 코드 완료 — **프록시는 미개방**(POST 가 쓰기) |
-| `/answer` 본체 모듈 포팅 + 대조 | ✅ 완료 (d4029da) — **HTTP shell·배포·프록시는 미완** |
+| `/answer` 본체 모듈 포팅 + 대조 | ✅ 완료 (d4029da) |
+| `api-answer` 함수 배포 + LLM 미호출 경로 대조 | ✅ 완료 (519df3b) — 11건 일치 |
+| `/answer` LLM 경로 대조 + 프록시 개방 | 🟡 **차단** — Edge 에 `GEMINI_API_KEY` 없음 |
 | `/answer/feedback` · `/answer/eval-ragas` · `/search/eval-precision` | ⬜ 대기 (5개 라우트) |
 | `/search/eval-precision` 프록시 회귀 | ✅ 수정·배포 (5a74ea6) |
 
@@ -271,6 +274,28 @@ pytime 때와 같은 유형이다 — **0 건은 "안 잡혔다"가 아니라 "�
 Edge 이관이 만드는 문제가 아니다** — 로직을 원본과 같게 두는 한 이관 전후 동작이 같다.
 고치려면 Worker 가 `CF-Connecting-IP` 를 `X-Forwarded-For` 로 넘겨야 한다(사용자 결정 필요).
 
+## 3-F. `api-answer` 배포 — 헤더 계약이 배포 후에 드러났다
+
+`X-Reranker-Path: disabled` 를 "핸들러 맨 앞에서 무조건 붙는다"고 적었는데 **틀렸다.**
+원본은 ① 빈 질의 400 을 먼저 던지고 ② 그다음에 `response.headers` 에 쓴다. 게다가
+`raise HTTPException` 으로 나가면 FastAPI 가 **새 Response 를 만들어** 그 헤더가 실리지
+않는다. 결과적으로 **200 에만** 붙는다.
+
+| 응답 | 원본 | 초기 구현 |
+|---|---|---|
+| 404 · 405 · 422 | 없음 | 없음 |
+| **400**(빈 질의) | **없음** | **`disabled`** ← 갈림 |
+| 200 | `disabled` | `disabled` |
+
+in-process 대조로는 잡을 수 없는 층이다 — `/stats/trend` 의 422 문구 때와 같은 유형.
+
+**검증**: Railway ↔ Edge 직접 HTTP **11건 전건 일치**(404, 405 ×2, 422 ×4, 400,
+200(검색 0건), 헤더 유무 포함). `usage_counters` 실측 **+12** — 404·405 는 안 올리고
+422 부터 올린다. dependency 가 파라미터 검증보다 먼저라는 순서가 Edge 에서도 재현됐다.
+
+**차단 요인**: Edge secrets 에 `GEMINI_API_KEY` 가 없어 LLM 경로(200, 검색 결과 있음)를
+대조하지 못했다. 지금 프록시를 열면 그 경로가 전부 503 이 되므로 **열지 않았다.**
+
 ## 4. 음성 대조 발화 기록
 
 | 대상 | 주입 | 잡힘 |
@@ -372,6 +397,7 @@ Edge CPU 2초 제약 대비로는 전부 여유가 있다(대부분이 네트워
 
 | 해시 | 메시지 |
 |---|---|
+| `519df3b` | feat(edge): api-answer 함수 배포 — X-Reranker-Path 는 200 에만 붙는다 |
 | `d4029da` | feat(edge): /answer 본체 포팅 — Gemini REST 계약을 SDK 캡처로 확정 |
 | `5a74ea6` | fix(proxy): /search 접두어 규칙이 /search/eval-precision 을 삼켜 404 를 내던 것 수정 |
 | `d6bc9e6` | feat(edge): /admin/* 4개 엔드포인트 Edge 이관 — 422 본문은 운영 실측으로 고정 |
@@ -415,6 +441,6 @@ Edge CPU 2초 제약 대비로는 전부 여유가 있다(대부분이 네트워
 | B | 원본 버그 2건 선(先)수정 | 사용자에게 500 이 나가는 상태(`9999-12-31`)를 오래 두지 않는다. MMR 도 같이 고치고 골든셋을 다시 잰다. 이관 흐름이 한 번 끊긴다. |
 | C | Phase 3(`/documents` 쓰기) 착수 | `/answer` 를 뒤로 미루고 쓰기 경로를 먼저 연다. 업로드·삭제라 되돌리기가 어려워 준비가 더 필요하다. |
 
-**권고: A** — 포팅한 코드가 배포되지 않은 채로 다른 일을 시작하면 검증 결과가 낡는다.
-`/answer` 는 LLM 비용과 `usage_counters` 증가가 있어 HTTP 대조를 아껴야 하므로
-(익명 상한 50 회/일 중 오늘 이미 22 회 소비) 대조 횟수를 미리 정하고 들어간다.
+**권고: A** — 다만 키 설정이 선행이라 사용자 작업이 끝날 때까지는 B 를 병행할 수 있다.
+`/answer` HTTP 대조는 `usage_counters` 를 소비한다 — **오늘 33/50 소비**(익명 IP 키 기준).
+LLM 경로 대조는 6~8 건이면 충분하므로 남은 여유로 가능하다.
