@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from unittest.mock import MagicMock
 
 # import 단계에서 환경 변수 체크하는 모듈 회피.
@@ -632,22 +632,35 @@ class VisionUsageSourceTest(unittest.TestCase):
         self.addCleanup(lambda: setattr(app_db, "get_supabase_client", original))
         return seen
 
-    SAMPLE = [
-        {"called_at": "2026-09-06T05:00:00+00:00", "success": True, "quota_exhausted": False},
-        {"called_at": "2026-09-06T04:00:00+00:00", "success": False, "quota_exhausted": True},
-        {"called_at": "2026-09-06T03:00:00+00:00", "success": True, "quota_exhausted": False},
-    ]
+    # **날짜를 박지 않는다.** 처음엔 `2026-09-06T05:00:00+00:00` 처럼 고정 값을 썼는데,
+    # 집계 창이 "오늘(KST)" 이라 날짜가 바뀌는 순간 전부 창 밖으로 나가 0 건이 됐다
+    # (2026-09-07 에 실제로 깨졌다). 시각은 **KST 오늘 자정 기준 상대**로 만든다.
+    @staticmethod
+    def _sample() -> list[dict]:
+        kst = timezone(timedelta(hours=9))
+        midnight = datetime.combine(datetime.now(kst).date(), time(0, 0), tzinfo=kst)
+        at = lambda h: (midnight + timedelta(hours=h)).astimezone(timezone.utc).isoformat()
+        return [
+            {"called_at": at(5), "success": True, "quota_exhausted": False},
+            {"called_at": at(4), "success": False, "quota_exhausted": True},
+            {"called_at": at(3), "success": True, "quota_exhausted": False},
+        ]
+
+    @property
+    def SAMPLE(self) -> list[dict]:
+        return self._sample()
 
     def test_db_path_aggregates(self) -> None:
-        seen = self._install_fake_db(self.SAMPLE)
+        sample = self._sample()
+        seen = self._install_fake_db(sample)
         os.environ["JETRAG_VISION_USAGE_SOURCE"] = "db"
         u = vision_metrics.get_usage()
         self.assertEqual(u["source"], "db")
         self.assertEqual(u["total_calls"], 3)
         self.assertEqual(u["success_calls"], 2)
         self.assertEqual(u["error_calls"], 1)
-        self.assertEqual(u["last_called_at"], "2026-09-06T05:00:00+00:00")
-        self.assertEqual(u["last_quota_exhausted_at"], "2026-09-06T04:00:00+00:00")
+        self.assertEqual(u["last_called_at"], sample[0]["called_at"])
+        self.assertEqual(u["last_quota_exhausted_at"], sample[1]["called_at"])
 
     def test_counts_come_from_count_queries_not_row_length(self) -> None:
         """행 길이로 세면 1,000 행 상한에서 조용히 틀린다 — count 질의를 쓰는지 고정."""

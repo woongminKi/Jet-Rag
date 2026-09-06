@@ -36,18 +36,6 @@
     ]
   },
   {
-    "path": "/answer/eval-ragas",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "path": "/answer/eval-ragas",
-    "methods": [
-      "POST"
-    ]
-  },
-  {
     "path": "/answer/feedback",
     "methods": [
       "POST"
@@ -201,18 +189,6 @@
     "path": "/search",
     "methods": [
       "GET"
-    ]
-  },
-  {
-    "path": "/search/eval-precision",
-    "methods": [
-      "GET"
-    ]
-  },
-  {
-    "path": "/search/eval-precision",
-    "methods": [
-      "POST"
     ]
   },
   {

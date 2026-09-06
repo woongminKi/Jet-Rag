@@ -55,10 +55,10 @@ _WRITE_ENDPOINTS_401 = [
     ("POST", "/documents/url"),
     ("POST", "/documents/some-doc-id/reingest"),
     ("POST", "/documents/some-doc-id/reingest-missing"),
-    # answer write (3곳) — feedback / eval
+    # answer write (1곳) — feedback
+    # (eval-ragas / eval-precision 은 2026-09-07 제거 — Python 전용 ragas 의존을 걷어내
+    #  Railway 를 없애기 위해서다. work-log 2026-09-06 §3-I 참조)
     ("POST", "/answer/feedback"),
-    ("POST", "/answer/eval-ragas"),
-    ("POST", "/search/eval-precision"),
 ]
 
 

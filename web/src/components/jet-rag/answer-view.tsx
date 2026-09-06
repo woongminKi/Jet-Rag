@@ -16,7 +16,6 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { ApiError, submitAnswerFeedback, type AnswerResponse, type AnswerSource } from '@/lib/api';
 import { toast } from 'sonner';
-import { RagasEvalCard } from './ragas-eval-card';
 import { RouterSignalsBadge } from './router-signals-badge';
 
 /** W25 D14 — `/ask` 답변 품질 가시화 (B + E + C 통합).
@@ -265,14 +264,6 @@ export function AnswerView({ query, response, docId }: AnswerViewProps) {
           </div>
         )}
       </article>
-
-      {/* RAGAS 정량 평가 카드 (W25 D14) */}
-      <RagasEvalCard
-        query={query}
-        answer={response.answer}
-        docId={docId}
-        sources={response.sources}
-      />
 
       {/* 출처 카드 (B — 클릭 highlight) */}
       {response.sources.length > 0 && (

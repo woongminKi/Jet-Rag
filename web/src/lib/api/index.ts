@@ -116,7 +116,7 @@ export interface AnswerFeedbackResponse {
   note: string | null;
 }
 
-// D1 Phase B (plan §1.1) — 직접 fetch 4곳(feedback/ragas/precision)도 인증 첨부.
+// D1 Phase B (plan §1.1) — 직접 fetch(현재 feedback 1곳)도 인증 첨부.
 // 이들은 'use client' 컴포넌트에서 호출 → 브라우저 컨텍스트라 credentials:'include' 로
 // httpOnly 쿠키 자동 첨부. 백엔드 auth_enabled=false 면 무영향(기존 동작 보존).
 const _API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
@@ -137,61 +137,6 @@ export const submitAnswerFeedback = (
   payload: AnswerFeedbackPayload,
 ): Promise<AnswerFeedbackResponse> =>
   postJson<AnswerFeedbackResponse>('/answer/feedback', payload);
-
-/** W25 D14 — RAGAS 정량 평가 (Faithfulness + AnswerRelevancy + 옵션 메트릭). */
-export interface RagasMetrics {
-  faithfulness: number | null;
-  answer_relevancy: number | null;
-  context_precision: number | null;
-  context_recall: number | null;
-  answer_correctness: number | null;
-}
-
-export interface RagasEvalResponse {
-  metrics: RagasMetrics;
-  judge_model: string | null;
-  took_ms: number | null;
-  cached: boolean;
-  skipped: boolean;
-  note: string | null;
-  created_at: string | null;
-}
-
-export interface RagasEvalPayload {
-  query: string;
-  answer_text: string;
-  doc_id?: string | null;
-  contexts: string[];
-}
-
-export const getRagasEval = (query: string, docId?: string | null) => {
-  const qs = new URLSearchParams({ query });
-  if (docId) qs.set('doc_id', docId);
-  return apiGet<RagasEvalResponse>(`/answer/eval-ragas?${qs.toString()}`);
-};
-
-export const submitRagasEval = (
-  payload: RagasEvalPayload,
-): Promise<RagasEvalResponse> =>
-  postJson<RagasEvalResponse>('/answer/eval-ragas', payload);
-
-/** W25 D14 — 검색 적합도 (Context Precision) 만 측정 (LLM 호출 1개). */
-export interface SearchPrecisionPayload {
-  query: string;
-  contexts: string[];
-  doc_id?: string | null;
-}
-
-export const getSearchPrecision = (query: string, docId?: string | null) => {
-  const qs = new URLSearchParams({ query });
-  if (docId) qs.set('doc_id', docId);
-  return apiGet<RagasEvalResponse>(`/search/eval-precision?${qs.toString()}`);
-};
-
-export const submitSearchPrecision = (
-  payload: SearchPrecisionPayload,
-): Promise<RagasEvalResponse> =>
-  postJson<RagasEvalResponse>('/search/eval-precision', payload);
 
 /** S2 D3 — `?mode=` 옵션 (운영 모드 변경). 미지정 시 백엔드가 이전 mode 재사용. */
 export const reingestDocument = (docId: string, mode?: IngestMode) => {
