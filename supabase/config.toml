@@ -432,6 +432,13 @@ verify_jwt = false
 import_map = "./functions/deno.json"
 entrypoint = "./functions/api-account/index.ts"
 
+[functions.api-ingest-worker]
+enabled = true
+# pg_cron 이 pg_net 으로 부른다(마이그 027). 게이트웨이 JWT 검증은 켜 두고,
+# 함수 안에서 service_role 인지 한 번 더 확인한다 — anon key 도 유효한 JWT 다.
+import_map = "./functions/deno.json"
+entrypoint = "./functions/api-ingest-worker/index.ts"
+
 [functions.api-answer]
 enabled = true
 # api-search 와 같은 이유 — 원본 `/answer` 는 익명도 통과시키므로(LEGACY_DEFAULT_USER)

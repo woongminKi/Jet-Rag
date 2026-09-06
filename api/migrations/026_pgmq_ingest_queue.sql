@@ -227,6 +227,10 @@ GRANT EXECUTE ON FUNCTION public.ingest_queue_depth()                TO service_
 -- ------------------------------------------------------------
 -- 다음 마이그(027)로 미룬 것 — 의도적이다
 -- ------------------------------------------------------------
+--   * **보관 개수 조회 함수** (`ingest_queue_archived_count`)
+--     → `pgmq.a_ingest_tasks` 는 PostgREST 에 안 보인다. 그래서 워커가 "보관했다" 고
+--       보고해도 **독립 신호로 확인할 방법이 없다**(2026-09-07 미검증으로 남김).
+--       depth 함수처럼 래퍼를 하나 더 두면 대조가 닫힌다.
 --   * pg_cron 드레인 스케줄 + pg_net 으로 Edge `ingest-worker` 호출
 --     → 워커가 아직 없다. 없는 엔드포인트를 부르는 cron 을 먼저 만들면 실패 로그만 쌓인다.
 --   * service_role 키를 Vault 에 넣고 cron 이 읽게 하기
