@@ -2,9 +2,8 @@
 
 > **범위**: Edge 로 옮길 수 없던 4 라우트(`ragas` 의존)를 **폐기**해 Phase 6 의 차단 요인을
 > 없애고, Phase 2 를 닫기까지.
-> **다음 세션 재진입**: **마이그 027** — pg_cron 드레인 + pg_net 으로 Edge `ingest-worker`
-> 호출. 그 전에 워커 골격이 필요하다(없는 엔드포인트를 부르는 cron 은 실패 로그만 쌓는다).
-> 026(큐 + 래퍼)은 **운영 적용 완료**(§13).
+> **다음 세션 재진입**: **중간 산출물 저장 설계** → `extract` 핸들러. 그 다음 마이그 027
+> (pg_cron 드레인 + 보관 개수 래퍼). 026 적용·워커 골격은 끝났다(§13, §14).
 
 ## 0. 한눈에 보기
 
@@ -19,6 +18,7 @@
 | Phase 3 선행 — 현행 인제스트 기준선 3 포맷 | ✅ (0f365b8) |
 | Phase 3 선행 — vision 래스터화 CPU 실측 | ✅ (ca6dae6) |
 | Phase 3 — 마이그 026 (pgmq 큐 + public 래퍼) | ✅ **운영 적용** (13ed304) |
+| Phase 3 — `ingest-worker` 드레인 골격 | ✅ 배포 (d3c74a6) — 핸들러는 아직 없음 |
 
 ## 1. 왜 폐기했나
 
@@ -389,3 +389,44 @@ REVOKE ALL ON FUNCTION ... FROM PUBLIC, anon, authenticated;   -- 롤을 명시�
 
 pg_cron 드레인 + pg_net Edge 호출, Vault 키, 고아 잡 sweep.
 **워커가 아직 없다** — 없는 엔드포인트를 부르는 cron 을 먼저 만들면 실패 로그만 쌓인다.
+
+
+## 14. Phase 3 — `ingest-worker` 드레인 골격
+
+### 설계에 결정적인 사실을 먼저 찾았다
+
+`run_chunk_stage` 는 문서 전체 `sections` 를 받아 `_split_long_sections` →
+**`_merge_short_sections`(인접 섹션 병합)** 을 한다(`chunk.py:96`).
+
+> 페이지별로 쪼개서 청킹하면 **경계에서 병합이 안 일어나 청크가 달라진다.**
+
+즉 "페이지 추출 → 전부 모아 청킹" 이어야 하고, **중간 산출물을 둘 자리가 필요하다.**
+그 설계 전에 `extract` 핸들러를 쓰면 되돌리게 되므로 이번엔 골격만 만들었다.
+
+### 드레인 계약 — 분기마다 결과가 다르다
+
+| 상황 | 처리 |
+|---|---|
+| 성공 | `delete` |
+| 핸들러가 던짐 | **지우지 않는다** — vt 후 재배달, `read_ct` 증가 |
+| 모르는 stage | 즉시 `archive` + 잡 failed (독약 메시지 방지) |
+| `read_ct > MAX_ATTEMPTS` | 핸들러 **부르지 않고** archive + 잡 failed |
+
+하나라도 뒤집히면 메시지가 영원히 돌거나 조용히 사라진다.
+
+**잠정값 2개**: `MAX_ATTEMPTS=3`(현행 `attempts` 가 전부 1 이라 근거가 약하다),
+`vt=600s`(Edge 백그라운드 wall clock 400s 보다 크게).
+
+### 검증
+
+- 단위 7건 통과. **음성 대조 6종 발화** — 실패 시 delete / 모르는 stage skip /
+  한도 경계 `>`→`>=` / 성공 시 delete 누락 / 한도 초과인데 핸들러 실행 / 첫 실패에 중단.
+  한 주입은 **타입 체크에서 걸려 런타임 검출이 아니었다** — 위치를 옮겨 다시 쟀다.
+- 실제 큐 왕복: send(msg_id=7) → drain → `{read:1, archived:1, ok:0}` → 깊이 0.
+- 인증 비인증 401 · anon 403 · service_role 200. 경로 GET 405 · `/bogus` 404.
+
+### 미검증 1건 (기록)
+
+`archived:1` 은 **워커의 자기 보고**다. `pgmq.a_ingest_tasks` 가 PostgREST 에 안 보여
+"정말 보관됐는지" 를 독립 신호로 확인하지 못했다.
+→ 027 에서 `ingest_queue_archived_count` 래퍼를 추가해 닫는다.
