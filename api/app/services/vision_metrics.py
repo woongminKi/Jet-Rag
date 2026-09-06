@@ -23,7 +23,7 @@ import logging
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -319,8 +319,117 @@ def _persist_to_db_sync(
             logger.debug("vision_usage_log insert skip (graceful): %s", exc)
 
 
-def get_usage() -> dict:
-    """현재 누적 카운트 스냅샷. /stats 응답에서 사용."""
+# Edge 이관 (2026-09-06) — 사용량을 어디서 읽을지.
+#   "db"     : `vision_usage_log` 의 **오늘(KST)** 호출 (기본값)
+#   "memory" : 이 프로세스의 in-memory 카운터
+#
+# 기본을 DB 로 둔 이유가 두 가지다.
+#
+# 1. **Edge 에서는 in-memory 가 성립하지 않는다.** isolate 가 휘발성이라 `/stats` 를
+#    Edge 로 옮기면 이 값이 영구히 0 이 된다. 게다가 vision 호출은 인제스트 경로에서
+#    나는데 그건 아직 Railway 라, 다른 프로세스의 카운터를 읽을 방법이 없다.
+#
+# 2. **지금도 사실상 죽어 있다.** 운영 실측(2026-09-06): `/stats.vision_usage` 가
+#    전부 0 인데 `vision_usage_log` 에는 2,090 행이 있다 — 프로세스가 재시작된 뒤
+#    호출이 없어서다. 재시작마다 리셋되는 값을 화면에 띄우고 있었다.
+#
+# 창을 **오늘(KST)** 로 잡은 건 프론트 카드가 `RPD_CAP = 20`(Gemini 무료 티어 **일일**
+# 요청 한도) 대비 사용률을 그리기 때문이다. 원래 의도가 "오늘 얼마나 썼나" 인데 구현이
+# "프로세스 시작 후" 였다 — 둘 다 RPD 와 안 맞았다. 전체 누적을 쓰면 2,090/20 = 10,450%
+# 라 카드가 영구 빨강이 된다.
+_USAGE_SOURCE_ENV_KEY = "JETRAG_VISION_USAGE_SOURCE"
+
+# 하루 경계는 KST — `stats.py` 의 월간·주간 집계와 같은 기준.
+_KST = timezone(timedelta(hours=9))
+
+
+def _usage_source() -> str:
+    """사용량 출처. 명시 ENV 우선, 없으면 write-through 여부로 정한다.
+
+    write-through 가 꺼져 있으면 DB 에 쌓일 리가 없으므로 in-memory 가 유일한 소스다 —
+    단위 테스트가 `JET_RAG_METRICS_PERSIST_ENABLED=0` 으로 도는 환경이 여기 해당한다.
+    """
+    explicit = os.environ.get(_USAGE_SOURCE_ENV_KEY, "").strip().lower()
+    if explicit in ("db", "memory"):
+        return explicit
+    return "db" if os.environ.get(_PERSIST_ENV_KEY, "1") != "0" else "memory"
+
+
+def _today_start_kst() -> datetime:
+    now = datetime.now(_KST)
+    return now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _fetch_today_from_db() -> dict | None:
+    """`vision_usage_log` 의 오늘(KST) 호출 → in-memory 스냅샷과 같은 모양.
+
+    **행을 받아서 세지 않는다.** PostgREST 는 한 응답을 기본 1,000 행에서 자르므로
+    행을 받아 `len()` 하면 그 위에서 조용히 과소 집계된다(2026-09-06 에 실제로 밟았다 —
+    2,090 행짜리 창을 1,000 으로 세고 있었다). 그래서 개수는 `count="exact"` 로 받고,
+    최근 시각은 `limit(1)` 로만 가져온다 — 상한과 무관해지고 전송량도 O(1) 이다.
+
+    질의는 4 번이지만 전부 인덱스 조회 + 작은 응답이고, `/stats` 는 대시보드용이라
+    핫패스가 아니다. DB 부재·권한·마이그 미적용은 graceful — None 을 돌려주면
+    호출자가 in-memory 로 되돌아간다.
+    """
+    try:
+        from app.db import get_supabase_client
+
+        client = get_supabase_client()
+        since = _today_start_kst().isoformat()
+
+        def _count(**eq) -> int:
+            q = (
+                client.table("vision_usage_log")
+                .select("called_at", count="exact")
+                .gte("called_at", since)
+            )
+            for k, v in eq.items():
+                q = q.eq(k, v)
+            return q.limit(1).execute().count or 0
+
+        def _latest(**eq) -> str | None:
+            q = (
+                client.table("vision_usage_log")
+                .select("called_at")
+                .gte("called_at", since)
+            )
+            for k, v in eq.items():
+                q = q.eq(k, v)
+            rows = q.order("called_at", desc=True).limit(1).execute().data or []
+            return rows[0]["called_at"] if rows else None
+
+        total = _count()
+        success = _count(success=True)
+        last_called = _latest()
+        last_quota = _latest(quota_exhausted=True)
+    except Exception as exc:  # noqa: BLE001 — DB 부재 / 마이그 005 미적용 graceful
+        _warn_first_usage(f"vision_usage_log 조회 실패 → in-memory 로 fallback: {exc}")
+        return None
+
+    return {
+        "total_calls": total,
+        "success_calls": success,
+        "error_calls": total - success,
+        "last_called_at": last_called,
+        "last_quota_exhausted_at": last_quota,
+    }
+
+
+_first_usage_warn_logged: bool = False
+
+
+def _warn_first_usage(msg: str) -> None:
+    """첫 1회만 warn, 이후는 debug — persist 경로와 같은 패턴(로그 폭주 방지)."""
+    global _first_usage_warn_logged
+    if not _first_usage_warn_logged:
+        _first_usage_warn_logged = True
+        logger.warning(msg)
+    else:
+        logger.debug(msg)
+
+
+def _memory_snapshot() -> dict:
     with _lock:
         return {
             "total_calls": _total_calls,
@@ -337,11 +446,28 @@ def get_usage() -> dict:
         }
 
 
+def get_usage() -> dict:
+    """Vision 호출 사용량. 기본은 `vision_usage_log` 의 오늘(KST), ENV 로 in-memory 전환.
+
+    `source` 필드로 어디서 읽었는지 노출한다 — DB 를 보려다 실패해 in-memory 로 되돌아간
+    경우도 값이 달라지므로 조용히 넘기지 않는다.
+    """
+    source = _usage_source()
+    snapshot: dict | None = None
+    if source == "db":
+        snapshot = _fetch_today_from_db()
+        if snapshot is None:
+            source = "memory_fallback"
+    if snapshot is None:
+        snapshot = _memory_snapshot()
+    return {**snapshot, "source": source}
+
+
 def reset() -> None:
     """테스트용 — 카운터 + first-warn flag 초기화."""
     global _total_calls, _success_calls, _error_calls
     global _last_called_at, _last_quota_exhausted_at
-    global _first_persist_warn_logged
+    global _first_persist_warn_logged, _first_usage_warn_logged
     with _lock:
         _total_calls = 0
         _success_calls = 0
@@ -349,3 +475,4 @@ def reset() -> None:
         _last_called_at = None
         _last_quota_exhausted_at = None
         _first_persist_warn_logged = False
+        _first_usage_warn_logged = False

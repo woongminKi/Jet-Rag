@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 # import 단계에서 환경 변수 체크하는 모듈 회피.
@@ -498,3 +499,232 @@ class ErrorMsgTruncationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# 이 파일은 상단 env 설정 뒤에 import 하는 게 규칙이라, 아래 클래스 전용으로 여기서 한 번만
+# 가져온다 (매 메서드에서 반복 import 하지 않도록).
+from app.services import vision_metrics  # noqa: E402
+
+
+class VisionUsageSourceTest(unittest.TestCase):
+    """2026-09-06 Edge 이관 — 사용량 출처(DB / in-memory) 전환.
+
+    `/stats` 가 Edge 로 넘어가면 isolate 가 휘발성이라 in-memory 카운터가 영구히 0 이 된다.
+    게다가 vision 호출은 인제스트(아직 Railway) 경로에서 나므로 다른 프로세스의 카운터를
+    읽을 방법도 없다. 그래서 `vision_usage_log` 의 **오늘(KST)** 호출을 기본 출처로 삼았다.
+    네트워크 없이 재려고 가짜 클라이언트를 끼워 넣는다.
+    """
+
+    def setUp(self) -> None:
+        vision_metrics.reset()
+        self._saved = {
+            k: os.environ.get(k)
+            for k in ("JETRAG_VISION_USAGE_SOURCE", "JET_RAG_METRICS_PERSIST_ENABLED")
+        }
+
+    def tearDown(self) -> None:
+        vision_metrics.reset()
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    # --- 출처 결정 규칙 -----------------------------------------------------
+
+    def test_source_defaults_to_db_when_write_through_on(self) -> None:
+        os.environ.pop("JETRAG_VISION_USAGE_SOURCE", None)
+        os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "1"
+        self.assertEqual(vision_metrics._usage_source(), "db")
+
+    def test_source_defaults_to_memory_when_write_through_off(self) -> None:
+        # write-through 가 꺼져 있으면 DB 에 쌓일 리가 없다 → in-memory 가 유일한 소스.
+        os.environ.pop("JETRAG_VISION_USAGE_SOURCE", None)
+        os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "0"
+        self.assertEqual(vision_metrics._usage_source(), "memory")
+
+    def test_explicit_env_wins(self) -> None:
+        os.environ["JET_RAG_METRICS_PERSIST_ENABLED"] = "0"
+        os.environ["JETRAG_VISION_USAGE_SOURCE"] = "db"
+        self.assertEqual(vision_metrics._usage_source(), "db")
+        os.environ["JETRAG_VISION_USAGE_SOURCE"] = "bogus"  # 모르는 값은 무시
+        self.assertEqual(vision_metrics._usage_source(), "memory")
+
+    # --- DB 경로 -----------------------------------------------------------
+
+    def _install_fake_db(self, rows, raise_on_call=False):
+        """`app.db.get_supabase_client` 를 가짜로 바꿔 끼운다.
+
+        모듈이 **행을 세지 않고 `count` 질의를 쓴다**는 것까지 여기서 고정한다 —
+        행을 받아 `len()` 하면 PostgREST 의 1,000 행 상한에서 조용히 과소 집계된다
+        (2026-09-06 에 실제로 밟았다: 2,090 행짜리 창을 1,000 으로 셌다).
+        """
+        import app.db as app_db
+
+        seen = {"count_queries": 0, "row_limits": [], "gte": []}
+
+        class _Q:
+            def __init__(self):
+                self._eq = {}
+                self._count = False
+                self._limit = None
+                self._gte = None
+
+            def select(self, _cols, count=None):
+                if count == "exact":
+                    self._count = True
+                    seen["count_queries"] += 1
+                return self
+
+            def gte(self, _col, value):
+                # **실제로 적용한다.** no-op 으로 두면 "오늘로 제한한다" 는 계약이
+                # 어디서도 검증되지 않는다 — 음성 대조에서 실제로 그 구멍을 발견했다.
+                self._gte = value
+                seen["gte"].append(value)
+                return self
+
+            def eq(self, k, v):
+                self._eq[k] = v
+                return self
+
+            def order(self, *_a, **_k):
+                return self
+
+            def limit(self, n):
+                self._limit = n
+                if not self._count:
+                    seen["row_limits"].append(n)
+                return self
+
+            def _matching(self):
+                out = [
+                    r for r in rows
+                    if all(r.get(k) == v for k, v in self._eq.items())
+                ]
+                if self._gte is not None:
+                    # **시각으로 비교한다.** 문자열로 비교하면 하한은 KST(+09:00),
+                    # 행은 UTC(+00:00) 라 어긋난다 — Postgres 는 오프셋을 해석해
+                    # 시각으로 비교하므로 가짜도 그래야 한다.
+                    bound = datetime.fromisoformat(self._gte)
+                    out = [
+                        r for r in out
+                        if datetime.fromisoformat(r["called_at"]) >= bound
+                    ]
+                return out
+
+            def execute(self):
+                m = self._matching()
+                if self._count:
+                    return type("R", (), {"data": m[:1], "count": len(m)})()
+                return type("R", (), {"data": m[: (self._limit or len(m))]})()
+
+        class _C:
+            def table(self, _name):
+                return _Q()
+
+        def _factory():
+            if raise_on_call:
+                raise RuntimeError("DB 없음")
+            return _C()
+
+        original = app_db.get_supabase_client
+        app_db.get_supabase_client = _factory
+        self.addCleanup(lambda: setattr(app_db, "get_supabase_client", original))
+        return seen
+
+    SAMPLE = [
+        {"called_at": "2026-09-06T05:00:00+00:00", "success": True, "quota_exhausted": False},
+        {"called_at": "2026-09-06T04:00:00+00:00", "success": False, "quota_exhausted": True},
+        {"called_at": "2026-09-06T03:00:00+00:00", "success": True, "quota_exhausted": False},
+    ]
+
+    def test_db_path_aggregates(self) -> None:
+        seen = self._install_fake_db(self.SAMPLE)
+        os.environ["JETRAG_VISION_USAGE_SOURCE"] = "db"
+        u = vision_metrics.get_usage()
+        self.assertEqual(u["source"], "db")
+        self.assertEqual(u["total_calls"], 3)
+        self.assertEqual(u["success_calls"], 2)
+        self.assertEqual(u["error_calls"], 1)
+        self.assertEqual(u["last_called_at"], "2026-09-06T05:00:00+00:00")
+        self.assertEqual(u["last_quota_exhausted_at"], "2026-09-06T04:00:00+00:00")
+
+    def test_counts_come_from_count_queries_not_row_length(self) -> None:
+        """행 길이로 세면 1,000 행 상한에서 조용히 틀린다 — count 질의를 쓰는지 고정."""
+        seen = self._install_fake_db(self.SAMPLE)
+        os.environ["JETRAG_VISION_USAGE_SOURCE"] = "db"
+        vision_metrics.get_usage()
+        self.assertEqual(seen["count_queries"], 2, "총계·성공 둘 다 count 질의여야 한다")
+        # 최근 시각 조회는 1 행만 받아야 한다.
+        self.assertTrue(seen["row_limits"], "최근 시각 조회가 없다")
+        self.assertTrue(
+            all(n == 1 for n in seen["row_limits"]),
+            f"행 조회가 1 행 초과: {seen['row_limits']}",
+        )
+
+    @staticmethod
+    def _kst_midnight_today():
+        """**모듈을 안 쓰고** KST 자정을 직접 구한다.
+
+        모듈의 `_today_start_kst()` 로 픽스처를 만들면 그 함수를 UTC 로 바꿔도 기대값이
+        같이 움직여 검사가 통과한다 — 음성 대조에서 실제로 그 구멍을 발견했다.
+        """
+        kst = timezone(timedelta(hours=9))
+        return datetime.now(kst).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def test_window_is_today_kst_only(self) -> None:
+        """어제 호출은 안 세야 한다 — 프론트 카드가 RPD(일일 한도) 대비로 그리기 때문."""
+        today = self._kst_midnight_today()
+        inside = today.replace(hour=0, minute=1).astimezone(timezone.utc).isoformat()
+        outside = (today - timedelta(minutes=1)).astimezone(timezone.utc).isoformat()
+        self._install_fake_db([
+            {"called_at": inside, "success": True, "quota_exhausted": False},
+            {"called_at": outside, "success": True, "quota_exhausted": True},
+            {"called_at": outside, "success": False, "quota_exhausted": False},
+        ])
+        os.environ["JETRAG_VISION_USAGE_SOURCE"] = "db"
+        u = vision_metrics.get_usage()
+        self.assertEqual(u["total_calls"], 1, "어제 호출이 섞였다")
+        self.assertEqual(u["error_calls"], 0)
+        self.assertEqual(u["last_called_at"], inside)
+        # 어제의 quota 소진은 오늘 창에 들어오면 안 된다.
+        self.assertIsNone(u["last_quota_exhausted_at"])
+
+    def test_every_query_is_bounded_by_the_window(self) -> None:
+        """네 질의 전부에 하한이 붙어야 한다 — 하나라도 빠지면 전체 기간을 센다."""
+        seen = self._install_fake_db(self.SAMPLE)
+        os.environ["JETRAG_VISION_USAGE_SOURCE"] = "db"
+        vision_metrics.get_usage()
+        self.assertEqual(len(seen["gte"]), 4, f"하한 없는 질의가 있다: {seen['gte']}")
+        bound = self._kst_midnight_today()
+        for v in seen["gte"]:
+            self.assertEqual(
+                datetime.fromisoformat(v), bound,
+                f"하한이 KST 자정이 아니다: {v}",
+            )
+
+    def test_quota_never_exhausted_is_none(self) -> None:
+        self._install_fake_db([
+            {"called_at": "2026-09-06T05:00:00+00:00", "success": True,
+             "quota_exhausted": False},
+        ])
+        os.environ["JETRAG_VISION_USAGE_SOURCE"] = "db"
+        u = vision_metrics.get_usage()
+        self.assertIsNone(u["last_quota_exhausted_at"])
+
+    def test_empty_window_is_not_a_fallback(self) -> None:
+        """호출이 0 건인 것과 조회 실패는 다르다 — 전자는 그대로 `db` 다."""
+        self._install_fake_db([])
+        os.environ["JETRAG_VISION_USAGE_SOURCE"] = "db"
+        u = vision_metrics.get_usage()
+        self.assertEqual(u["source"], "db")
+        self.assertEqual(u["total_calls"], 0)
+        self.assertIsNone(u["last_called_at"])
+
+    def test_db_failure_falls_back_to_memory_and_says_so(self) -> None:
+        self._install_fake_db([], raise_on_call=True)
+        vision_metrics.record_call(success=True)
+        os.environ["JETRAG_VISION_USAGE_SOURCE"] = "db"
+        u = vision_metrics.get_usage()
+        self.assertEqual(u["source"], "memory_fallback")
+        self.assertEqual(u["total_calls"], 1)

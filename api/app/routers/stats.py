@@ -128,6 +128,8 @@ class VisionUsageStats(BaseModel):
     error_calls: int
     last_called_at: str | None
     last_quota_exhausted_at: str | None = None
+    # 출처 — db / memory / memory_fallback (DB 조회 실패로 되돌아간 경우).
+    source: str = "memory"
 
 
 class ChunksStats(BaseModel):
