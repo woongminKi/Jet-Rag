@@ -3,9 +3,8 @@
 > **범위**: `/stats`, `/stats/trend`, `/me/*` 4개, `/admin/*` 4개를 Supabase Edge Function
 > 으로 이관하고 Cloudflare 프록시 스위치를 열기까지. 선행 조건이던 `vision_usage` 의
 > 프로세스 로컬 상태를 DB 기준으로 옮기는 작업 포함.
-> **다음 세션 재진입**: Phase 2 남은 5 라우트 — `/answer/feedback`(POST),
-> `/answer/eval-ragas`(GET·POST), `/search/eval-precision`(GET·POST).
-> 그다음 `/admin/subscriptions`(쓰기)까지 열면 Phase 2 가 닫힌다.
+> **다음 세션 재진입**: **이관 불가 4 라우트의 방향 결정**(§3-I). 그 결정 없이는
+> Phase 6(Railway 제거)이 닫히지 않는다. 결정이 나면 Phase 3(`/documents` 쓰기) 착수.
 > (정정 — 앞선 기록에 "스트리밍이라 별도 함수 검토 필요"라고 썼는데 **틀렸다**.
 > `answer.py` 헤더의 설계 결정 Q6 이 "동기 호출, streaming 은 v1.5 이후"이고
 > `StreamingResponse`·`yield` 가 하나도 없다. 원본을 안 읽고 쓴 가정이었다.)
@@ -23,7 +22,8 @@
 | `/answer` 본체 모듈 포팅 + 대조 | ✅ 완료 (d4029da) |
 | `api-answer` 함수 배포 + LLM 미호출 경로 대조 | ✅ 완료 (519df3b) — 11건 일치 |
 | `/answer` LLM 경로 대조 + 프록시 개방 | ✅ 완료 (6f22b9f) — 프록시 경유 11건 일치 |
-| `/answer/feedback` · `/answer/eval-ragas` · `/search/eval-precision` | ⬜ 대기 (5개 라우트, 전부 쓰기 포함) |
+| `/answer/feedback` + `/admin/subscriptions` 전환 | ✅ 완료 (00c815a) — 프록시 경유 14건 일치 |
+| `/answer/eval-ragas`·`/search/eval-precision` (GET·POST 4개) | 🔴 **이관 불가** — Python 전용 `ragas` 의존 |
 | `/search/eval-precision` 프록시 회귀 | ✅ 수정·배포 (5a74ea6) |
 
 ## 1. `/stats` — 프로세스 로컬 상태를 먼저 걷어냈다
@@ -327,6 +327,73 @@ in-process 대조로는 잡을 수 없는 층이다 — `/stats/trend` 의 422 �
 `usage_counters` 를 소비한다(익명 상한 50/일 중 오늘 45 소비). 의미 있는 표본을 뽑을
 여유가 없어 **측정하지 않았다.** 추정치는 적지 않는다.
 
+## 3-H. `/answer/feedback` + `/admin/subscriptions` — 순서 계약이 또 달랐다
+
+`/answer/feedback` 은 인증을 dependency 로 거는데, **본문이 JSON 으로 파싱조차 안 되면
+인증 전에 422** 가 나간다. 파싱이 되면 그 뒤는 인증이 먼저다.
+
+| 비인증 요청 본문 | 응답 |
+|---|---|
+| `nope` (깨진 JSON) | **422** `json_invalid` |
+| 빈 본문 · `null` · `[1]` · `"x"` · `{}` · 필드 타입오류 | **401** |
+
+`/search/eval-precision` 도 같다. 지금까지 나온 순서가 셋 다 다르다:
+
+| 엔드포인트 | 순서 |
+|---|---|
+| `/me/*` | 라우팅 → 인증 |
+| `/answer` 본체 | 라우팅 → rate_limit(dependency) → 파라미터 검증 |
+| `/answer/feedback` | 라우팅 → **JSON 파싱** → 인증 → 모델 검증 |
+
+**세 번 다 실측으로만 알아냈다.** 짐작으로는 하나도 못 맞혔을 것이다.
+
+### pydantic bool 규칙 — HTTP 치기 전에 확인한다
+
+`helpful: "yes"` 를 무효 입력이라 짐작하고 운영에 보냈다가 200 이 나와 **DB 에 행이
+하나 쓰였다**(id=2, 사용자 승인 후 삭제). 그 뒤로 강제 변환 규칙은 pydantic 으로
+in-process 확인부터 한다.
+
+실측: 문자열은 **트림 없이** `true/t/yes/y/on/1` · `false/f/no/n/off/0`(대소문자 무관),
+정수 0/1 만 받는다. `2` 는 `bool_parsing` 인데 **`1.5` 는 `bool_type`** 이다 —
+오류 타입이 갈리는 걸 대조에서 잡았다.
+
+### 의도한 차이 1건
+
+supabase-py 는 insert 에 `Prefer: return=representation` 만 보내는데 supabase-js 는
+`.select()` 없이 데이터를 안 준다(붙이면 `select=*`). 반환 컬럼은 결국 전체로 같고
+호출부는 `id` 만 읽는다. 검사기가 이 차이를 **기대값으로 고정**해 둔다.
+
+### 검증
+
+`verify_feedback_parity.py` FAIL 0 — 모델 12건(실측 fixture 8건과 교차 확인), JSON 파싱
+8건, bool 27건, insert 행·질의. **insert 는 실행하지 않는다.**
+음성 대조 9종 + 프록시 3종 발화. Edge 직접 14건, 프록시 경유 14건 전건 일치.
+`answer_feedback` 1행 · `subscriptions` 1행 — 대조 전후 **변화 없음**(쓰기 0건 확인).
+
+## 3-I. 🔴 이관 불가 4 라우트 — Phase 6 의 차단 요인
+
+`POST /answer/eval-ragas` 와 `POST /search/eval-precision` 은
+`ragas` + `langchain-google-genai` + `datasets` 를 쓴다. **전부 Python 전용**이라
+Edge 로 옮길 수 없다. GET(캐시 조회)만 옮기고 싶어도 **POST 와 경로가 같아** 프록시
+규칙으로 가를 수 없다 → 4 라우트가 통째로 Railway 에 묶인다.
+
+**실측한 사용 실적**
+
+| 항목 | 값 |
+|---|---|
+| `answer_ragas_evals` 행 수 | 4 |
+| 최근 생성 | **2026-05-05** (4개월간 신규 0) |
+| 프론트 호출 | `ragas-eval-card.tsx` · `search-precision-card.tsx` 에서 **실제 호출** |
+
+**선택지 (사용자 결정 대기)**
+
+| | 방안 | 대가 |
+|---|---|---|
+| A | 평가 기능 폐기 — 카드 2개 + 엔드포인트 제거 | 4개월 미사용 기능을 버림. Railway 제거 가능 |
+| B | LLM judge 를 직접 구현해 JS 로 대체 | 이식이 아니라 **새로 만드는 것** — 기존 4행과 값이 달라지고 비교 기준이 없다 |
+| C | 다른 Python 런타임(Cloud Run 등) | Railway 는 없어지나 **새 인프라가 생긴다** |
+| D | 이 4개만 Railway 유지 | **Railway 제거 목표가 달성되지 않는다** |
+
 ## 4. 음성 대조 발화 기록
 
 | 대상 | 주입 | 잡힘 |
@@ -428,6 +495,7 @@ Edge CPU 2초 제약 대비로는 전부 여유가 있다(대부분이 네트워
 
 | 해시 | 메시지 |
 |---|---|
+| `00c815a` | feat(edge): /answer/feedback + /admin/subscriptions 전환 — JSON 파싱만 인증보다 먼저 |
 | `6f22b9f` | feat(edge): /answer 트래픽을 Edge 로 전환 — 본체만, 하위 경로는 Railway 유지 |
 | `519df3b` | feat(edge): api-answer 함수 배포 — X-Reranker-Path 는 200 에만 붙는다 |
 | `d4029da` | feat(edge): /answer 본체 포팅 — Gemini REST 계약을 SDK 캡처로 확정 |
@@ -473,9 +541,9 @@ Edge CPU 2초 제약 대비로는 전부 여유가 있다(대부분이 네트워
 | B | 원본 버그 2건 선(先)수정 | 사용자에게 500 이 나가는 상태(`9999-12-31`)를 오래 두지 않는다. MMR 도 같이 고치고 골든셋을 다시 잰다. 이관 흐름이 한 번 끊긴다. |
 | C | Phase 3(`/documents` 쓰기) 착수 | `/answer` 를 뒤로 미루고 쓰기 경로를 먼저 연다. 업로드·삭제라 되돌리기가 어려워 준비가 더 필요하다. |
 
-**권고: A** — 남은 5 라우트는 전부 쓰기(피드백 저장·평가 저장)라 대조 방식이 `/me` 의
-rotate·`/admin` 의 upsert 와 같다(실행하지 않고 요청 모양만). 한 묶음으로 처리하는 게
-문맥이 이어진다.
+**권고: A** — Phase 3 을 먼저 해도 되지만, `ragas` 문제는 **뒤로 미룰수록 비싸지지 않는
+대신 Phase 6 에서 반드시 막힌다.** 지금 방향만 정해 두면 Phase 3~5 를 하는 동안 그에
+맞춰 진행할 수 있다. 코드 작업이 아니라 결정 하나다.
 
-**주의**: `usage_counters` 익명 상한은 50/일이고 오늘 45 를 썼다. 내일이면 리셋되지만,
-같은 날 추가 `/answer` 대조가 필요하면 남은 5 건 안에서 계획해야 한다.
+**주의**: `usage_counters` 익명 상한 50/일 중 오늘 45 를 썼다. 추가 `/answer` 대조가
+필요하면 남은 5 건 안에서 계획하거나 다음 날로 미룬다.
