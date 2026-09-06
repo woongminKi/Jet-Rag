@@ -26,15 +26,16 @@
  * 답한다. 무효 토큰만 401 이다.
  */
 
-import { loadSettings } from "../_shared/config.ts";
+import { loadSettings, type Settings } from "../_shared/config.ts";
 import { createServiceClient } from "../_shared/db.ts";
 import { applyCorsHeaders, preflightResponse } from "../_shared/cors.ts";
-import { getCurrentUser } from "../_shared/current_user.ts";
+import { getCurrentUser, requireAuthenticatedUser } from "../_shared/current_user.ts";
 import { jsonResponse, methodNotAllowed, notFound, toResponse } from "../_shared/errors.ts";
 import { embedQuery, isTransientEmbedError } from "../_shared/search/embed.ts";
 import { enforceRateLimit, METRIC_ANSWERS, RateLimitError } from "../_shared/rate_limit.ts";
 import { validateAnswerParams } from "../_shared/answer/params.ts";
 import { AnswerHttpError, buildAnswer } from "../_shared/answer/pipeline.ts";
+import { parseFeedbackJson, submitFeedback, validateFeedbackModel } from "../_shared/answer/feedback.ts";
 
 const FUNCTION_PREFIX = "/api-answer";
 
@@ -60,6 +61,31 @@ function resolveWaitUntil(): ((p: Promise<unknown>) => void) | undefined {
   return typeof rt?.waitUntil === "function" ? rt.waitUntil.bind(rt) : undefined;
 }
 
+/**
+ * `POST /answer/feedback`.
+ *
+ * 순서가 **`/answer` 본체와도 다르다** — JSON 파싱 실패만 인증보다 먼저 422 고,
+ * 그 밖의 모든 본문 오류는 인증이 먼저다(실측, `feedback.ts` 헤더 참조).
+ * rate limit 은 걸리지 않는다(원본에 dependency 가 없다).
+ */
+async function handleFeedback(req: Request, settings: Settings): Promise<Response> {
+  if (req.method !== "POST") return methodNotAllowed();
+
+  // ① JSON 파싱 — **인증 전**이다.
+  const parsed = parseFeedbackJson(await req.text());
+  if (!parsed.ok) return jsonResponse({ detail: parsed.detail }, 422);
+
+  // ② 인증
+  const user = requireAuthenticatedUser(await getCurrentUser(req, settings));
+
+  // ③ 모델 검증
+  const model = validateFeedbackModel(parsed.body);
+  if (!model.ok) return jsonResponse({ detail: model.detail }, 422);
+
+  const client = createServiceClient(settings);
+  return jsonResponse(await submitFeedback(model.payload, user.userId, client));
+}
+
 Deno.serve(async (req: Request) => {
   const settings = loadSettings();
 
@@ -69,7 +95,9 @@ Deno.serve(async (req: Request) => {
   let response: Response;
   try {
     const path = resolvePath(req);
-    if (path !== "/answer") {
+    if (path === "/answer/feedback") {
+      response = await handleFeedback(req, settings);
+    } else if (path !== "/answer") {
       response = notFound();
     } else if (req.method !== "GET") {
       response = methodNotAllowed();

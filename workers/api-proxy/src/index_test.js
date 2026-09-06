@@ -55,6 +55,8 @@ const MIGRATED_PATHS = new Set([
   "/admin/queries/stats",
   "/admin/feedback/stats",
   "/answer",
+  "/answer/feedback",
+  "/admin/subscriptions",
 ]);
 
 Deno.test("프록시가 Edge 로 보내는 원본 라우트는 전부 이관돼 있어야 한다", async () => {
@@ -136,27 +138,31 @@ Deno.test("`/me/` 는 슬래시가 있을 때만 (`/me`·`/mefoo` 는 넘기지 
   assertEquals(resolveTarget("/mefoo"), null);
 });
 
-Deno.test("`/admin` 은 읽기 2개만 — subscriptions 는 아직 Railway", () => {
+Deno.test("`/admin` — 읽기 2개 + subscriptions", () => {
   assertEquals(resolveTarget("/admin/queries/stats"), "api-account");
   assertEquals(resolveTarget("/admin/feedback/stats"), "api-account");
   // 2026-09-06 전환 — `/answer` 본체.
   assertEquals(resolveTarget("/answer"), "api-answer");
-  // **POST 가 구독을 바꾸는 쓰기라 안 연다.** 경로로는 메서드를 못 가르므로 GET 도 같이
-  // Railway 에 남는다. 이 줄이 초록으로 바뀌면 Phase 3 에서 의도적으로 연 것이어야 한다.
-  assertEquals(resolveTarget("/admin/subscriptions"), null);
+  // 2026-09-06 개방 — POST 는 구독을 바꾸는 쓰기지만 코드·대조가 끝나 함께 열었다.
+  assertEquals(resolveTarget("/admin/subscriptions"), "api-account");
   assertEquals(resolveTarget("/admin/bogus"), null);
   assertEquals(resolveTarget("/admin"), null);
   // 접두어 오매칭 방지 — 슬래시를 요구한다.
   assertEquals(resolveTarget("/admin/queriesX"), null);
 });
 
-Deno.test("`/answer` 는 본체만 — feedback·eval-ragas 는 아직 Railway", () => {
+Deno.test("`/answer` — 본체 + feedback. eval-ragas 는 이관 불가", () => {
   assertEquals(resolveTarget("/answer"), "api-answer");
   assertEquals(resolveTarget("/answer/"), "api-answer");
-  // **하위 경로를 삼키지 않는다.** `/search/eval-precision` 사고의 재발 방지.
-  assertEquals(resolveTarget("/answer/feedback"), null);
+  assertEquals(resolveTarget("/answer/feedback"), "api-answer");
+  // **이관 불가 — Railway 에 남는다.** POST 가 Python 전용 `ragas` 를 쓴다.
+  // GET 만 옮기고 싶어도 POST 와 경로가 같아 규칙으로 못 가른다.
+  // 이 줄이 초록으로 바뀌면 의도적으로 연 것이어야 한다.
   assertEquals(resolveTarget("/answer/eval-ragas"), null);
+  assertEquals(resolveTarget("/search/eval-precision"), null);
+  // 접두어 오매칭 방지.
   assertEquals(resolveTarget("/answerx"), null);
+  assertEquals(resolveTarget("/answer/feedbackX"), null);
 });
 
 Deno.test("`/auth/` 는 하위 경로 전체", () => {

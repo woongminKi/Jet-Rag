@@ -1,0 +1,258 @@
+{
+  "비인증": [
+    401,
+    {
+      "detail": "로그인이 필요합니다."
+    }
+  ],
+  "빈 객체": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "missing",
+          "loc": [
+            "body",
+            "query"
+          ],
+          "msg": "Field required",
+          "input": {}
+        },
+        {
+          "type": "missing",
+          "loc": [
+            "body",
+            "answer_text"
+          ],
+          "msg": "Field required",
+          "input": {}
+        },
+        {
+          "type": "missing",
+          "loc": [
+            "body",
+            "helpful"
+          ],
+          "msg": "Field required",
+          "input": {}
+        }
+      ]
+    }
+  ],
+  "helpful 누락": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "missing",
+          "loc": [
+            "body",
+            "helpful"
+          ],
+          "msg": "Field required",
+          "input": {
+            "query": "q",
+            "answer_text": "a"
+          }
+        }
+      ]
+    }
+  ],
+  "helpful 타입오류": [
+    200,
+    {
+      "feedback_id": 2,
+      "skipped": false,
+      "note": null
+    }
+  ],
+  "sources_count 타입오류": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "int_parsing",
+          "loc": [
+            "body",
+            "sources_count"
+          ],
+          "msg": "Input should be a valid integer, unable to parse string as an integer",
+          "input": "x"
+        }
+      ]
+    }
+  ],
+  "query 타입오류": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "string_type",
+          "loc": [
+            "body",
+            "query"
+          ],
+          "msg": "Input should be a valid string",
+          "input": 1
+        }
+      ]
+    }
+  ],
+  "배열 본문": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "model_attributes_type",
+          "loc": [
+            "body"
+          ],
+          "msg": "Input should be a valid dictionary or object to extract fields from",
+          "input": [
+            1
+          ]
+        }
+      ]
+    }
+  ],
+  "깨진 JSON": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "json_invalid",
+          "loc": [
+            "body",
+            0
+          ],
+          "msg": "JSON decode error",
+          "input": {},
+          "ctx": {
+            "error": "Expecting value"
+          }
+        }
+      ]
+    }
+  ],
+  "GET /answer/feedback (비인증)": [
+    405,
+    {
+      "detail": "Method Not Allowed"
+    }
+  ],
+  "GET /answer/feedback (인증)": [
+    405,
+    {
+      "detail": "Method Not Allowed"
+    }
+  ],
+  "DELETE (비인증)": [
+    405,
+    {
+      "detail": "Method Not Allowed"
+    }
+  ],
+  "POST 비인증 + 무효본문": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "json_invalid",
+          "loc": [
+            "body",
+            0
+          ],
+          "msg": "JSON decode error",
+          "input": {},
+          "ctx": {
+            "error": "Expecting value"
+          }
+        }
+      ]
+    }
+  ],
+  "POST 인증 + 본문 없음": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "missing",
+          "loc": [
+            "body"
+          ],
+          "msg": "Field required",
+          "input": null
+        }
+      ]
+    }
+  ],
+  "POST 인증 + null": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "missing",
+          "loc": [
+            "body"
+          ],
+          "msg": "Field required",
+          "input": null
+        }
+      ]
+    }
+  ],
+  "POST 인증 + helpful=null": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "bool_type",
+          "loc": [
+            "body",
+            "helpful"
+          ],
+          "msg": "Input should be a valid boolean",
+          "input": null
+        }
+      ]
+    }
+  ],
+  "POST 인증 + helpful=2": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "bool_parsing",
+          "loc": [
+            "body",
+            "helpful"
+          ],
+          "msg": "Input should be a valid boolean, unable to interpret input",
+          "input": 2
+        }
+      ]
+    }
+  ],
+  "POST 인증 + comment 타입오류": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "string_type",
+          "loc": [
+            "body",
+            "comment"
+          ],
+          "msg": "Input should be a valid string",
+          "input": 5
+        }
+      ]
+    }
+  ],
+  "GET /answer/bogus": [
+    404,
+    {
+      "detail": "Not Found"
+    }
+  ]
+}

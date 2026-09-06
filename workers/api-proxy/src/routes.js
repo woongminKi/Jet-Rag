@@ -35,7 +35,15 @@ export const ROUTES = [
   // `/search` 를 접두어로 열었다가 `/search/eval-precision` 을 삼킨 사고(5a74ea6)와
   // 같은 실수를 하지 않기 위해서다. 아래 `이관 선언` 테스트가 이걸 강제한다.
   [/^\/answer\/?$/, "api-answer"],
-  // Phase 2 나머지: [/^\/answer\/feedback$/, ...], [/^\/answer\/eval-ragas$/, ...]
+  // 2026-09-06 전환 — `/answer/feedback`. 순서 계약(JSON 파싱만 인증보다 먼저)까지 14건 일치.
+  [/^\/answer\/feedback$/, "api-answer"],
+  // 2026-09-06 전환 — `/admin/subscriptions` (GET+POST). POST 는 구독을 바꾸는 **쓰기**다.
+  // 코드·대조는 /admin 묶음(d6bc9e6)에서 끝났고 여기서 프록시만 연다.
+  [/^\/admin\/subscriptions$/, "api-account"],
+  // **이관 불가 — Railway 에 남는다.** `/answer/eval-ragas` 와 `/search/eval-precision` 은
+  // POST 가 `ragas` + `langchain-google-genai` + `datasets`(전부 Python 전용)를 쓴다.
+  // GET(캐시 조회)만 옮기고 싶어도 POST 와 경로가 같아 규칙으로 가를 수 없다.
+  // Phase 6(Railway 제거)의 실질적 차단 요인 — 별도 결정 필요.
   // Phase 3 에서 해제: [/^\/admin\/subscriptions/, "api-account"],
   // Phase 3 에서 해제: [/^\/documents/, "api-documents"],
   // Phase 4 에서 해제: [/^\/payments/, "api-payments"], [/^\/billing/, "billing-run"],
