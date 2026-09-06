@@ -3,8 +3,10 @@
 > **범위**: `/stats`, `/stats/trend`, `/me/*` 4개, `/admin/*` 4개를 Supabase Edge Function
 > 으로 이관하고 Cloudflare 프록시 스위치를 열기까지. 선행 조건이던 `vision_usage` 의
 > 프로세스 로컬 상태를 DB 기준으로 옮기는 작업 포함.
-> **다음 세션 재진입**: `/answer` 포팅. Phase 2 에서 유일하게 남았고 가장 크다 —
-> **스트리밍 응답이라 별도 함수로 뺄지 결정이 앞에 붙는다.**
+> **다음 세션 재진입**: `/answer` 포팅. Phase 2 에서 유일하게 남았고 가장 크다.
+> (정정 — 앞선 기록에 "스트리밍이라 별도 함수 검토 필요"라고 썼는데 **틀렸다**.
+> `answer.py` 헤더의 설계 결정 Q6 이 "동기 호출, streaming 은 v1.5 이후"이고
+> `StreamingResponse`·`yield` 가 하나도 없다. 원본을 안 읽고 쓴 가정이었다.)
 
 ## 0. 한눈에 보기
 
@@ -16,7 +18,8 @@
 | 프록시 `ROUTES` 에 `/stats`, `/me/` 개방 | ✅ 배포됨 |
 | `/admin/queries/stats` · `/admin/feedback/stats` 포팅 + 전환 | ✅ 완료 (d6bc9e6) |
 | `/admin/subscriptions` (GET+POST) 포팅 + 대조 | ✅ 코드 완료 — **프록시는 미개방**(POST 가 쓰기) |
-| `/answer` | ⬜ 대기 (Phase 2 최대 항목) |
+| `/answer` 외 6개 라우트 | ⬜ 대기 (Phase 2 최대 항목) |
+| `/search/eval-precision` 프록시 회귀 | ✅ 수정·배포 (5a74ea6) |
 
 ## 1. `/stats` — 프로세스 로컬 상태를 먼저 걷어냈다
 
@@ -135,6 +138,58 @@ URL 만** 대조했다. HTTP 검증에서도 비인증 401 까지만 확인하�
 실측: 30일치 627행이라 아직 상한 밖. 정렬이 `desc` 라 잘려도 최근 것이 남는 것까지 같다.
 데이터가 늘어 상한에 닿으면 양쪽이 같이 잘린다.
 
+## 3-C. 운영 회귀 1건 — `/search/eval-precision` 이 404 였다
+
+`/answer` 포팅을 시작하며 `answer.py` 를 읽다가 **이 라우터에 `/search/eval-precision` 이
+들어 있는 걸** 발견했다. `/search` 전환 때 넣은 `[/^\/search/, "api-search"]` 규칙이 이
+경로까지 삼켜 `api-search` 로 보냈고, 그 함수에는 해당 라우트가 없어 404 가 나가고 있었다.
+
+| 요청 | Railway | 프록시(수정 전) |
+|---|---|---|
+| `GET /search/eval-precision` | 422 | **404** |
+| `GET ?query=test` | 200 | **404** |
+| `POST` | 401 | **404** |
+| `DELETE` | 405 | **404** |
+
+**왜 못 잡았나** — 전환 당시 접두어 오매칭을 `/searchfoo` 로만 확인하고 "원본에도 없으니
+404 로 같다"고 넘겼다. `/searchfoo` 는 맞았지만 **원본 라우트 목록을 대조하지 않았다.**
+`/health` 는 `$` 를 붙였고 `/me/`·`/admin/queries/` 는 슬래시를 요구했는데, `/search` 만
+접두어로 열어 둔 채였다.
+
+**고친 것**
+
+- 규칙을 `[/^\/search\/?$/, "api-search"]` 로 좁혔다.
+- `api/scripts/fixtures/fastapi_routes.json` — FastAPI 앱에서 뽑은 라우트 전수 38개.
+- 프록시 테스트 3종 — 손으로 적은 `MIGRATED_PATHS` 와 라우트 전수를 대조해
+  ① Edge 로 가는데 이관 안 된 경로 ② 원본에 없는 이관 선언 ③ 이관 선언했는데 안 보내는
+  경로를 막는다. **목록을 규칙에서 자동으로 뽑지 않는 게 핵심**이다 — 규칙이 틀리면 같이 틀린다.
+
+**가드가 사고를 재현하면 잡는다**: 규칙 되돌리기 2건, `/admin` 통째 열기 2건,
+`/me`→`/answer` 확장 1건, `/documents` 선개방 5건.
+운영 HTTP 15건 전건 일치로 해소 확인.
+
+## 3-D. `/answer` 범위 실측 (착수 전 조사)
+
+| 라우트 | 메서드 | 성격 |
+|---|---|---|
+| `/answer` | GET | 본체 — RPC + Gemini LLM 호출 |
+| `/answer/feedback` | POST | 쓰기 |
+| `/answer/eval-ragas` | GET·POST | 조회 + 쓰기 |
+| `/search/eval-precision` | GET·POST | 조회 + 쓰기 |
+
+- **스트리밍 아니다** (위 정정 참조).
+- 의존: `intent_router`(292) · `query_decomposer`(523) · `multi_query_search`(66) ·
+  `rate_limit`(159) · `factory`(209) · Gemini 어댑터. 라우터 자체가 1,000 줄.
+- **재사용 가능**: `_shared/search/` 의 `intent.ts` · `rpc.ts` · `embed.ts` 가 이미 있다.
+  `_gather_chunks` 는 `/search` 와 같은 RPC 를 쓴다.
+- **운영에서 decomposition 은 꺼져 있다** — 실측 `decomposed_subqueries: []`,
+  `decomposition_cost_usd: 0.0`. `JETRAG_PAID_DECOMPOSITION_ENABLED` 기본 OFF 라
+  `_gather_chunks_with_decomposition` 분기는 현재 도달 불가.
+- 운영 응답 실측: `model=gemini-2.5-flash`, `router_confidence=1.0`,
+  `query_parsed={dense_hits:28, sparse_hits:31, fused:50}`.
+
+**한 세션에 안 끝난다** — 아래 후보표의 분해안 참조.
+
 ## 4. 음성 대조 발화 기록
 
 | 대상 | 주입 | 잡힘 |
@@ -236,6 +291,7 @@ Edge CPU 2초 제약 대비로는 전부 여유가 있다(대부분이 네트워
 
 | 해시 | 메시지 |
 |---|---|
+| `5a74ea6` | fix(proxy): /search 접두어 규칙이 /search/eval-precision 을 삼켜 404 를 내던 것 수정 |
 | `d6bc9e6` | feat(edge): /admin/* 4개 엔드포인트 Edge 이관 — 422 본문은 운영 실측으로 고정 |
 | `c8368bd` | feat(edge): /me/* 4개 엔드포인트 Edge 이관 — 라우팅·인증 순서까지 대조 |
 | `b0a5d58` | feat(edge): `/stats` · `/stats/trend` 를 Edge 로 전환 |
@@ -273,7 +329,7 @@ Edge CPU 2초 제약 대비로는 전부 여유가 있다(대부분이 네트워
 
 | | 후보 | 근거 |
 |---|---|---|
-| **A** | `/answer` 착수 (권장) | Phase 2 의 마지막이자 최대 항목. 여기를 넘기면 읽기 경로가 끝나고 Phase 3(쓰기)로 간다. 스트리밍을 별도 함수로 뺄지부터 정해야 한다. |
+| **A** | `/answer` 본체(GET) 먼저 (권장) | Phase 2 의 마지막. 라우터가 1,000줄이라 한 세션에 다 못 하므로 **본체 → 나머지 5개** 로 쪼갠다. 본체는 `intent.ts`·`rpc.ts`·`embed.ts` 재사용이 가능하고, 새로 드는 것은 Gemini 어댑터 + prompt 조립 + rate_limit 이다. |
 | B | 원본 버그 2건 선(先)수정 | 사용자에게 500 이 나가는 상태(`9999-12-31`)를 오래 두지 않는다. MMR 도 같이 고치고 골든셋을 다시 잰다. 이관 흐름이 한 번 끊긴다. |
 | C | Phase 3(`/documents` 쓰기) 착수 | `/answer` 를 뒤로 미루고 쓰기 경로를 먼저 연다. 업로드·삭제라 되돌리기가 어려워 준비가 더 필요하다. |
 
