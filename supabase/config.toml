@@ -432,6 +432,14 @@ verify_jwt = false
 import_map = "./functions/deno.json"
 entrypoint = "./functions/api-account/index.ts"
 
+[functions.api-answer]
+enabled = true
+# api-search 와 같은 이유 — 원본 `/answer` 는 익명도 통과시키므로(LEGACY_DEFAULT_USER)
+# 게이트웨이가 JWT 를 먼저 검증하면 익명 데모가 함수에 닿기 전에 401 이 된다.
+verify_jwt = false
+import_map = "./functions/deno.json"
+entrypoint = "./functions/api-answer/index.ts"
+
 [functions.api-search]
 enabled = true
 # api-account 와 같은 이유 — 게이트웨이가 JWT 를 먼저 검증하면 쿠키만 보내는 브라우저
