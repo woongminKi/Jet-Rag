@@ -1,0 +1,216 @@
+{
+  "source_file": "assets/public/law_sample1.hwp",
+  "source_bytes": 49664,
+  "source_sha256": "7c36b124293d97ec465992d0e17e2be0ef336f9696369e2ec008307b790f5d81",
+  "run": {
+    "response": {
+      "job_id": "46a9542f-c8a4-4a2f-aa5c-adac40e9f46b",
+      "duplicated": false
+    },
+    "bg_task_count": 1
+  },
+  "documents": [
+    {
+      "deterministic": {
+        "doc_type": "hwp",
+        "content_type": "application/x-hwp",
+        "size_bytes": 49664,
+        "sha256": "7c36b124293d97ec465992d0e17e2be0ef336f9696369e2ec008307b790f5d81",
+        "source_channel": "api",
+        "storage_path_shape": "user/<uid>/<sha256><ext>",
+        "chunk_count": 11,
+        "chunks": [
+          {
+            "chunk_idx": 0,
+            "page": null,
+            "has_section_title": false,
+            "text_sha16": "997b5d065fbb1e74",
+            "text_len": 4,
+            "flag_keys": [],
+            "meta_keys": [],
+            "has_bbox": false,
+            "has_char_range": true
+          },
+          {
+            "chunk_idx": 1,
+            "page": null,
+            "has_section_title": false,
+            "text_sha16": "c0027f1e5de33604",
+            "text_len": 16,
+            "flag_keys": [],
+            "meta_keys": [
+              "overlap_with_prev_chunk_idx"
+            ],
+            "has_bbox": false,
+            "has_char_range": true
+          },
+          {
+            "chunk_idx": 2,
+            "page": null,
+            "has_section_title": false,
+            "text_sha16": "bb9c1548914e93f6",
+            "text_len": 25,
+            "flag_keys": [],
+            "meta_keys": [
+              "overlap_with_prev_chunk_idx"
+            ],
+            "has_bbox": false,
+            "has_char_range": true
+          },
+          {
+            "chunk_idx": 3,
+            "page": null,
+            "has_section_title": false,
+            "text_sha16": "8b1e8eddeece4bb7",
+            "text_len": 13,
+            "flag_keys": [
+              "filtered_reason"
+            ],
+            "meta_keys": [
+              "entities",
+              "overlap_with_prev_chunk_idx"
+            ],
+            "has_bbox": false,
+            "has_char_range": true
+          },
+          {
+            "chunk_idx": 4,
+            "page": null,
+            "has_section_title": false,
+            "text_sha16": "e01ce1e580d94666",
+            "text_len": 4,
+            "flag_keys": [],
+            "meta_keys": [
+              "overlap_with_prev_chunk_idx"
+            ],
+            "has_bbox": false,
+            "has_char_range": true
+          },
+          {
+            "chunk_idx": 5,
+            "page": null,
+            "has_section_title": false,
+            "text_sha16": "023e33504ab909cf",
+            "text_len": 4,
+            "flag_keys": [
+              "filtered_reason"
+            ],
+            "meta_keys": [
+              "overlap_with_prev_chunk_idx"
+            ],
+            "has_bbox": false,
+            "has_char_range": true
+          },
+          {
+            "chunk_idx": 6,
+            "page": null,
+            "has_section_title": false,
+            "text_sha16": "ffa781a122600164",
+            "text_len": 224,
+            "flag_keys": [],
+            "meta_keys": [
+              "overlap_with_prev_chunk_idx"
+            ],
+            "has_bbox": false,
+            "has_char_range": true
+          },
+          {
+            "chunk_idx": 7,
+            "page": null,
+            "has_section_title": false,
+            "text_sha16": "82c03a02005aa55d",
+            "text_len": 175,
+            "flag_keys": [
+              "filtered_reason"
+            ],
+            "meta_keys": [
+              "entities",
+              "overlap_with_prev_chunk_idx"
+            ],
+            "has_bbox": false,
+            "has_char_range": true
+          },
+          {
+            "chunk_idx": 8,
+            "page": null,
+            "has_section_title": false,
+            "text_sha16": "4a40715416e942ad",
+            "text_len": 10,
+            "flag_keys": [
+              "filtered_reason"
+            ],
+            "meta_keys": [
+              "entities",
+              "overlap_with_prev_chunk_idx"
+            ],
+            "has_bbox": false,
+            "has_char_range": true
+          },
+          {
+            "chunk_idx": 9,
+            "page": null,
+            "has_section_title": false,
+            "text_sha16": "2646551b503e5232",
+            "text_len": 257,
+            "flag_keys": [],
+            "meta_keys": [
+              "overlap_with_prev_chunk_idx"
+            ],
+            "has_bbox": false,
+            "has_char_range": true
+          },
+          {
+            "chunk_idx": 10,
+            "page": null,
+            "has_section_title": false,
+            "text_sha16": "d6c6e6b188d33819",
+            "text_len": 233,
+            "flag_keys": [],
+            "meta_keys": [
+              "entities",
+              "overlap_with_prev_chunk_idx"
+            ],
+            "has_bbox": false,
+            "has_char_range": true
+          }
+        ],
+        "chunks_digest": "942f1b2e98ae666e",
+        "flag_keys": [
+          "document_type",
+          "has_pii",
+          "has_watermark",
+          "ingest_mode",
+          "third_party",
+          "time_reference"
+        ],
+        "job_count": 1,
+        "stages": [
+          "extract:succeeded",
+          "chunk:succeeded",
+          "chunk_filter:succeeded",
+          "content_gate:succeeded",
+          "tag_summarize:succeeded",
+          "load:succeeded",
+          "embed:succeeded",
+          "doc_embed:succeeded",
+          "dedup:succeeded"
+        ]
+      },
+      "nondeterministic": {
+        "embedded_chunks": 11,
+        "sparse_chunks": 11,
+        "embedding_dim": 1024,
+        "has_title": true,
+        "has_doc_embedding": true,
+        "has_implications": true,
+        "has_summary": true,
+        "tag_count": 10,
+        "vision_calls": 0,
+        "vision_success": 0,
+        "job_status": [
+          "completed"
+        ]
+      }
+    }
+  ]
+}

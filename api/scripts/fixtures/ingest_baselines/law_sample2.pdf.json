@@ -1,0 +1,181 @@
+{
+  "source_file": "assets/public/law_sample2.pdf",
+  "source_bytes": 168843,
+  "source_sha256": "6da9ce19ab324293d9540b2f9125cd132443d569a5c308cf4a2b42acd91abfb9",
+  "run": {
+    "response": {
+      "job_id": "bed0e95e-8174-45e3-880f-6dafa5e9bdf5",
+      "duplicated": false
+    },
+    "bg_task_count": 1
+  },
+  "documents": [
+    {
+      "deterministic": {
+        "doc_type": "pdf",
+        "content_type": "application/pdf",
+        "size_bytes": 168843,
+        "sha256": "6da9ce19ab324293d9540b2f9125cd132443d569a5c308cf4a2b42acd91abfb9",
+        "source_channel": "api",
+        "storage_path_shape": "user/<uid>/<sha256><ext>",
+        "chunk_count": 9,
+        "chunks": [
+          {
+            "chunk_idx": 0,
+            "page": 1,
+            "has_section_title": false,
+            "text_sha16": "e276d3ad19a57856",
+            "text_len": 24,
+            "flag_keys": [],
+            "meta_keys": [],
+            "has_bbox": true,
+            "has_char_range": true
+          },
+          {
+            "chunk_idx": 1,
+            "page": 1,
+            "has_section_title": false,
+            "text_sha16": "194b26f98b092cc5",
+            "text_len": 16,
+            "flag_keys": [],
+            "meta_keys": [
+              "overlap_with_prev_chunk_idx"
+            ],
+            "has_bbox": true,
+            "has_char_range": true
+          },
+          {
+            "chunk_idx": 2,
+            "page": 1,
+            "has_section_title": false,
+            "text_sha16": "4df847b15a7f16ce",
+            "text_len": 28,
+            "flag_keys": [],
+            "meta_keys": [
+              "entities",
+              "overlap_with_prev_chunk_idx"
+            ],
+            "has_bbox": true,
+            "has_char_range": true
+          },
+          {
+            "chunk_idx": 3,
+            "page": 1,
+            "has_section_title": false,
+            "text_sha16": "b978e454f05212f1",
+            "text_len": 213,
+            "flag_keys": [],
+            "meta_keys": [
+              "overlap_with_prev_chunk_idx"
+            ],
+            "has_bbox": false,
+            "has_char_range": true
+          },
+          {
+            "chunk_idx": 4,
+            "page": 1,
+            "has_section_title": false,
+            "text_sha16": "f5adb106ffda5223",
+            "text_len": 255,
+            "flag_keys": [],
+            "meta_keys": [
+              "overlap_with_prev_chunk_idx"
+            ],
+            "has_bbox": false,
+            "has_char_range": true
+          },
+          {
+            "chunk_idx": 5,
+            "page": 1,
+            "has_section_title": false,
+            "text_sha16": "10f8d046b7aa128d",
+            "text_len": 240,
+            "flag_keys": [],
+            "meta_keys": [
+              "overlap_with_prev_chunk_idx"
+            ],
+            "has_bbox": false,
+            "has_char_range": true
+          },
+          {
+            "chunk_idx": 6,
+            "page": 2,
+            "has_section_title": false,
+            "text_sha16": "050d7e7217888f58",
+            "text_len": 143,
+            "flag_keys": [],
+            "meta_keys": [
+              "overlap_with_prev_chunk_idx"
+            ],
+            "has_bbox": false,
+            "has_char_range": true
+          },
+          {
+            "chunk_idx": 7,
+            "page": 1,
+            "has_section_title": true,
+            "text_sha16": "e5780081e100eec6",
+            "text_len": 844,
+            "flag_keys": [],
+            "meta_keys": [
+              "entities",
+              "overlap_with_prev_chunk_idx",
+              "table_caption"
+            ],
+            "has_bbox": false,
+            "has_char_range": true
+          },
+          {
+            "chunk_idx": 8,
+            "page": 2,
+            "has_section_title": true,
+            "text_sha16": "164ba927332b4df9",
+            "text_len": 248,
+            "flag_keys": [],
+            "meta_keys": [
+              "overlap_with_prev_chunk_idx"
+            ],
+            "has_bbox": false,
+            "has_char_range": true
+          }
+        ],
+        "chunks_digest": "be79531d0f13653e",
+        "flag_keys": [
+          "document_type",
+          "has_pii",
+          "has_watermark",
+          "ingest_mode",
+          "third_party",
+          "time_reference"
+        ],
+        "job_count": 1,
+        "stages": [
+          "extract:succeeded",
+          "chunk:succeeded",
+          "chunk_filter:succeeded",
+          "content_gate:succeeded",
+          "tag_summarize:succeeded",
+          "load:succeeded",
+          "embed:succeeded",
+          "doc_embed:succeeded",
+          "dedup:succeeded"
+        ]
+      },
+      "nondeterministic": {
+        "embedded_chunks": 9,
+        "sparse_chunks": 9,
+        "embedding_dim": 1024,
+        "has_title": true,
+        "has_doc_embedding": true,
+        "has_implications": true,
+        "has_summary": true,
+        "tag_count": 8,
+        "vision_calls": 2,
+        "vision_success": 2,
+        "job_status": [
+          "completed"
+        ]
+      }
+    }
+  ]
+}
