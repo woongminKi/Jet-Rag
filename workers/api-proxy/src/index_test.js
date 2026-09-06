@@ -41,9 +41,12 @@ Deno.test("이관된 경로만 Edge 로 간다", () => {
   assertEquals(resolveTarget("/health"), "api-account");
   // 2026-09-05 전환 — Phase 2 의 `/search`.
   assertEquals(resolveTarget("/search"), "api-search");
+  // 2026-09-06 전환 — `/stats` 와 `/stats/trend`.
+  assertEquals(resolveTarget("/stats"), "api-account");
+  assertEquals(resolveTarget("/stats/trend"), "api-account");
   // 아직 안 열린 경로들 — 기존 백엔드로 가야 한다. 여기가 통째로 초록이 되면
   // "다 옮겼다" 로 착각하게 되므로 한 줄씩 지우면서 연다.
-  for (const p of ["/answer", "/documents", "/stats/overview", "/payments/ready"]) {
+  for (const p of ["/answer", "/documents", "/payments/ready", "/email/inbound"]) {
     assertEquals(resolveTarget(p), null, p);
   }
 });
@@ -120,15 +123,18 @@ Deno.test("POST 의 본문과 메서드를 보존한다", async () => {
 
 /* ------------------------------------------------------------------ 기존 백엔드로 전달 */
 
+// 여기서 쓰는 예시 경로는 **아직 안 옮긴 것**이어야 한다. 옮기고 나면 이 테스트가
+// 깨지므로, 깨지면 예시를 바꾸면 된다 — 실제로 `/stats` 전환 때 `/stats/overview` 를
+// 쓰고 있어서 세 건이 한꺼번에 깨졌다(그 경로는 원본에도 없어서 회귀는 아니었다).
 Deno.test("미이관 경로는 기존 백엔드로, 경로·쿼리를 유지한다", async () => {
-  const { sent } = await capture(req("/stats/overview?range=7d"));
-  assertEquals(sent.url, "https://jet-rag-production.up.railway.app/stats/overview?range=7d");
+  const { sent } = await capture(req("/documents?limit=7"));
+  assertEquals(sent.url, "https://jet-rag-production.up.railway.app/documents?limit=7");
   // 기존 백엔드로 갈 때는 이 헤더를 붙이지 않는다 — 원본이 모르는 헤더다.
   assertEquals(sent.headers.get("X-Forwarded-Path"), null);
 });
 
 Deno.test("LEGACY_ORIGIN 이 비면 404 (Phase 6 의 종료 상태)", async () => {
-  const { sent, response } = await capture(req("/stats/overview"), { ...ENV, LEGACY_ORIGIN: "" });
+  const { sent, response } = await capture(req("/documents"), { ...ENV, LEGACY_ORIGIN: "" });
   assertEquals(sent, null, "네트워크 호출이 없어야 한다");
   assertEquals(response.status, 404);
   assertEquals(await response.json(), { detail: "Not Found" });
@@ -136,7 +142,7 @@ Deno.test("LEGACY_ORIGIN 이 비면 404 (Phase 6 의 종료 상태)", async () =
 
 Deno.test("LEGACY_ORIGIN 이 자기 자신이면 루프 대신 500", async () => {
   // 설정 실수로 jetrag-api.woong-s.com 을 넣으면 Worker 가 자기를 부른다.
-  const { sent, response } = await capture(req("/stats/overview"), {
+  const { sent, response } = await capture(req("/documents"), {
     ...ENV,
     LEGACY_ORIGIN: "https://jetrag-api.woong-s.com",
   });

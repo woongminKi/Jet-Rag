@@ -1,8 +1,14 @@
 /**
  * `api-account` — Phase 1 의 end-to-end 증명 대상.
  *
- * 지금은 `/health` 와 `/auth/me` 둘뿐이다. Phase 2 에서 `/me/plan`, `/stats/*`,
- * `/admin/*` 이 이 함수에 붙는다.
+ * 지금은 `/health`·`/auth/me`·`/stats`·`/stats/trend` 다. Phase 2 의 나머지(`/me/plan`,
+ * `/admin/*`)가 이어서 붙는다.
+ *
+ * ## `/stats` 는 두 지표를 DB 에서 읽는다
+ * `search_slo` 와 `vision_usage` 는 원본이 **프로세스 안 카운터**로 냈다. Edge 는 isolate 가
+ * 휘발성이라 그 구조가 성립하지 않아서, 두 지표 모두 원장 테이블 기준으로 옮겼다
+ * (`search_metrics_log` 최근 500행 · `vision_usage_log` 오늘(KST)).
+ * Railway 쪽도 같은 기준으로 먼저 바꿔 둬서 전환 시 값이 안 흔들린다.
  *
  * ## 경로를 어떻게 아는가
  * Supabase 는 이 함수를 `/functions/v1/api-account/...` 로 서빙한다. 프론트가 부르는 건
@@ -25,6 +31,8 @@ import { loadSettings } from "../_shared/config.ts";
 import { applyCorsHeaders, preflightResponse } from "../_shared/cors.ts";
 import { getCurrentUser, requestToken } from "../_shared/current_user.ts";
 import { jsonResponse, methodNotAllowed, notFound, toResponse } from "../_shared/errors.ts";
+import { createServiceClient } from "../_shared/db.ts";
+import { buildStats, buildTrend, validateTrendParams } from "../_shared/stats/pipeline.ts";
 
 /**
  * 함수 안에서 보이는 경로 접두사.
@@ -90,6 +98,29 @@ Deno.serve(async (req: Request) => {
           // auth 가 꺼져 있으면 원본과 같이 null. 켜져 있으면 검증에 쓴 토큰을 그대로 넘긴다.
           access_token: settings.authEnabled ? requestToken(req, settings) : null,
         });
+      }
+    } else if (path === "/stats") {
+      if (req.method !== "GET") {
+        response = methodNotAllowed();
+      } else {
+        // 원본도 익명을 통과시킨다 (`LEGACY_DEFAULT_USER`) — owner 데모 read.
+        const user = await getCurrentUser(req, settings);
+        response = jsonResponse(
+          await buildStats(user.userId, { client: createServiceClient(settings) }),
+        );
+      }
+    } else if (path === "/stats/trend") {
+      if (req.method !== "GET") {
+        response = methodNotAllowed();
+      } else {
+        const v = validateTrendParams(new URL(req.url).searchParams);
+        if (!v.ok) {
+          response = jsonResponse({ detail: v.detail }, 422);
+        } else {
+          response = jsonResponse(
+            await buildTrend(v.params, { client: createServiceClient(settings) }),
+          );
+        }
       }
     } else {
       response = notFound();

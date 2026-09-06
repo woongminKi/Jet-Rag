@@ -168,3 +168,8 @@ jobs:
       - name: search meta fast path
         working-directory: api
         run: uv run python scripts/verify_meta_fast_path_parity.py
+      # 합성 문서만 쓴다 — 네트워크 0. 실제 DB 대조는 `verify_stats_parity.py` 가 하는데
+      # 자격증명이 필요해 CI 에서는 못 돌린다.
+      - name: stats 집계
+        working-directory: api
+        run: uv run python scripts/verify_stats_aggregate_parity.py

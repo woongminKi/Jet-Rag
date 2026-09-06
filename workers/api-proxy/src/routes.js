@@ -15,8 +15,10 @@ export const ROUTES = [
   // Phase 2 (2026-09-05) — `/search` 전환. 골든셋 123행 응답 불일치 0, 실제 HTTP 26건 일치.
   // `/search/` 처럼 후행 슬래시가 붙어도 잡히도록 `$` 를 안 붙였다 (함수가 슬래시를 뗀다).
   [/^\/search/, "api-search"],
-  // Phase 2 나머지: [/^\/answer/, "api-answer"], [/^\/stats/, "api-account"],
-  //                [/^\/me\//, "api-account"], [/^\/admin/, "api-account"],
+  // 2026-09-06 전환 — `/stats` 와 `/stats/trend`. 응답 대조 HTTP 13건 일치.
+  [/^\/stats/, "api-account"],
+  // Phase 2 나머지: [/^\/answer/, "api-answer"], [/^\/me\//, "api-account"],
+  //                [/^\/admin/, "api-account"],
   // Phase 3 에서 해제: [/^\/documents/, "api-documents"],
   // Phase 4 에서 해제: [/^\/payments/, "api-payments"], [/^\/billing/, "billing-run"],
   // Phase 5 에서 해제: [/^\/email/, "email-webhook"],
