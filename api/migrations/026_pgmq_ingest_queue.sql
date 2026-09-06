@@ -22,10 +22,14 @@
 --   직접 못 부른다. 그래서 `public` 에 SECURITY DEFINER 래퍼를 두고 **service_role 에게만**
 --   실행 권한을 준다. anon/authenticated 가 큐를 건드리면 안 된다.
 --
--- 적용 절차
+-- 적용 상태
+--   **2026-09-07 운영에 적용 완료.** STEP 0~3 실행 + STEP 4 검증 전부 통과(실패 0).
+--   재적용해도 안전하다(`IF NOT EXISTS` / `CREATE OR REPLACE`).
+--
+-- 재적용 절차
 --   Supabase Studio → SQL Editor → New query 빈 탭 → 본 파일 paste → Run.
---   **STEP 0 을 먼저 단독 실행**해서 pgmq 함수 시그니처를 눈으로 확인할 것.
---   시그니처가 아래 가정과 다르면 STEP 3 래퍼를 그에 맞게 고쳐야 한다.
+--   **STEP 0 을 먼저 단독 실행**해 pgmq 시그니처를 눈으로 확인할 것 — 버전이 올라가면
+--   `send` 의 반환이나 `message_record` 컬럼이 바뀔 수 있다.
 --
 -- 되돌리기
 --   파일 하단 롤백 SQL. 큐에 메시지가 남아 있으면 먼저 비운다.
@@ -39,14 +43,16 @@ CREATE EXTENSION IF NOT EXISTS pgmq;
 CREATE EXTENSION IF NOT EXISTS pg_cron;
 CREATE EXTENSION IF NOT EXISTS pg_net;
 
--- 아래 SELECT 의 출력을 **눈으로 확인**한다. 이 마이그는 다음을 가정한다:
---   pgmq.create(queue_name text)
---   pgmq.send(queue_name text, msg jsonb, delay integer)          → bigint
---   pgmq.read(queue_name text, vt integer, qty integer)           → setof record
---        (msg_id bigint, read_ct integer, enqueued_at timestamptz, vt timestamptz, message jsonb)
---   pgmq.delete(queue_name text, msg_id bigint)                   → boolean
---   pgmq.archive(queue_name text, msg_id bigint)                  → boolean
--- 다르면 STEP 3 을 고친 뒤 진행할 것. 짐작으로 넘어가지 말 것.
+-- **2026-09-07 실측 결과** (아래 SELECT 로 확인함 — 가정 2 개가 틀려서 STEP 3 을 고쳤다):
+--   pgmq.create(queue_name text)                                      → void
+--   pgmq.send(queue_name text, msg jsonb, delay integer)              → **SETOF bigint** (스칼라 아님)
+--   pgmq.read(queue_name text, vt int, qty int,
+--             conditional jsonb DEFAULT '{}')                         → SETOF pgmq.message_record
+--   pgmq.delete(queue_name text, msg_id bigint)                       → boolean
+--   pgmq.archive(queue_name text, msg_id bigint)                      → boolean
+--   pgmq.message_record = (msg_id bigint, read_ct integer, enqueued_at timestamptz,
+--                          vt timestamptz, message jsonb, **headers jsonb**)  ← 6 컬럼
+-- 처음엔 send 를 스칼라로, message_record 를 5 컬럼으로 가정했다. 그대로 갔으면 깨졌다.
 SELECT p.proname,
        pg_get_function_identity_arguments(p.oid) AS args,
        pg_get_function_result(p.oid)             AS returns
@@ -97,7 +103,8 @@ LANGUAGE sql
 SECURITY DEFINER
 SET search_path = pgmq, public
 AS $$
-  SELECT pgmq.send('ingest_tasks', payload, delay_seconds);
+  -- `pgmq.send` 는 **SETOF bigint** 다(실측). FROM 절에 두고 한 행만 꺼낸다.
+  SELECT s FROM pgmq.send('ingest_tasks', payload, delay_seconds) AS s LIMIT 1;
 $$;
 
 CREATE OR REPLACE FUNCTION public.ingest_queue_read(vt_seconds integer, qty integer)
@@ -112,8 +119,10 @@ LANGUAGE sql
 SECURITY DEFINER
 SET search_path = pgmq, public
 AS $$
-  SELECT msg_id, read_ct, enqueued_at, vt, message
-    FROM pgmq.read('ingest_tasks', vt_seconds, qty);
+  -- `message_record` 에는 `headers` 컬럼도 있지만(실측 6 컬럼) 인제스트는 안 쓴다.
+  -- 4 번째 인자 `conditional` 은 기본값 `'{}'` 이 있어 생략 가능하다.
+  SELECT r.msg_id, r.read_ct, r.enqueued_at, r.vt, r.message
+    FROM pgmq.read('ingest_tasks', vt_seconds, qty) AS r;
 $$;
 
 CREATE OR REPLACE FUNCTION public.ingest_queue_delete(message_id bigint)
@@ -147,12 +156,17 @@ AS $$
     FROM pgmq.q_ingest_tasks;
 $$;
 
--- **권한**: 기본 PUBLIC 실행 권한을 걷어내고 service_role 에게만 준다.
-REVOKE ALL ON FUNCTION public.ingest_queue_send(jsonb, integer)      FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.ingest_queue_read(integer, integer)    FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.ingest_queue_delete(bigint)            FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.ingest_queue_archive(bigint)           FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.ingest_queue_depth()                   FROM PUBLIC;
+-- **권한**: PUBLIC 만 회수하면 안 된다.
+--
+-- 처음엔 `REVOKE ... FROM PUBLIC` 만 했는데 **anon 이 그대로 호출됐다**(실측: `SET LOCAL
+-- ROLE anon` 상태에서 send 가 msg_id 를 반환). Supabase 는 `public` 스키마의 새 함수에
+-- `anon`/`authenticated` 로 **직접** EXECUTE 를 부여하는 default privileges 를 두고 있어,
+-- PUBLIC 회수로는 그 부여분이 남는다. 롤을 명시해 회수한다.
+REVOKE ALL ON FUNCTION public.ingest_queue_send(jsonb, integer)      FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.ingest_queue_read(integer, integer)    FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.ingest_queue_delete(bigint)            FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.ingest_queue_archive(bigint)           FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.ingest_queue_depth()                   FROM PUBLIC, anon, authenticated;
 
 GRANT EXECUTE ON FUNCTION public.ingest_queue_send(jsonb, integer)   TO service_role;
 GRANT EXECUTE ON FUNCTION public.ingest_queue_read(integer, integer) TO service_role;
@@ -173,16 +187,20 @@ GRANT EXECUTE ON FUNCTION public.ingest_queue_depth()                TO service_
 --    SELECT to_regclass('pgmq.q_ingest_tasks'), to_regclass('pgmq.a_ingest_tasks');
 --    기대: 둘 다 NOT NULL
 --
--- 3) 래퍼 왕복 — 넣고, 읽고, 지운다
+-- 3) 래퍼 왕복 — 넣고, 읽고, 지운다  (**큐를 비운 상태에서** 할 것. FIFO 라
+--    남은 메시지가 있으면 방금 넣은 게 아니라 가장 오래된 게 읽힌다)
 --    SELECT public.ingest_queue_send('{"probe":true}'::jsonb);        -- msg_id 반환
 --    SELECT * FROM public.ingest_queue_read(30, 1);                   -- 그 메시지가 보임
 --    SELECT public.ingest_queue_delete(<위 msg_id>);                  -- true
 --    SELECT * FROM public.ingest_queue_depth();                       -- 0
 --
--- 4) 권한 — anon 은 못 불러야 한다
---    SET ROLE anon;
---    SELECT public.ingest_queue_send('{}'::jsonb);   -- permission denied 여야 정상
---    RESET ROLE;
+-- 4) 권한 — anon·authenticated 는 못 불러야 하고 service_role 은 돼야 한다
+--    BEGIN; SET LOCAL ROLE anon;          SELECT public.ingest_queue_send('{}'::jsonb); ROLLBACK;
+--    BEGIN; SET LOCAL ROLE authenticated; SELECT public.ingest_queue_send('{}'::jsonb); ROLLBACK;
+--      → 둘 다 `permission denied for function ingest_queue_send` 여야 정상
+--    BEGIN; SET LOCAL ROLE service_role;  SELECT public.ingest_queue_send('{}'::jsonb); ROLLBACK;
+--      → 이건 **성공해야** 한다(대조군). 막히면 워커가 못 돈다.
+--    ※ `SET LOCAL` 은 트랜잭션 안에서만 유효하다 — BEGIN 없이 쓰면 조용히 무시된다.
 --
 -- 5) ingest_jobs 컬럼
 --    SELECT column_name FROM information_schema.columns
