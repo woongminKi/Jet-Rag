@@ -22,6 +22,7 @@
  *   POST ?kind=pdf-walk&page=N          walk() 콜백 인자 원본 덤프 (추출기 작성 전 확인용)
  *   POST ?kind=pdf-dict&page=N          **S2 본 판정** — PyMuPDF get_text("dict") 호환 dict
  *   POST ?kind=pdf-pages&from=&count=   페이지 단위 CPU 추이 (573p 는 CPU 2s 초과로 546)
+ *   POST ?kind=pdf-render&page=&dpi=    **vision 용 래스터화 CPU** (Phase 0 미측정 구간)
  *   POST ?kind=fernet                   body = {key, token, plaintext} — S3 판정
  *   POST ?kind=<docx|pptx>              body = 파일 바이트 — S4 판정
  *   POST ?kind=<hwpx|hwpml>             body = 파일 바이트 — HWPX/HWPML 판정
@@ -273,6 +274,78 @@ async function handle(req: Request): Promise<SpikeResult> {
        * S2 의 관문 — 파일 없이 GET 으로 부른다.
        * 여기서 죽으면 mupdf 는 Edge 에서 쓸 수 없고, span/bbox 품질은 볼 필요도 없다.
        */
+      /**
+       * **미측정으로 남아 있던 구간** — vision 용 페이지 래스터화.
+       *
+       * Phase 0 S2 는 텍스트+span 추출만 쟀다. 그런데 현행은 vision 대상 페이지를
+       * `page.get_pixmap(dpi=150)` → `pix.tobytes("png")` 로 **이미지로 굽는다**
+       * (`extract.py:440`, `:685`). 래스터화는 CPU 집약적이라 2s 예산의 실제 소비자가
+       * 여기일 수 있는데 재 본 적이 없다.
+       *
+       * API 를 짐작하지 않는다 — `methodsOf` 로 실제 메서드를 응답에 실어 보내고,
+       * 없으면 그 사실이 그대로 드러나게 한다.
+       *
+       *   POST ?kind=pdf-render&page=0&dpi=150
+       */
+      case "pdf-render": {
+        const pageIdx = Number(url.searchParams.get("page") ?? "0");
+        const dpi = Number(url.searchParams.get("dpi") ?? "150");
+        const { mod, importMs } = await loadMupdf();
+
+        const { cpuMs, value } = measure(() => {
+          const M = mod as Record<string, unknown> & {
+            Document: { openDocument(b: Uint8Array, mime: string): unknown };
+          };
+          const doc = M.Document.openDocument(bytes, "application/pdf") as {
+            countPages(): number;
+            loadPage(n: number): Record<string, unknown>;
+          };
+          const pageCount = doc.countPages();
+          const page = doc.loadPage(pageIdx);
+
+          // 원본과 같은 배율. PDF 기본 해상도가 72dpi 라 zoom = dpi/72 다.
+          const zoom = dpi / 72;
+          const Matrix = M.Matrix as { scale(x: number, y: number): unknown } | undefined;
+          const ColorSpace = M.ColorSpace as { DeviceRGB: unknown } | undefined;
+
+          const api = {
+            pageMethods: methodsOf(page).filter((n) => /pixmap|png|render|bound/i.test(n)),
+            hasMatrix: typeof Matrix?.scale === "function",
+            hasColorSpace: ColorSpace?.DeviceRGB !== undefined,
+          };
+          if (!api.hasMatrix || !api.hasColorSpace || typeof page.toPixmap !== "function") {
+            // 못 하겠으면 **못 한다고 말한다.** 추측으로 다른 경로를 시도하지 않는다.
+            return { pageCount, importMs, dpi, api, rendered: false };
+          }
+
+          const tRender = performance.now();
+          const pix = (page.toPixmap as (
+            m: unknown, cs: unknown, alpha: boolean, extras: boolean,
+          ) => Record<string, unknown>)(
+            Matrix!.scale(zoom, zoom), ColorSpace!.DeviceRGB, false, true,
+          );
+          const renderMs = performance.now() - tRender;
+
+          const pixMethods = methodsOf(pix).filter((n) => /png|buffer|width|height/i.test(n));
+          let pngMs: number | null = null;
+          let pngBytes: number | null = null;
+          if (typeof pix.asPNG === "function") {
+            const tPng = performance.now();
+            const png = (pix.asPNG as () => Uint8Array)();
+            pngMs = performance.now() - tPng;
+            pngBytes = png?.length ?? null;
+          }
+          const w = typeof pix.getWidth === "function" ? (pix.getWidth as () => number)() : null;
+          const h = typeof pix.getHeight === "function" ? (pix.getHeight as () => number)() : null;
+
+          return {
+            pageCount, importMs, dpi, api, pixMethods,
+            rendered: true, renderMs, pngMs, pngBytes, width: w, height: h,
+          };
+        });
+        return { ...base, cpuMs, wallMs: performance.now() - wallStart, error: null, result: value };
+      }
+
       case "pdf-import": {
         const { mod, importMs } = await loadMupdf();
         const { cpuMs, value } = measure(() => ({
