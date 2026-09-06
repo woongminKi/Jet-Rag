@@ -21,7 +21,14 @@ export const ROUTES = [
   // **슬래시를 요구한다** — `/me` 단독과 `/mefoo` 는 원본에 라우트가 없어 404 인데,
   // 그건 Railway 가 이미 내주고 있으므로 굳이 Edge 로 넘길 이유가 없다.
   [/^\/me\//, "api-account"],
-  // Phase 2 나머지: [/^\/answer/, "api-answer"], [/^\/admin/, "api-account"],
+  // 2026-09-06 전환 — `/admin` 의 **읽기 2개만**. 응답 대조 HTTP 19건 일치.
+  // `/admin/subscriptions` 는 같은 경로에 POST(구독 수동 변경)가 붙어 있어 여기서 열지
+  // 않는다 — 경로로는 메서드를 못 가른다. Edge 쪽 구현·대조는 끝났고 Phase 3(쓰기)에서
+  // 한 줄만 더하면 된다.
+  [/^\/admin\/queries\//, "api-account"],
+  [/^\/admin\/feedback\//, "api-account"],
+  // Phase 2 나머지: [/^\/answer/, "api-answer"]
+  // Phase 3 에서 해제: [/^\/admin\/subscriptions/, "api-account"],
   // Phase 3 에서 해제: [/^\/documents/, "api-documents"],
   // Phase 4 에서 해제: [/^\/payments/, "api-payments"], [/^\/billing/, "billing-run"],
   // Phase 5 에서 해제: [/^\/email/, "email-webhook"],

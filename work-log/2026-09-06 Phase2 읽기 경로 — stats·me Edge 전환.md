@@ -1,10 +1,10 @@
-# 2026-09-06 — Phase 2 읽기 경로: `/stats` · `/me/*` Edge 전환
+# 2026-09-06 — Phase 2 읽기 경로: `/stats` · `/me/*` · `/admin/*` Edge 전환
 
-> **범위**: `/stats`, `/stats/trend`, `/me/*` 4개를 Supabase Edge Function 으로 이관하고
-> Cloudflare 프록시 스위치를 열기까지. 선행 조건이던 `vision_usage` 의 프로세스 로컬 상태를
-> DB 기준으로 옮기는 작업 포함.
-> **다음 세션 재진입**: Phase 2 남은 경로 `/admin/*` 포팅부터. `/answer` 는 그 다음(가장 크고
-> 스트리밍이라 별도 함수 검토 필요).
+> **범위**: `/stats`, `/stats/trend`, `/me/*` 4개, `/admin/*` 4개를 Supabase Edge Function
+> 으로 이관하고 Cloudflare 프록시 스위치를 열기까지. 선행 조건이던 `vision_usage` 의
+> 프로세스 로컬 상태를 DB 기준으로 옮기는 작업 포함.
+> **다음 세션 재진입**: `/answer` 포팅. Phase 2 에서 유일하게 남았고 가장 크다 —
+> **스트리밍 응답이라 별도 함수로 뺄지 결정이 앞에 붙는다.**
 
 ## 0. 한눈에 보기
 
@@ -14,7 +14,8 @@
 | `/stats` · `/stats/trend` Edge 포팅 + 전환 | ✅ 완료 (b0a5d58) |
 | `/me/plan` `/me/subscription` `/me/email-ingest` `/me/email-ingest/rotate` | ✅ 완료 (c8368bd) |
 | 프록시 `ROUTES` 에 `/stats`, `/me/` 개방 | ✅ 배포됨 |
-| `/admin/*` | ⬜ 대기 |
+| `/admin/queries/stats` · `/admin/feedback/stats` 포팅 + 전환 | ✅ 완료 (d6bc9e6) |
+| `/admin/subscriptions` (GET+POST) 포팅 + 대조 | ✅ 코드 완료 — **프록시는 미개방**(POST 가 쓰기) |
 | `/answer` | ⬜ 대기 (Phase 2 최대 항목) |
 
 ## 1. `/stats` — 프로세스 로컬 상태를 먼저 걷어냈다
@@ -79,6 +80,61 @@ URL 만** 대조했다. HTTP 검증에서도 비인증 401 까지만 확인하�
 파일과 달라 `sed` 치환이 실패했는데, 실패 출력이 "0건"으로 보였다. **0 건은 "안 잡혔다" 가
 아니라 "안 돌았다" 였다.** 주입 실패를 조용히 넘기지 않도록 고쳐서 다시 쟀다.
 
+## 3-B. `/admin/*` — 4개 전부 포팅, 프록시는 읽기 2개만 열었다
+
+`api/app/routers/admin.py` 는 4개 엔드포인트를 갖는데 그중 **`POST /admin/subscriptions`
+는 쓰기**다(구독 수동 부여·회수). Phase 2 는 읽기 경로가 범위라 여기서 열지 않았다.
+경로가 `GET /admin/subscriptions` 와 같아 **프록시 규칙으로는 메서드를 못 가른다** —
+그래서 GET 도 같이 Railway 에 남겼다. 코드와 대조는 끝났으므로 Phase 3 에서 프록시에
+한 줄 더하면 된다.
+
+열린 것: `/^\/admin\/queries\//`, `/^\/admin\/feedback\//`
+
+### 새로 포팅한 것
+
+- `_shared/query_classifier.ts` — 9 라벨 룰 분류기. `/admin/queries/stats` 가 질의마다 부른다.
+- `_shared/admin/aggregate.ts` — KST 일별 집계·분포·실패 샘플·코멘트 분류.
+- `_shared/admin/pipeline.ts` · `_shared/admin/body.ts` · `_shared/pydantic_errors.ts`.
+
+`literal_error` 문구 규칙(`'a', 'b' or 'c'`)은 `/stats/trend` 와 중복이라 공용 모듈로 뽑았다.
+두 곳에 복제하면 한쪽만 고쳤을 때 조용히 갈린다.
+
+### 정규식을 그대로 옮기면 틀린다
+
+| 원본 | Python | JS 기본 | 대응 |
+|---|---|---|---|
+| `\d` | 유니코드 Nd 전부(680자) — `３개월`, `٣년` | ASCII 만 | `\p{Nd}` + `u` |
+| `\s` | `\x1c-\x1f`·`\x85` 포함, U+FEFF 제외 | 반대 | `PY_SP` 문자 클래스 |
+| `strip()` | 위 공백 집합 | `trim()` 은 U+FEFF 를 뗀다 | `pyStrip()` |
+
+음성 대조로 ①②는 각각 3건·2건 잡혔다.
+
+### 422 는 짐작하지 않고 운영에서 쟀다
+
+`POST /admin/subscriptions` 의 본문 오류 9종을 **운영 Railway 에 실제로 보내** 응답을
+수집했다. 전부 검증 단계에서 멈추는 무효 본문이라 DB 에는 아무것도 쓰이지 않았다.
+
+| 본문 | type | loc |
+|---|---|---|
+| `{}` | `missing` × 2 | `["body","user_id"]`, `["body","plan_code"]` |
+| `[1,2]` · `"hello"` | `model_attributes_type` | `["body"]` |
+| `null` · 빈 본문 | `missing` | `["body"]` |
+| 깨진 JSON | `json_invalid` | `["body", <문자 오프셋>]` |
+
+배열 본문의 `model_attributes_type` 은 문서만 봐서는 안 나온다.
+`api/scripts/fixtures/admin_422_measured.json` 에 남겨 재측정 없이 회귀를 잡는다.
+
+**한 곳은 근사임을 명시한다** — `json_invalid` 의 `ctx.error` 와 오프셋은 Python `json`
+모듈의 것이라 `JSON.parse` 로 완전히 재현할 수 없다. 실측한 두 형태에는 맞췄지만 다른
+형태로 깨진 JSON 에서는 문구가 갈릴 수 있다.
+
+### 원본의 1,000행 상한을 그대로 뒀다
+
+원본은 `search_metrics_log` 를 `limit` 없이 읽어 PostgREST 상한에 걸린다. 페이지네이션을
+넣으면 더 정확해지지만 **원본과 갈린다** — 이관 중에는 재현이 우선이다.
+실측: 30일치 627행이라 아직 상한 밖. 정렬이 `desc` 라 잘려도 최근 것이 남는 것까지 같다.
+데이터가 늘어 상한에 닿으면 양쪽이 같이 잘린다.
+
 ## 4. 음성 대조 발화 기록
 
 | 대상 | 주입 | 잡힘 |
@@ -91,7 +147,39 @@ URL 만** 대조했다. HTTP 검증에서도 비인증 401 까지만 확인하�
 | `pipeline.ts` | plans 없을 때 503 안 냄 | 1 |
 | `pytime.ts` | 항상 소수부 붙임(옛 구현) | 3 |
 | | 늘 생략 / 3자리로 / `Z` 안 뗌 | 3 / 3 / 6 |
-| 프록시 `routes.js` | 슬래시 없앰 / 줄 삭제 / 잘못된 대상 | 1 / 2 / 2 |
+| 프록시 `routes.js` (`/me`) | 슬래시 없앰 / 줄 삭제 / 잘못된 대상 | 1 / 2 / 2 |
+| `query_classifier.ts` | `\p{Nd}` → ASCII `\d` | 3 |
+| | `PY_SP` → JS `\s` | 2 |
+| | vision/table 우선순위 뒤집기 | 50 |
+| | numeric/summary 순서 뒤집기 | 1 |
+| | 키워드 1개 제거 / 라벨 순서 | 49 / 1 |
+| `admin/aggregate.ts` | KST 오프셋 제거 | 5 |
+| | zero-fill 순서 뒤집기 | 7 |
+| | `fused` null 을 성공으로 | 4 |
+| | 실패샘플 10건 컷 제거 | 4 |
+| | rating null → up | 2 |
+| | `pyRound` → `Math.round` | 1 |
+| | `trunc` → `round` (지연) | 1 |
+| | 코멘트 500자 / query 200자 컷 제거 | 2 / 2 |
+| | helpful null 을 down 으로 | 2 |
+| | 빈 코멘트도 카운트 | 2 |
+| `admin/pipeline.ts` | `total_feedback` = 전체 행 수 | 1 |
+| `admin/body.ts` | `missing` 의 input 을 null 로 / status 기본값 변경 | 1 / 2 |
+| 프록시 `routes.js` (`/admin`) | subscriptions 까지 열기 / 줄 삭제 / 슬래시 없앰 | 1 / 2 / 1 |
+
+### 0건이 나온 2건 — 검사기 약점이 아니라 **동작이 안 바뀌는 코드**였다
+
+`query_classifier` 에서 `strip()` 제거와 단위 alternation 순서 뒤집기가 0건이었다.
+검사기를 의심하기 전에 **Python 원본을 직접 고쳐** 같은 입력 17,706건에 돌렸다:
+
+| 변경 | 달라진 건수 |
+|---|---|
+| `q = query.strip()` 제거 | **0** / 17,706 |
+| 단위 순서 `개월|시간` → `개|개월|시간` | **0** / 17,706 |
+| (대조군) 키워드 `도표` 제거 | 49 / 17,706 |
+
+전부 무앵커 substring 매칭이라 앞뒤 공백과 alternation 순서가 판정을 바꾸지 않는다.
+원본 주석의 "긴 것 먼저"는 이 함수에서는 효과가 없다.
 
 ## 5. 실측 수치
 
@@ -120,12 +208,35 @@ URL 만** 대조했다. HTTP 검증에서도 비인증 401 까지만 확인하�
 즉 프록시 오버헤드를 감안하면 Edge 가 약 100ms 빠르지만, 표본이 적어 **유의한 차이라고
 주장하지 않는다**. `/search` 처럼 4.2배 같은 개선은 없다.
 
-**테스트**: `deno test` 109건 + 프록시 14건 통과. Python 코드 변경 없음(검증 스크립트만 추가).
+**`/admin` 대조**
+
+| 대조 | 건수 | 불일치 |
+|---|---|---|
+| `verify_query_classifier_parity.py` (운영 query_text 17,663 + 합성 43) | 17,706 | 0 |
+| `verify_admin_parity.py` (순수 집계·반올림 경계·실 DB 응답·422 12건) | — | 0 |
+| Edge 직접 HTTP (403 게이트 / 405·404 순서 / 200 / 422) | 19 | 0 |
+| 프록시 경유 HTTP (+ 미개방 경로가 Railway 로 가는지 + 기존 경로 회귀) | 15 | 0 |
+
+**`/admin` 지연** — 프록시 오버헤드 273ms 를 뺀 값이 실제 비교 대상이다.
+
+| 경로 | Railway 직접 | 프록시→Edge | 오버헤드 제외 |
+|---|---|---|---|
+| `/admin/queries/stats` | 569ms | 928ms | 655ms (86ms 느림) |
+| `?range=30d` | 781ms | 873ms | 600ms (181ms 빠름) |
+| `/admin/feedback/stats` | 374ms | 951ms | 678ms (304ms 느림) |
+
+표본 5회 중앙값이고 방향이 엇갈린다 — **개선도 악화도 유의하다고 말할 수 없다.**
+Edge CPU 2초 제약 대비로는 전부 여유가 있다(대부분이 네트워크 시간).
+
+**테스트**: `deno test` 109건 + 프록시 15건 통과. Python 코드 변경 없음(검증 스크립트만 추가).
+`deno lint` 4건 수정 — 주석에 U+FEFF 를 리터럴로 넣은 것. 이전 세션들에서 `tail -1` 만
+보느라 놓치고 있었다(기존 2건 포함).
 
 ## 6. 커밋 이력
 
 | 해시 | 메시지 |
 |---|---|
+| `d6bc9e6` | feat(edge): /admin/* 4개 엔드포인트 Edge 이관 — 422 본문은 운영 실측으로 고정 |
 | `c8368bd` | feat(edge): /me/* 4개 엔드포인트 Edge 이관 — 라우팅·인증 순서까지 대조 |
 | `b0a5d58` | feat(edge): `/stats` · `/stats/trend` 를 Edge 로 전환 |
 | `fa6d9e6` | fix(api): vision_usage 를 DB(오늘 KST) 기준으로 — /stats Edge 이관 선행 조건 |
@@ -134,8 +245,10 @@ URL 만** 대조했다. HTTP 검증에서도 비인증 401 까지만 확인하�
 
 **Phase 2 남은 것**
 
-- `/admin/*` — 권한 게이트(`require_admin`)가 붙어 있어 `/me` 와 같은 순서 문제를 다시 확인해야 한다.
-- `/answer` — Phase 2 최대 항목. **스트리밍 응답**이라 별도 함수로 뺄지 판단이 필요하다.
+- `/answer` — Phase 2 최대 항목이자 유일하게 남은 것. **스트리밍 응답**이라 별도 함수로
+  뺄지 판단이 앞에 붙는다.
+- `/admin/subscriptions` 프록시 개방 — 코드·대조는 끝났고 POST 가 쓰기라 Phase 3 으로 미뤘다.
+  `workers/api-proxy/src/routes.js` 에 `[/^\/admin\/subscriptions/, "api-account"]` 한 줄이면 된다.
 
 **Phase 3~6**: `/documents`(쓰기) → `/payments`+`/billing` → `/email` → Railway 종료·프록시 제거.
 
@@ -160,9 +273,9 @@ URL 만** 대조했다. HTTP 검증에서도 비인증 401 까지만 확인하�
 
 | | 후보 | 근거 |
 |---|---|---|
-| **A** | `/admin/*` 포팅 (권장) | Phase 2 에서 남은 것 중 작다. `/me` 에서 확립한 순서 계약을 권한 게이트에 그대로 적용하면 된다. `/answer` 앞에 한 번 더 리허설이 된다. |
-| B | `/answer` 착수 | Phase 2 최대 항목이라 먼저 열면 남은 일정이 예측 가능해진다. 다만 스트리밍 설계 결정이 앞에 붙는다. |
-| C | 원본 버그 2건 선(先)수정 | 사용자에게 500 이 나가는 상태를 오래 두지 않는다. 다만 골든셋 재측정이 필요해 이관 흐름이 한 번 끊긴다. |
+| **A** | `/answer` 착수 (권장) | Phase 2 의 마지막이자 최대 항목. 여기를 넘기면 읽기 경로가 끝나고 Phase 3(쓰기)로 간다. 스트리밍을 별도 함수로 뺄지부터 정해야 한다. |
+| B | 원본 버그 2건 선(先)수정 | 사용자에게 500 이 나가는 상태(`9999-12-31`)를 오래 두지 않는다. MMR 도 같이 고치고 골든셋을 다시 잰다. 이관 흐름이 한 번 끊긴다. |
+| C | Phase 3(`/documents` 쓰기) 착수 | `/answer` 를 뒤로 미루고 쓰기 경로를 먼저 연다. 업로드·삭제라 되돌리기가 어려워 준비가 더 필요하다. |
 
-**권고: A** — `/answer` 는 결정할 것(스트리밍)이 있어 별도 세션이 낫고, `/admin` 은 같은
-패턴이라 이 세션의 문맥이 그대로 쓰인다.
+**권고: A** — 읽기 경로를 닫고 나면 남은 것이 전부 쓰기라 성격이 바뀐다. `/answer` 를 지금
+끝내는 편이 Phase 경계가 깨끗하다. 다만 스트리밍 설계 결정 하나는 착수 전에 물어야 한다.
