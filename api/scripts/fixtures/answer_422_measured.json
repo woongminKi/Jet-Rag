@@ -1,0 +1,533 @@
+{
+  "q 없음": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "missing",
+          "loc": [
+            "query",
+            "q"
+          ],
+          "msg": "Field required",
+          "input": null
+        }
+      ]
+    }
+  ],
+  "q 빈문자": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "string_too_short",
+          "loc": [
+            "query",
+            "q"
+          ],
+          "msg": "String should have at least 1 character",
+          "input": "",
+          "ctx": {
+            "min_length": 1
+          }
+        }
+      ]
+    }
+  ],
+  "q 공백만": [
+    400,
+    {
+      "detail": "질문이 비어있습니다."
+    }
+  ],
+  "q 201자": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "string_too_long",
+          "loc": [
+            "query",
+            "q"
+          ],
+          "msg": "String should have at most 200 characters",
+          "input": "가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가",
+          "ctx": {
+            "max_length": 200
+          }
+        }
+      ]
+    }
+  ],
+  "q 200자 경계": [
+    200,
+    {
+      "query": "가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가",
+      "answer": "제공된 자료에서 해당 정보를 찾지 못했습니다.",
+      "sources": [
+        {
+          "chunk_id": "262861bd-ed28-4305-87b6-b9b0758bd9df",
+          "doc_id": "613a4c6b-41b7-4f23-bf29-9010c7802319",
+          "doc_title": "[삼성전자]사업보고서(2026.03.10)",
+          "chunk_idx": 281,
+          "page": 27,
+          "section_title": "[자기주식 취득ㆍ처분ㆍ소각 관련 장기 계획] \n \n계속 보유하는 자기주식은 향후 임직원 주식보상용으로 처분할 예정입니다.\n \n[기타 투자자 보호를 위해 필요한 사항] \n \n해당사항 없습니다.",
+          "score": 0.0163934426229508,
+          "snippet": "계속보유"
+        }
+      ],
+      "has_search_results": true,
+      "model": "gemini-2.5-flash",
+      "took_ms": 3114,
+      "query_parsed": {
+        "has_dense": true,
+        "has_sparse": false,
+        "dense_hits": 13,
+        "sparse_hits": 0,
+        "fused": 13
+      },
+      "meta": {
+        "low_confidence": false,
+        "router_signals": [
+          "T5_long_query"
+        ],
+        "router_confidence": 0.85,
+        "decomposed_subqueries": [],
+        "decomposition_cost_usd": 0.0,
+        "decomposition_cached": false
+      }
+    }
+  ],
+  "top_k=0": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "greater_than_equal",
+          "loc": [
+            "query",
+            "top_k"
+          ],
+          "msg": "Input should be greater than or equal to 1",
+          "input": "0",
+          "ctx": {
+            "ge": 1
+          }
+        }
+      ]
+    }
+  ],
+  "top_k=11": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "less_than_equal",
+          "loc": [
+            "query",
+            "top_k"
+          ],
+          "msg": "Input should be less than or equal to 10",
+          "input": "11",
+          "ctx": {
+            "le": 10
+          }
+        }
+      ]
+    }
+  ],
+  "top_k 비숫자": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "int_parsing",
+          "loc": [
+            "query",
+            "top_k"
+          ],
+          "msg": "Input should be a valid integer, unable to parse string as an integer",
+          "input": "abc"
+        }
+      ]
+    }
+  ],
+  "q+top_k 동시 오류": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "string_too_short",
+          "loc": [
+            "query",
+            "q"
+          ],
+          "msg": "String should have at least 1 character",
+          "input": "",
+          "ctx": {
+            "min_length": 1
+          }
+        },
+        {
+          "type": "less_than_equal",
+          "loc": [
+            "query",
+            "top_k"
+          ],
+          "msg": "Input should be less than or equal to 10",
+          "input": "99",
+          "ctx": {
+            "le": 10
+          }
+        }
+      ]
+    }
+  ],
+  "doc_id 아무 문자열": [
+    200,
+    {
+      "query": "x",
+      "answer": "제공된 자료에서 해당 정보를 찾지 못했습니다.",
+      "sources": [],
+      "has_search_results": false,
+      "model": "gemini-2.5-flash",
+      "took_ms": 1288,
+      "query_parsed": {
+        "has_dense": true,
+        "has_sparse": false,
+        "dense_hits": 0,
+        "sparse_hits": 0,
+        "fused": 0
+      },
+      "meta": {
+        "low_confidence": false,
+        "router_signals": [],
+        "router_confidence": 1.0,
+        "decomposed_subqueries": [],
+        "decomposition_cost_usd": 0.0,
+        "decomposition_cached": false
+      }
+    }
+  ],
+  "top_k=' 5 '": [
+    200,
+    {
+      "query": "zzzz없는말zzzz",
+      "answer": "제공된 자료에서 해당 정보를 찾지 못했습니다.",
+      "sources": [
+        {
+          "chunk_id": "cc2bdaf8-6fd7-4711-b0af-5038afcd6398",
+          "doc_id": "bc7b4591-b1c8-426b-a82f-6b2ae8347dec",
+          "doc_title": "arXiv 영어 학술",
+          "chunk_idx": 701,
+          "page": 53,
+          "section_title": "arXiv:2601.00442v1  [hep-th]  1 Jan 2026",
+          "score": 0.0163934426229508,
+          "snippet": "|∆| ≤\nZ 1"
+        },
+        {
+          "chunk_id": "d072b1d7-a7b7-4180-a9fe-68dd3ba4963d",
+          "doc_id": "bc7b4591-b1c8-426b-a82f-6b2ae8347dec",
+          "doc_title": "arXiv 영어 학술",
+          "chunk_idx": 688,
+          "page": 52,
+          "section_title": "arXiv:2601.00442v1  [hep-th]  1 Jan 2026",
+          "score": 0.0161290322580645,
+          "snippet": "=\nZ 1"
+        },
+        {
+          "chunk_id": "99e7d484-73fb-4a80-a338-ea66eedd2afe",
+          "doc_id": "bc7b4591-b1c8-426b-a82f-6b2ae8347dec",
+          "doc_title": "arXiv 영어 학술",
+          "chunk_idx": 686,
+          "page": 52,
+          "section_title": "arXiv:2601.00442v1  [hep-th]  1 Jan 2026",
+          "score": 0.0158730158730159,
+          "snippet": "∆=\nZ 1"
+        },
+        {
+          "chunk_id": "b1947afd-e38f-4482-b887-a1eef678a52b",
+          "doc_id": "bc7b4591-b1c8-426b-a82f-6b2ae8347dec",
+          "doc_title": "arXiv 영어 학술",
+          "chunk_idx": 263,
+          "page": 23,
+          "section_title": "arXiv:2601.00442v1  [hep-th]  1 Jan 2026",
+          "score": 0.015625,
+          "snippet": "≤\np"
+        },
+        {
+          "chunk_id": "60f96e10-ae92-4ec5-912e-1695400a0cd7",
+          "doc_id": "bc7b4591-b1c8-426b-a82f-6b2ae8347dec",
+          "doc_title": "arXiv 영어 학술",
+          "chunk_idx": 259,
+          "page": 23,
+          "section_title": "arXiv:2601.00442v1  [hep-th]  1 Jan 2026",
+          "score": 0.0153846153846154,
+          "snippet": "≤\np"
+        }
+      ],
+      "has_search_results": true,
+      "model": "gemini-2.5-flash",
+      "took_ms": 2528,
+      "query_parsed": {
+        "has_dense": true,
+        "has_sparse": false,
+        "dense_hits": 11,
+        "sparse_hits": 0,
+        "fused": 11
+      },
+      "meta": {
+        "low_confidence": false,
+        "router_signals": [],
+        "router_confidence": 1.0,
+        "decomposed_subqueries": [],
+        "decomposition_cost_usd": 0.0,
+        "decomposition_cached": false
+      }
+    }
+  ],
+  "top_k='5.0'": [
+    200,
+    {
+      "query": "zzzz없는말zzzz",
+      "answer": "제공된 자료에서 해당 정보를 찾지 못했습니다.",
+      "sources": [
+        {
+          "chunk_id": "cc2bdaf8-6fd7-4711-b0af-5038afcd6398",
+          "doc_id": "bc7b4591-b1c8-426b-a82f-6b2ae8347dec",
+          "doc_title": "arXiv 영어 학술",
+          "chunk_idx": 701,
+          "page": 53,
+          "section_title": "arXiv:2601.00442v1  [hep-th]  1 Jan 2026",
+          "score": 0.0163934426229508,
+          "snippet": "|∆| ≤\nZ 1"
+        },
+        {
+          "chunk_id": "d072b1d7-a7b7-4180-a9fe-68dd3ba4963d",
+          "doc_id": "bc7b4591-b1c8-426b-a82f-6b2ae8347dec",
+          "doc_title": "arXiv 영어 학술",
+          "chunk_idx": 688,
+          "page": 52,
+          "section_title": "arXiv:2601.00442v1  [hep-th]  1 Jan 2026",
+          "score": 0.0161290322580645,
+          "snippet": "=\nZ 1"
+        },
+        {
+          "chunk_id": "99e7d484-73fb-4a80-a338-ea66eedd2afe",
+          "doc_id": "bc7b4591-b1c8-426b-a82f-6b2ae8347dec",
+          "doc_title": "arXiv 영어 학술",
+          "chunk_idx": 686,
+          "page": 52,
+          "section_title": "arXiv:2601.00442v1  [hep-th]  1 Jan 2026",
+          "score": 0.0158730158730159,
+          "snippet": "∆=\nZ 1"
+        },
+        {
+          "chunk_id": "b1947afd-e38f-4482-b887-a1eef678a52b",
+          "doc_id": "bc7b4591-b1c8-426b-a82f-6b2ae8347dec",
+          "doc_title": "arXiv 영어 학술",
+          "chunk_idx": 263,
+          "page": 23,
+          "section_title": "arXiv:2601.00442v1  [hep-th]  1 Jan 2026",
+          "score": 0.015625,
+          "snippet": "≤\np"
+        },
+        {
+          "chunk_id": "60f96e10-ae92-4ec5-912e-1695400a0cd7",
+          "doc_id": "bc7b4591-b1c8-426b-a82f-6b2ae8347dec",
+          "doc_title": "arXiv 영어 학술",
+          "chunk_idx": 259,
+          "page": 23,
+          "section_title": "arXiv:2601.00442v1  [hep-th]  1 Jan 2026",
+          "score": 0.0153846153846154,
+          "snippet": "≤\np"
+        }
+      ],
+      "has_search_results": true,
+      "model": "gemini-2.5-flash",
+      "took_ms": 2151,
+      "query_parsed": {
+        "has_dense": true,
+        "has_sparse": false,
+        "dense_hits": 11,
+        "sparse_hits": 0,
+        "fused": 11
+      },
+      "meta": {
+        "low_confidence": false,
+        "router_signals": [],
+        "router_confidence": 1.0,
+        "decomposed_subqueries": [],
+        "decomposition_cost_usd": 0.0,
+        "decomposition_cached": false
+      }
+    }
+  ],
+  "top_k='+5'": [
+    200,
+    {
+      "query": "zzzz없는말zzzz",
+      "answer": "제공된 자료에서 해당 정보를 찾지 못했습니다.",
+      "sources": [
+        {
+          "chunk_id": "cc2bdaf8-6fd7-4711-b0af-5038afcd6398",
+          "doc_id": "bc7b4591-b1c8-426b-a82f-6b2ae8347dec",
+          "doc_title": "arXiv 영어 학술",
+          "chunk_idx": 701,
+          "page": 53,
+          "section_title": "arXiv:2601.00442v1  [hep-th]  1 Jan 2026",
+          "score": 0.0163934426229508,
+          "snippet": "|∆| ≤\nZ 1"
+        },
+        {
+          "chunk_id": "d072b1d7-a7b7-4180-a9fe-68dd3ba4963d",
+          "doc_id": "bc7b4591-b1c8-426b-a82f-6b2ae8347dec",
+          "doc_title": "arXiv 영어 학술",
+          "chunk_idx": 688,
+          "page": 52,
+          "section_title": "arXiv:2601.00442v1  [hep-th]  1 Jan 2026",
+          "score": 0.0161290322580645,
+          "snippet": "=\nZ 1"
+        },
+        {
+          "chunk_id": "99e7d484-73fb-4a80-a338-ea66eedd2afe",
+          "doc_id": "bc7b4591-b1c8-426b-a82f-6b2ae8347dec",
+          "doc_title": "arXiv 영어 학술",
+          "chunk_idx": 686,
+          "page": 52,
+          "section_title": "arXiv:2601.00442v1  [hep-th]  1 Jan 2026",
+          "score": 0.0158730158730159,
+          "snippet": "∆=\nZ 1"
+        },
+        {
+          "chunk_id": "b1947afd-e38f-4482-b887-a1eef678a52b",
+          "doc_id": "bc7b4591-b1c8-426b-a82f-6b2ae8347dec",
+          "doc_title": "arXiv 영어 학술",
+          "chunk_idx": 263,
+          "page": 23,
+          "section_title": "arXiv:2601.00442v1  [hep-th]  1 Jan 2026",
+          "score": 0.015625,
+          "snippet": "≤\np"
+        },
+        {
+          "chunk_id": "60f96e10-ae92-4ec5-912e-1695400a0cd7",
+          "doc_id": "bc7b4591-b1c8-426b-a82f-6b2ae8347dec",
+          "doc_title": "arXiv 영어 학술",
+          "chunk_idx": 259,
+          "page": 23,
+          "section_title": "arXiv:2601.00442v1  [hep-th]  1 Jan 2026",
+          "score": 0.0153846153846154,
+          "snippet": "≤\np"
+        }
+      ],
+      "has_search_results": true,
+      "model": "gemini-2.5-flash",
+      "took_ms": 2065,
+      "query_parsed": {
+        "has_dense": true,
+        "has_sparse": false,
+        "dense_hits": 11,
+        "sparse_hits": 0,
+        "fused": 11
+      },
+      "meta": {
+        "low_confidence": false,
+        "router_signals": [],
+        "router_confidence": 1.0,
+        "decomposed_subqueries": [],
+        "decomposition_cost_usd": 0.0,
+        "decomposition_cached": false
+      }
+    }
+  ],
+  "top_k=''": [
+    422,
+    {
+      "detail": [
+        {
+          "type": "int_parsing",
+          "loc": [
+            "query",
+            "top_k"
+          ],
+          "msg": "Input should be a valid integer, unable to parse string as an integer",
+          "input": ""
+        }
+      ]
+    }
+  ],
+  "q NFD 한글": [
+    200,
+    {
+      "query": "휴가",
+      "answer": "제공된 자료에서 해당 정보를 찾지 못했습니다.",
+      "sources": [
+        {
+          "chunk_id": "2b05d465-1bd1-489f-8409-838460c91d0b",
+          "doc_id": "d1259dfe-c402-4cd0-bb04-3e67d88a2773",
+          "doc_title": "sample-report",
+          "chunk_idx": 893,
+          "page": 93,
+          "section_title": "(경제전망보고서Indigo Book · 경제상황 평가)",
+          "score": 0.0163934426229508,
+          "snippet": "7월"
+        }
+      ],
+      "has_search_results": true,
+      "model": "gemini-2.5-flash",
+      "took_ms": 1784,
+      "query_parsed": {
+        "has_dense": true,
+        "has_sparse": true,
+        "dense_hits": 3,
+        "sparse_hits": 6,
+        "fused": 9
+      },
+      "meta": {
+        "low_confidence": false,
+        "router_signals": [],
+        "router_confidence": 1.0,
+        "decomposed_subqueries": [],
+        "decomposition_cost_usd": 0.0,
+        "decomposition_cached": false
+      }
+    }
+  ],
+  "q 앞뒤 공백": [
+    200,
+    {
+      "query": "zzzz없는말zzzz",
+      "answer": "제공된 자료에서 해당 정보를 찾지 못했습니다.",
+      "sources": [
+        {
+          "chunk_id": "cc2bdaf8-6fd7-4711-b0af-5038afcd6398",
+          "doc_id": "bc7b4591-b1c8-426b-a82f-6b2ae8347dec",
+          "doc_title": "arXiv 영어 학술",
+          "chunk_idx": 701,
+          "page": 53,
+          "section_title": "arXiv:2601.00442v1  [hep-th]  1 Jan 2026",
+          "score": 0.0163934426229508,
+          "snippet": "|∆| ≤\nZ 1"
+        }
+      ],
+      "has_search_results": true,
+      "model": "gemini-2.5-flash",
+      "took_ms": 2315,
+      "query_parsed": {
+        "has_dense": true,
+        "has_sparse": false,
+        "dense_hits": 11,
+        "sparse_hits": 0,
+        "fused": 11
+      },
+      "meta": {
+        "low_confidence": false,
+        "router_signals": [],
+        "router_confidence": 1.0,
+        "decomposed_subqueries": [],
+        "decomposition_cost_usd": 0.0,
+        "decomposition_cached": false
+      }
+    }
+  ]
+}
