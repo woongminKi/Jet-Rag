@@ -1,8 +1,12 @@
 /**
  * `api-account` — Phase 1 의 end-to-end 증명 대상.
  *
- * 지금은 `/health`·`/auth/me`·`/stats`·`/stats/trend` 다. Phase 2 의 나머지(`/me/plan`,
- * `/admin/*`)가 이어서 붙는다.
+ * 지금은 `/health`·`/auth/me`·`/stats`·`/stats/trend`·`/me/*` 다. Phase 2 의 나머지
+ * (`/admin/*`)가 이어서 붙는다.
+ *
+ * ## `/me/*` 만 인증 필수다
+ * 다른 경로는 익명을 owner 컨텍스트로 통과시키는데, `/me/*` 는 주소를 발급·회전시키므로
+ * 원본이 라우터 레벨에서 막는다(실측: 401 `{"detail":"로그인이 필요합니다."}`).
  *
  * ## `/stats` 는 두 지표를 DB 에서 읽는다
  * `search_slo` 와 `vision_usage` 는 원본이 **프로세스 안 카운터**로 냈다. Edge 는 isolate 가
@@ -29,10 +33,17 @@
 
 import { loadSettings } from "../_shared/config.ts";
 import { applyCorsHeaders, preflightResponse } from "../_shared/cors.ts";
-import { getCurrentUser, requestToken } from "../_shared/current_user.ts";
+import { getCurrentUser, requestToken, requireAuthenticatedUser } from "../_shared/current_user.ts";
 import { jsonResponse, methodNotAllowed, notFound, toResponse } from "../_shared/errors.ts";
 import { createServiceClient } from "../_shared/db.ts";
 import { buildStats, buildTrend, validateTrendParams } from "../_shared/stats/pipeline.ts";
+import {
+  buildEmailIngest,
+  buildEmailIngestRotate,
+  buildPlan,
+  buildSubscription,
+  MeHttpError,
+} from "../_shared/me/pipeline.ts";
 
 /**
  * 함수 안에서 보이는 경로 접두사.
@@ -120,6 +131,51 @@ Deno.serve(async (req: Request) => {
           response = jsonResponse(
             await buildTrend(v.params, { client: createServiceClient(settings) }),
           );
+        }
+      }
+    } else if (path.startsWith("/me/")) {
+      // **순서가 계약이다 — 라우팅 먼저, 인증 나중.**
+      // FastAPI 는 경로·메서드 매칭이 dependency 보다 앞이라, 없는 경로나 틀린 메서드는
+      // 인증을 거치지 않고 404·405 가 된다. 인증을 먼저 하면 익명에게 전부 401 이 나가
+      // 원본과 갈린다(실측으로 잡았다: `GET /me/email-ingest/rotate` → 원본 405, 초기
+      // 구현 401).
+      const ME_ROUTES: Record<string, string> = {
+        "/me/plan": "GET",
+        "/me/subscription": "GET",
+        "/me/email-ingest": "GET",
+        "/me/email-ingest/rotate": "POST",
+      };
+      const allowed = ME_ROUTES[path];
+      if (allowed === undefined) {
+        response = notFound();
+      } else if (req.method !== allowed) {
+        response = methodNotAllowed();
+      } else {
+        // 여기서부터 인증 필수 — 익명 fallback 이 owner 컨텍스트라, 이 게이트가 없으면
+        // 익명 방문자가 owner 의 주소를 발급·회전시킬 수 있다.
+        const user = requireAuthenticatedUser(await getCurrentUser(req, settings));
+        const deps = {
+          client: createServiceClient(settings),
+          emailIngestDomain: settings.emailIngestDomain,
+        };
+        try {
+          if (path === "/me/plan") {
+            response = jsonResponse(await buildPlan(user.userId, deps));
+          } else if (path === "/me/subscription") {
+            response = jsonResponse(await buildSubscription(user.userId, deps));
+          } else if (path === "/me/email-ingest") {
+            response = jsonResponse(await buildEmailIngest(user.userId, user.email, deps));
+          } else {
+            response = jsonResponse(
+              await buildEmailIngestRotate(user.userId, user.email, deps),
+            );
+          }
+        } catch (e) {
+          if (e instanceof MeHttpError) {
+            response = jsonResponse({ detail: e.detail }, e.status);
+          } else {
+            throw e;
+          }
         }
       }
     } else {

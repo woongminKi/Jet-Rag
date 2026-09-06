@@ -17,8 +17,11 @@ export const ROUTES = [
   [/^\/search/, "api-search"],
   // 2026-09-06 전환 — `/stats` 와 `/stats/trend`. 응답 대조 HTTP 13건 일치.
   [/^\/stats/, "api-account"],
-  // Phase 2 나머지: [/^\/answer/, "api-answer"], [/^\/me\//, "api-account"],
-  //                [/^\/admin/, "api-account"],
+  // 2026-09-06 전환 — `/me/*` 4개. 응답 대조 HTTP 13건 일치(비인증 401·405·404 순서 포함).
+  // **슬래시를 요구한다** — `/me` 단독과 `/mefoo` 는 원본에 라우트가 없어 404 인데,
+  // 그건 Railway 가 이미 내주고 있으므로 굳이 Edge 로 넘길 이유가 없다.
+  [/^\/me\//, "api-account"],
+  // Phase 2 나머지: [/^\/answer/, "api-answer"], [/^\/admin/, "api-account"],
   // Phase 3 에서 해제: [/^\/documents/, "api-documents"],
   // Phase 4 에서 해제: [/^\/payments/, "api-payments"], [/^\/billing/, "billing-run"],
   // Phase 5 에서 해제: [/^\/email/, "email-webhook"],

@@ -44,6 +44,11 @@ Deno.test("이관된 경로만 Edge 로 간다", () => {
   // 2026-09-06 전환 — `/stats` 와 `/stats/trend`.
   assertEquals(resolveTarget("/stats"), "api-account");
   assertEquals(resolveTarget("/stats/trend"), "api-account");
+  // 2026-09-06 전환 — `/me/*`.
+  assertEquals(resolveTarget("/me/plan"), "api-account");
+  assertEquals(resolveTarget("/me/subscription"), "api-account");
+  assertEquals(resolveTarget("/me/email-ingest"), "api-account");
+  assertEquals(resolveTarget("/me/email-ingest/rotate"), "api-account");
   // 아직 안 열린 경로들 — 기존 백엔드로 가야 한다. 여기가 통째로 초록이 되면
   // "다 옮겼다" 로 착각하게 되므로 한 줄씩 지우면서 연다.
   for (const p of ["/answer", "/documents", "/payments/ready", "/email/inbound"]) {
@@ -64,6 +69,15 @@ Deno.test("`/health` 는 정확히 일치할 때만 (접두어 오매칭 방지)
   assertEquals(resolveTarget("/health"), "api-account");
   assertEquals(resolveTarget("/healthz"), null);
   assertEquals(resolveTarget("/health/deep"), null);
+});
+
+Deno.test("`/me/` 는 슬래시가 있을 때만 (`/me`·`/mefoo` 는 넘기지 않는다)", () => {
+  assertEquals(resolveTarget("/me/plan"), "api-account");
+  // 후행 슬래시도 넘어간다 — 원본이 `/me/plan/` 에 401 을 내주고(실측) 함수도 슬래시를 뗀다.
+  assertEquals(resolveTarget("/me/plan/"), "api-account");
+  // 라우트가 없는 것들은 Railway 가 이미 404 를 내주므로 그대로 둔다.
+  assertEquals(resolveTarget("/me"), null);
+  assertEquals(resolveTarget("/mefoo"), null);
 });
 
 Deno.test("`/auth/` 는 하위 경로 전체", () => {

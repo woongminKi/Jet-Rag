@@ -12,6 +12,13 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+// `pytime.ts` 로 뽑았다 — `/me` 의 `rotated_at` 도 같은 규칙을 쓴다.
+// **마이크로초 0 이면 소수부를 생략**하는 규칙이 여기 들어 있다. 예전 구현은 늘
+// `.mmm000+00:00` 을 붙였는데, `ms % 1000 === 0` 인 순간(천 번에 한 번)에는 원본이
+// `+00:00` 만 낸다. 검증기가 그 경계를 고정으로 태운다.
+import { pyIsoUtc as utcIsoLikePython } from "../pytime.ts";
+export { utcIsoLikePython };
+
 import {
   computeDocumentsStats,
   computeJobsStats,
@@ -28,19 +35,6 @@ import {
   fetchTrend,
   fetchVisionUsage,
 } from "./sources.ts";
-
-/**
- * Python `datetime.now(timezone.utc).isoformat()` 과 같은 **형식**.
- *
- * `toISOString()` 은 `2026-09-06T02:36:00.000Z` 를 주는데 원본은
- * `2026-09-06T02:36:00.123456+00:00` 이다 — 접미사도 소수 자릿수도 다르다.
- * 값 자체는 "지금" 이라 어차피 다르지만, 형식이 다르면 파서 동작이 갈릴 수 있다.
- * JS 는 밀리초까지만 있어서 뒤 3 자리는 0 이 된다.
- */
-export function utcIsoLikePython(ms: number): string {
-  const iso = new Date(ms).toISOString(); // ...THH:MM:SS.mmmZ
-  return `${iso.slice(0, -1)}000+00:00`;
-}
 
 export interface StatsDeps {
   client: SupabaseClient;

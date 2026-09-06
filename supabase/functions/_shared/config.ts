@@ -50,6 +50,8 @@ export interface Settings {
   supabaseAnonKey: string;
   supabaseServiceRoleKey: string;
   supabaseStorageBucket: string;
+  /** 이메일 인제스트 주소 도메인. Railway 미설정이라 기본값이 곧 운영 값이다. */
+  emailIngestDomain: string;
   geminiApiKey: string;
   hfApiToken: string;
   /** DeepInfra BGE-M3. `JETRAG_EMBED_PROVIDER=deepinfra` 일 때 필요하다. */
@@ -132,6 +134,7 @@ export function loadSettings(read: EnvReader = (k) => Deno.env.get(k)): Settings
     supabaseServiceRoleKey: required(read, "SUPABASE_SERVICE_ROLE_KEY"),
     supabaseStorageBucket: aliased(read, "SUPABASE_STORAGE_BUCKET", "JETRAG_SUPABASE_STORAGE_BUCKET") ??
       "documents",
+    emailIngestDomain: read("JETRAG_EMAIL_INGEST_DOMAIN") ?? "in.woong-s.com",
     geminiApiKey: read("GEMINI_API_KEY") ?? "",
     hfApiToken: read("HF_API_TOKEN") ?? "",
     deepinfraApiToken: read("DEEPINFRA_API_TOKEN") ?? "",
