@@ -131,6 +131,9 @@ def collect(client, user_id: str) -> dict:
     # documents 를 지우면 doc_id 가 NULL 이 되어 **doc_id 로는 영원히 못 찾는다**
     # (운영에 그렇게 고아가 된 행이 이미 1,929 개 있다). 그러면 정리 누락을 검증할 수 없다.
     vision = _by_doc("vision_usage_log", "call_id")
+    # 마이그 027 — 단계 간 중간 산출물. `documents` CASCADE 로 자동 삭제되지만
+    # **확인은 따로 해야 한다**(CASCADE 를 믿고 안 세면 누락을 못 잡는다).
+    artifacts = _by_doc("ingest_artifacts", "id")
 
     return {
         "documents": doc_ids,
@@ -138,6 +141,7 @@ def collect(client, user_id: str) -> dict:
         "ingest_jobs": job_ids,
         "ingest_logs": [x["id"] for x in logs],
         "vision_usage_log": [v["call_id"] for v in vision],
+        "ingest_artifacts": [a["id"] for a in artifacts],
     }
 
 
@@ -185,6 +189,7 @@ def verify_gone(client, trace: dict) -> dict:
     left["ingest_logs"] = _count_in("ingest_logs", "id", trace["ingest_logs"])
     # **doc_id 가 아니라 call_id 로 센다** — SET NULL 이라 doc_id 는 지워진 뒤 NULL 이 된다.
     left["vision_usage_log"] = _count_in("vision_usage_log", "call_id", trace["vision_usage_log"])
+    left["ingest_artifacts"] = _count_in("ingest_artifacts", "id", trace["ingest_artifacts"])
     return left
 
 
@@ -217,6 +222,8 @@ def clean(client, user_id: str, *, apply: bool) -> dict:
         batch = doc_ids[i : i + 50]
         if not batch:
             continue
+        # artifacts 를 먼저 — ingest_jobs 를 지우면 CASCADE 로 사라지지만 순서를 명시한다.
+        client.table("ingest_artifacts").delete().in_("doc_id", batch).execute()
         client.table("ingest_jobs").delete().in_("doc_id", batch).execute()
         client.table("chunks").delete().in_("doc_id", batch).execute()
     # vision 은 **call_id** 로 지운다. doc_id 로 지우려 해도 documents 삭제가 먼저 일어나면
@@ -244,7 +251,8 @@ def clean(client, user_id: str, *, apply: bool) -> dict:
 
 # ---------------------------------------------------------- 운영 불변 확인
 
-_PROD_TABLES = ("documents", "chunks", "ingest_jobs", "ingest_logs", "vision_usage_log")
+_PROD_TABLES = ("documents", "chunks", "ingest_jobs", "ingest_logs", "vision_usage_log",
+                "ingest_artifacts")
 
 
 def prod_snapshot(client) -> dict:
@@ -336,6 +344,13 @@ def cmd_selftest(args) -> int:
          "quota_exhausted": False, "model_used": "__sandbox__", "source_type": "pdf"}
     ]).execute()
 
+    # artifacts 분기도 태운다 — 안 심으면 정리 누락을 검증하지 못한다.
+    if inserted_jobs:
+        client.table("ingest_artifacts").insert([
+            {"job_id": inserted_jobs[0]["id"], "doc_id": doc_ids[0],
+             "stage": "extract", "seq": 0, "payload": {"__sandbox__": True}}
+        ]).execute()
+
     seeded = _counts(collect(client, uid))
     print(f"  심은 흔적: {json.dumps(seeded, ensure_ascii=False)}")
     fails = 0
@@ -348,6 +363,9 @@ def cmd_selftest(args) -> int:
     if seeded["vision_usage_log"] != 1:
         fails += 1
         print("  **수집기 결함** — vision_usage_log 를 못 센다")
+    if seeded["ingest_artifacts"] != 1:
+        fails += 1
+        print("  **수집기 결함** — ingest_artifacts 를 못 센다")
 
     r = clean(client, uid, apply=True)
     print(f"  정리 후 남은 흔적: {json.dumps(r['left'], ensure_ascii=False)}")
