@@ -33,7 +33,12 @@
 
 import { loadSettings } from "../_shared/config.ts";
 import { applyCorsHeaders, preflightResponse } from "../_shared/cors.ts";
-import { getCurrentUser, requestToken, requireAuthenticatedUser } from "../_shared/current_user.ts";
+import {
+  getCurrentUser,
+  requestToken,
+  requireAdmin,
+  requireAuthenticatedUser,
+} from "../_shared/current_user.ts";
 import { jsonResponse, methodNotAllowed, notFound, toResponse } from "../_shared/errors.ts";
 import { createServiceClient } from "../_shared/db.ts";
 import { buildStats, buildTrend, validateTrendParams } from "../_shared/stats/pipeline.ts";
@@ -44,6 +49,14 @@ import {
   buildSubscription,
   MeHttpError,
 } from "../_shared/me/pipeline.ts";
+import {
+  buildFeedbackStats,
+  buildQueriesStats,
+  listSubscriptions,
+  upsertSubscription,
+  validateRange,
+} from "../_shared/admin/pipeline.ts";
+import { parseSubscriptionUpsert } from "../_shared/admin/body.ts";
 
 /**
  * 함수 안에서 보이는 경로 접두사.
@@ -175,6 +188,46 @@ Deno.serve(async (req: Request) => {
             response = jsonResponse({ detail: e.detail }, e.status);
           } else {
             throw e;
+          }
+        }
+      }
+    } else if (path.startsWith("/admin/")) {
+      // `/me/*` 와 같은 순서다 — **라우팅 먼저, 게이트 나중.** FastAPI 는 경로·메서드
+      // 매칭이 dependency 보다 앞이라, 없는 경로·틀린 메서드는 게이트를 거치지 않고
+      // 404·405 가 된다. 게이트를 먼저 걸면 전부 403 이 되어 원본과 갈린다.
+      const ADMIN_ROUTES: Record<string, string[]> = {
+        "/admin/queries/stats": ["GET"],
+        "/admin/feedback/stats": ["GET"],
+        "/admin/subscriptions": ["GET", "POST"],
+      };
+      const allowed = ADMIN_ROUTES[path];
+      if (allowed === undefined) {
+        response = notFound();
+      } else if (!allowed.includes(req.method)) {
+        response = methodNotAllowed();
+      } else {
+        // 라우터 전체에 걸린 운영자 게이트 — `auth_enabled=false` 면 통과한다.
+        requireAdmin(await getCurrentUser(req, settings), settings);
+        const deps = { client: createServiceClient(settings) };
+        if (path === "/admin/subscriptions") {
+          if (req.method === "GET") {
+            response = jsonResponse(await listSubscriptions(deps));
+          } else {
+            const parsed = await parseSubscriptionUpsert(req);
+            response = parsed.ok
+              ? jsonResponse(await upsertSubscription(parsed.payload, deps))
+              : jsonResponse({ detail: parsed.detail }, 422);
+          }
+        } else {
+          const v = validateRange(new URL(req.url).searchParams);
+          if (!v.ok) {
+            response = jsonResponse({ detail: v.detail }, 422);
+          } else {
+            response = jsonResponse(
+              path === "/admin/queries/stats"
+                ? await buildQueriesStats(v.range, deps)
+                : await buildFeedbackStats(v.range, deps),
+            );
           }
         }
       }

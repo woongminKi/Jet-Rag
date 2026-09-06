@@ -1,0 +1,140 @@
+{
+  "빈 객체": [
+    {
+      "type": "missing",
+      "loc": [
+        "body",
+        "user_id"
+      ],
+      "msg": "Field required",
+      "input": {}
+    },
+    {
+      "type": "missing",
+      "loc": [
+        "body",
+        "plan_code"
+      ],
+      "msg": "Field required",
+      "input": {}
+    }
+  ],
+  "plan_code 값 오류": [
+    {
+      "type": "literal_error",
+      "loc": [
+        "body",
+        "plan_code"
+      ],
+      "msg": "Input should be 'free' or 'pro'",
+      "input": "bad",
+      "ctx": {
+        "expected": "'free' or 'pro'"
+      }
+    }
+  ],
+  "user_id 타입 오류": [
+    {
+      "type": "string_type",
+      "loc": [
+        "body",
+        "user_id"
+      ],
+      "msg": "Input should be a valid string",
+      "input": 123
+    }
+  ],
+  "status 값 오류": [
+    {
+      "type": "literal_error",
+      "loc": [
+        "body",
+        "status"
+      ],
+      "msg": "Input should be 'active', 'past_due' or 'canceled'",
+      "input": "bogus",
+      "ctx": {
+        "expected": "'active', 'past_due' or 'canceled'"
+      }
+    }
+  ],
+  "period 타입 오류": [
+    {
+      "type": "string_type",
+      "loc": [
+        "body",
+        "current_period_end"
+      ],
+      "msg": "Input should be a valid string",
+      "input": 123
+    }
+  ],
+  "배열 본문": [
+    {
+      "type": "model_attributes_type",
+      "loc": [
+        "body"
+      ],
+      "msg": "Input should be a valid dictionary or object to extract fields from",
+      "input": [
+        1,
+        2
+      ]
+    }
+  ],
+  "문자열 본문": [
+    {
+      "type": "model_attributes_type",
+      "loc": [
+        "body"
+      ],
+      "msg": "Input should be a valid dictionary or object to extract fields from",
+      "input": "hello"
+    }
+  ],
+  "null 본문": [
+    {
+      "type": "missing",
+      "loc": [
+        "body"
+      ],
+      "msg": "Field required",
+      "input": null
+    }
+  ],
+  "여분 필드": [
+    {
+      "type": "string_type",
+      "loc": [
+        "body",
+        "user_id"
+      ],
+      "msg": "Input should be a valid string",
+      "input": 123
+    },
+    {
+      "type": "literal_error",
+      "loc": [
+        "body",
+        "plan_code"
+      ],
+      "msg": "Input should be 'free' or 'pro'",
+      "input": "bad",
+      "ctx": {
+        "expected": "'free' or 'pro'"
+      }
+    },
+    {
+      "type": "literal_error",
+      "loc": [
+        "body",
+        "status"
+      ],
+      "msg": "Input should be 'active', 'past_due' or 'canceled'",
+      "input": "bogus",
+      "ctx": {
+        "expected": "'active', 'past_due' or 'canceled'"
+      }
+    }
+  ]
+}

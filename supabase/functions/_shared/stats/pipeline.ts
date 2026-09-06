@@ -12,6 +12,8 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { makeLiteralPicker } from "../pydantic_errors.ts";
+
 // `pytime.ts` 로 뽑았다 — `/me` 의 `rotated_at` 도 같은 규칙을 쓴다.
 // **마이크로초 0 이면 소수부를 생략**하는 규칙이 여기 들어 있다. 예전 구현은 늘
 // `.mmm000+00:00` 을 붙였는데, `ms % 1000 === 0` 인 순간(천 번에 한 번)에는 원본이
@@ -99,33 +101,8 @@ export interface TrendParams {
 export function validateTrendParams(
   sp: URLSearchParams,
 ): { ok: true; params: TrendParams } | { ok: false; detail: unknown[] } {
-  const errors: unknown[] = [];
-  // pydantic 의 문구 규칙 — **마지막만 `or`, 나머지는 쉼표**다.
-  //   3 개: `'24h', '7d' or '30d'`   2 개: `'search' or 'vision'`
-  // 전부 `or` 로 이으면 2 개일 때만 우연히 맞고 3 개 이상에서 갈린다 —
-  // in-process 대조로는 안 잡히고(핸들러를 직접 부르면 FastAPI 검증을 안 거친다)
-  // 배포 후 HTTP 로 재고서야 드러났다.
-  const expectedText = (allowed: readonly string[]) => {
-    const q = allowed.map((v) => `'${v}'`);
-    if (q.length <= 1) return q.join("");
-    return `${q.slice(0, -1).join(", ")} or ${q[q.length - 1]}`;
-  };
-  const pick = (name: string, allowed: readonly string[], dflt: string): string => {
-    const raw = sp.get(name);
-    if (raw === null) return dflt;
-    if (!allowed.includes(raw)) {
-      const expected = expectedText(allowed);
-      errors.push({
-        type: "literal_error",
-        loc: ["query", name],
-        msg: `Input should be ${expected}`,
-        input: raw,
-        ctx: { expected },
-      });
-      return dflt;
-    }
-    return raw;
-  };
+  // 422 문구 규칙은 `_shared/pydantic_errors.ts` 에 있다 — `/admin/*` 과 공유한다.
+  const { pick, errors } = makeLiteralPicker(sp);
   // 선언 순서가 곧 오류 배열 순서다 — range → mode → metric.
   const range = pick("range", TREND_RANGES, "7d");
   const mode = pick("mode", TREND_MODES, "all");
