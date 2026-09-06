@@ -3,9 +3,9 @@
 > **범위**: `/stats`, `/stats/trend`, `/me/*` 4개, `/admin/*` 4개를 Supabase Edge Function
 > 으로 이관하고 Cloudflare 프록시 스위치를 열기까지. 선행 조건이던 `vision_usage` 의
 > 프로세스 로컬 상태를 DB 기준으로 옮기는 작업 포함.
-> **다음 세션 재진입**: **Edge secrets 에 `GEMINI_API_KEY` 설정**(사용자 작업, 키 교체 후)
-> → `/answer` 200 경로 대조 → 프록시 `[/^\/answer$/, "api-answer"]` 개방.
-> 함수는 배포돼 있고 LLM 미호출 경로 11건은 이미 일치 확인됐다.
+> **다음 세션 재진입**: Phase 2 남은 5 라우트 — `/answer/feedback`(POST),
+> `/answer/eval-ragas`(GET·POST), `/search/eval-precision`(GET·POST).
+> 그다음 `/admin/subscriptions`(쓰기)까지 열면 Phase 2 가 닫힌다.
 > (정정 — 앞선 기록에 "스트리밍이라 별도 함수 검토 필요"라고 썼는데 **틀렸다**.
 > `answer.py` 헤더의 설계 결정 Q6 이 "동기 호출, streaming 은 v1.5 이후"이고
 > `StreamingResponse`·`yield` 가 하나도 없다. 원본을 안 읽고 쓴 가정이었다.)
@@ -22,8 +22,8 @@
 | `/admin/subscriptions` (GET+POST) 포팅 + 대조 | ✅ 코드 완료 — **프록시는 미개방**(POST 가 쓰기) |
 | `/answer` 본체 모듈 포팅 + 대조 | ✅ 완료 (d4029da) |
 | `api-answer` 함수 배포 + LLM 미호출 경로 대조 | ✅ 완료 (519df3b) — 11건 일치 |
-| `/answer` LLM 경로 대조 + 프록시 개방 | 🟡 **차단** — Edge 에 `GEMINI_API_KEY` 없음 |
-| `/answer/feedback` · `/answer/eval-ragas` · `/search/eval-precision` | ⬜ 대기 (5개 라우트) |
+| `/answer` LLM 경로 대조 + 프록시 개방 | ✅ 완료 (6f22b9f) — 프록시 경유 11건 일치 |
+| `/answer/feedback` · `/answer/eval-ragas` · `/search/eval-precision` | ⬜ 대기 (5개 라우트, 전부 쓰기 포함) |
 | `/search/eval-precision` 프록시 회귀 | ✅ 수정·배포 (5a74ea6) |
 
 ## 1. `/stats` — 프로세스 로컬 상태를 먼저 걷어냈다
@@ -296,6 +296,37 @@ in-process 대조로는 잡을 수 없는 층이다 — `/stats/trend` 의 422 �
 **차단 요인**: Edge secrets 에 `GEMINI_API_KEY` 가 없어 LLM 경로(200, 검색 결과 있음)를
 대조하지 못했다. 지금 프록시를 열면 그 경로가 전부 503 이 되므로 **열지 않았다.**
 
+## 3-G. `/answer` 전환 완료
+
+`GEMINI_API_KEY` 를 Edge secrets 에 설정한 뒤 LLM 경로까지 대조하고 프록시를 열었다.
+(사용자 결정: **키를 교체하지 않고** 기존 값을 그대로 사용.)
+
+### 규칙에 끝을 고정했다
+
+```js
+[/^\/answer\/?$/, "api-answer"],   // 본체만. feedback·eval-ragas 는 Railway.
+```
+
+`/search` 를 접두어로 열었다가 `/search/eval-precision` 을 삼킨 사고(§3-C)와 같은 실수를
+막으려고 끝을 박았다. `MIGRATED_PATHS` 가드가 이걸 강제한다 — 접두어로 되돌리면 2건 실패.
+
+### 검증
+
+| 대조 | 건수 | 불일치 |
+|---|---|---|
+| LLM 미호출 경로 직접 HTTP (404·405·422·400·200) | 11 | 0 |
+| **LLM 경로** 직접 HTTP (`answer` 텍스트 제외 전 필드) | 3 | 0 |
+| 프록시 경유 (이관 2 + 미이관 하위 3 + 기존 회귀 6) | 11 | 0 |
+
+`answer` 텍스트는 LLM 이라 매번 다르므로 제외하고 `query`·`sources`·`has_search_results`
+·`model`·`query_parsed`·`meta` 를 비교했다. sources 3/1/5 건 전부 동일.
+
+### 지연은 재지 않았다
+
+`/answer` 는 응답 시간의 대부분이 Gemini 호출이라 이관 효과가 가려지고, 측정 자체가
+`usage_counters` 를 소비한다(익명 상한 50/일 중 오늘 45 소비). 의미 있는 표본을 뽑을
+여유가 없어 **측정하지 않았다.** 추정치는 적지 않는다.
+
 ## 4. 음성 대조 발화 기록
 
 | 대상 | 주입 | 잡힘 |
@@ -397,6 +428,7 @@ Edge CPU 2초 제약 대비로는 전부 여유가 있다(대부분이 네트워
 
 | 해시 | 메시지 |
 |---|---|
+| `6f22b9f` | feat(edge): /answer 트래픽을 Edge 로 전환 — 본체만, 하위 경로는 Railway 유지 |
 | `519df3b` | feat(edge): api-answer 함수 배포 — X-Reranker-Path 는 200 에만 붙는다 |
 | `d4029da` | feat(edge): /answer 본체 포팅 — Gemini REST 계약을 SDK 캡처로 확정 |
 | `5a74ea6` | fix(proxy): /search 접두어 규칙이 /search/eval-precision 을 삼켜 404 를 내던 것 수정 |
@@ -441,6 +473,9 @@ Edge CPU 2초 제약 대비로는 전부 여유가 있다(대부분이 네트워
 | B | 원본 버그 2건 선(先)수정 | 사용자에게 500 이 나가는 상태(`9999-12-31`)를 오래 두지 않는다. MMR 도 같이 고치고 골든셋을 다시 잰다. 이관 흐름이 한 번 끊긴다. |
 | C | Phase 3(`/documents` 쓰기) 착수 | `/answer` 를 뒤로 미루고 쓰기 경로를 먼저 연다. 업로드·삭제라 되돌리기가 어려워 준비가 더 필요하다. |
 
-**권고: A** — 다만 키 설정이 선행이라 사용자 작업이 끝날 때까지는 B 를 병행할 수 있다.
-`/answer` HTTP 대조는 `usage_counters` 를 소비한다 — **오늘 33/50 소비**(익명 IP 키 기준).
-LLM 경로 대조는 6~8 건이면 충분하므로 남은 여유로 가능하다.
+**권고: A** — 남은 5 라우트는 전부 쓰기(피드백 저장·평가 저장)라 대조 방식이 `/me` 의
+rotate·`/admin` 의 upsert 와 같다(실행하지 않고 요청 모양만). 한 묶음으로 처리하는 게
+문맥이 이어진다.
+
+**주의**: `usage_counters` 익명 상한은 50/일이고 오늘 45 를 썼다. 내일이면 리셋되지만,
+같은 날 추가 `/answer` 대조가 필요하면 남은 5 건 안에서 계획해야 한다.
