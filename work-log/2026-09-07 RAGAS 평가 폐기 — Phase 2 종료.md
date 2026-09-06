@@ -2,8 +2,8 @@
 
 > **범위**: Edge 로 옮길 수 없던 4 라우트(`ragas` 의존)를 **폐기**해 Phase 6 의 차단 요인을
 > 없애고, Phase 2 를 닫기까지.
-> **다음 세션 재진입**: **중간 산출물 저장 설계** → `extract` 핸들러. 그 다음 마이그 027
-> (pg_cron 드레인 + 보관 개수 래퍼). 026 적용·워커 골격은 끝났다(§13, §14).
+> **다음 세션 재진입**: **`extract` 핸들러 구현** — HWP 1종부터(기준선 있음, vision 0,
+> CPU 72ms). 큐·워커 골격·중간 산출물 자리는 다 놓였다(§13~§15).
 
 ## 0. 한눈에 보기
 
@@ -19,6 +19,7 @@
 | Phase 3 선행 — vision 래스터화 CPU 실측 | ✅ (ca6dae6) |
 | Phase 3 — 마이그 026 (pgmq 큐 + public 래퍼) | ✅ **운영 적용** (13ed304) |
 | Phase 3 — `ingest-worker` 드레인 골격 | ✅ 배포 (d3c74a6) — 핸들러는 아직 없음 |
+| Phase 3 — 마이그 027 (중간 산출물 테이블) | ✅ **운영 적용** (86c7eaa) |
 
 ## 1. 왜 폐기했나
 
@@ -430,3 +431,41 @@ pg_cron 드레인 + pg_net Edge 호출, Vault 키, 고아 잡 sweep.
 `archived:1` 은 **워커의 자기 보고**다. `pgmq.a_ingest_tasks` 가 PostgREST 에 안 보여
 "정말 보관됐는지" 를 독립 신호로 확인하지 못했다.
 → 027 에서 `ingest_queue_archived_count` 래퍼를 추가해 닫는다.
+
+
+## 15. Phase 3 — 마이그 027 (중간 산출물 테이블)
+
+### 저장 위치를 셋 중에서 골랐다
+
+| | 방안 | 판단 |
+|---|---|---|
+| **1** | **새 테이블 `ingest_artifacts`** | **채택** — `doc_id` CASCADE 로 정리 자동, 트랜잭션 일관성, 나중에 payload 를 Storage 참조로 바꿔도 스키마 유지 |
+| 2 | Storage 경로 | 크기 무제한이나 정리가 수동 |
+| 3 | `ingest_jobs.stage_progress` | **부적절** — 실시간 진행 표시용이고 Realtime push 가 걸려 있어(마이그 009) 큰 페이로드마다 프론트로 밀린다 |
+
+### 설계 요점
+
+- `UNIQUE(job_id, stage, seq)` — vt 만료로 같은 작업이 두 번 배달돼도 행이 둘이 되면 안 된다.
+  **워커 멱등성의 근거가 이 제약이다.**
+- RLS 를 켜고 **정책을 하나도 만들지 않았다.** 파이프라인 내부 산출물이라 클라이언트가
+  볼 이유가 없다. service_role 은 RLS 를 우회하므로 워커는 그대로 쓴다.
+- 026 의 교훈 적용: `REVOKE ... FROM PUBLIC, anon, authenticated`.
+
+### 026 미검증 항목을 닫았다
+
+`ingest_queue_archived_count()` 래퍼를 추가했다. 실측 **`archived_count = 1`** —
+§14 에서 워커가 보관했다던 msg_id=7 이 실제 archive 테이블에 있음을 **독립 신호로** 확인.
+
+### 검증 — 실패 0
+
+테이블·UNIQUE 제약 · RLS on/정책 0 · anon 차단 · service_role 허용(대조군) ·
+보관 래퍼 값과 anon 차단.
+
+### 샌드박스 하네스 갱신
+
+`ingest_artifacts` 를 수집·검증·정리·운영총계에 추가하고 selftest 가 그 분기를 태우게 했다.
+**CASCADE 가 지워 주더라도 세지 않으면 누락을 못 잡는다**(026 에서 vision 이 그랬다).
+
+음성 대조: 수집 제거 2건 발화. 검증 무력화는 0 건인데, artifacts 는 `job_id`·`doc_id`
+**두 경로 모두 CASCADE** 라 둘 중 하나만 살아 있어도 지워진다 — DB 직접 조회로 실제 행이
+0 임을 확인했다. 검사기 약점이 아니라 이중 보호다.
