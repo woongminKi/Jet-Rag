@@ -3,8 +3,8 @@
 > **범위**: `/stats`, `/stats/trend`, `/me/*` 4개, `/admin/*` 4개를 Supabase Edge Function
 > 으로 이관하고 Cloudflare 프록시 스위치를 열기까지. 선행 조건이던 `vision_usage` 의
 > 프로세스 로컬 상태를 DB 기준으로 옮기는 작업 포함.
-> **다음 세션 재진입**: **이관 불가 4 라우트의 방향 결정**(§3-I). 그 결정 없이는
-> Phase 6(Railway 제거)이 닫히지 않는다. 결정이 나면 Phase 3(`/documents` 쓰기) 착수.
+> **다음 세션 재진입**: → 2026-09-07 work-log 로 이어진다(§3-I 의 결정은 **A안 폐기**로
+> 마무리됐고 Phase 2 가 종료됐다). 다음은 Phase 3 `/documents/*`.
 > (정정 — 앞선 기록에 "스트리밍이라 별도 함수 검토 필요"라고 썼는데 **틀렸다**.
 > `answer.py` 헤더의 설계 결정 Q6 이 "동기 호출, streaming 은 v1.5 이후"이고
 > `StreamingResponse`·`yield` 가 하나도 없다. 원본을 안 읽고 쓴 가정이었다.)
@@ -23,7 +23,7 @@
 | `api-answer` 함수 배포 + LLM 미호출 경로 대조 | ✅ 완료 (519df3b) — 11건 일치 |
 | `/answer` LLM 경로 대조 + 프록시 개방 | ✅ 완료 (6f22b9f) — 프록시 경유 11건 일치 |
 | `/answer/feedback` + `/admin/subscriptions` 전환 | ✅ 완료 (00c815a) — 프록시 경유 14건 일치 |
-| `/answer/eval-ragas`·`/search/eval-precision` (GET·POST 4개) | 🔴 **이관 불가** — Python 전용 `ragas` 의존 |
+| `/answer/eval-ragas`·`/search/eval-precision` (GET·POST 4개) | ✅ **해결 — 2026-09-07 폐기**(A안). [다음 work-log](2026-09-07%20RAGAS%20평가%20폐기%20—%20Phase%202%20종료.md) |
 | `/search/eval-precision` 프록시 회귀 | ✅ 수정·배포 (5a74ea6) |
 
 ## 1. `/stats` — 프로세스 로컬 상태를 먼저 걷어냈다
@@ -385,7 +385,7 @@ Edge 로 옮길 수 없다. GET(캐시 조회)만 옮기고 싶어도 **POST 와
 | 최근 생성 | **2026-05-05** (4개월간 신규 0) |
 | 프론트 호출 | `ragas-eval-card.tsx` · `search-precision-card.tsx` 에서 **실제 호출** |
 
-**선택지 (사용자 결정 대기)**
+**선택지** — 사용자가 **A** 를 선택했다(2026-09-07 폐기 완료).
 
 | | 방안 | 대가 |
 |---|---|---|
