@@ -54,6 +54,7 @@ const MIGRATED_PATHS = new Set([
   "/me/email-ingest/rotate",
   "/admin/queries/stats",
   "/admin/feedback/stats",
+  "/answer",
 ]);
 
 Deno.test("프록시가 Edge 로 보내는 원본 라우트는 전부 이관돼 있어야 한다", async () => {
@@ -101,9 +102,11 @@ Deno.test("이관된 경로만 Edge 로 간다", () => {
   // 2026-09-06 전환 — `/admin` 읽기 2개.
   assertEquals(resolveTarget("/admin/queries/stats"), "api-account");
   assertEquals(resolveTarget("/admin/feedback/stats"), "api-account");
+  // 2026-09-06 전환 — `/answer` 본체.
+  assertEquals(resolveTarget("/answer"), "api-answer");
   // 아직 안 열린 경로들 — 기존 백엔드로 가야 한다. 여기가 통째로 초록이 되면
   // "다 옮겼다" 로 착각하게 되므로 한 줄씩 지우면서 연다.
-  for (const p of ["/answer", "/documents", "/payments/ready", "/email/inbound"]) {
+  for (const p of ["/documents", "/payments/ready", "/email/inbound"]) {
     assertEquals(resolveTarget(p), null, p);
   }
 });
@@ -136,6 +139,8 @@ Deno.test("`/me/` 는 슬래시가 있을 때만 (`/me`·`/mefoo` 는 넘기지 
 Deno.test("`/admin` 은 읽기 2개만 — subscriptions 는 아직 Railway", () => {
   assertEquals(resolveTarget("/admin/queries/stats"), "api-account");
   assertEquals(resolveTarget("/admin/feedback/stats"), "api-account");
+  // 2026-09-06 전환 — `/answer` 본체.
+  assertEquals(resolveTarget("/answer"), "api-answer");
   // **POST 가 구독을 바꾸는 쓰기라 안 연다.** 경로로는 메서드를 못 가르므로 GET 도 같이
   // Railway 에 남는다. 이 줄이 초록으로 바뀌면 Phase 3 에서 의도적으로 연 것이어야 한다.
   assertEquals(resolveTarget("/admin/subscriptions"), null);
@@ -143,6 +148,15 @@ Deno.test("`/admin` 은 읽기 2개만 — subscriptions 는 아직 Railway", ()
   assertEquals(resolveTarget("/admin"), null);
   // 접두어 오매칭 방지 — 슬래시를 요구한다.
   assertEquals(resolveTarget("/admin/queriesX"), null);
+});
+
+Deno.test("`/answer` 는 본체만 — feedback·eval-ragas 는 아직 Railway", () => {
+  assertEquals(resolveTarget("/answer"), "api-answer");
+  assertEquals(resolveTarget("/answer/"), "api-answer");
+  // **하위 경로를 삼키지 않는다.** `/search/eval-precision` 사고의 재발 방지.
+  assertEquals(resolveTarget("/answer/feedback"), null);
+  assertEquals(resolveTarget("/answer/eval-ragas"), null);
+  assertEquals(resolveTarget("/answerx"), null);
 });
 
 Deno.test("`/auth/` 는 하위 경로 전체", () => {

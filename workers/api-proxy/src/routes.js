@@ -30,7 +30,12 @@ export const ROUTES = [
   // 한 줄만 더하면 된다.
   [/^\/admin\/queries\//, "api-account"],
   [/^\/admin\/feedback\//, "api-account"],
-  // Phase 2 나머지: [/^\/answer/, "api-answer"]
+  // 2026-09-06 전환 — `/answer` **본체만**. LLM 미호출 경로 11건 + LLM 경로 3건 일치.
+  // **끝을 고정한다** — `/answer/feedback` 과 `/answer/eval-ragas` 는 아직 Railway 다.
+  // `/search` 를 접두어로 열었다가 `/search/eval-precision` 을 삼킨 사고(5a74ea6)와
+  // 같은 실수를 하지 않기 위해서다. 아래 `이관 선언` 테스트가 이걸 강제한다.
+  [/^\/answer\/?$/, "api-answer"],
+  // Phase 2 나머지: [/^\/answer\/feedback$/, ...], [/^\/answer\/eval-ragas$/, ...]
   // Phase 3 에서 해제: [/^\/admin\/subscriptions/, "api-account"],
   // Phase 3 에서 해제: [/^\/documents/, "api-documents"],
   // Phase 4 에서 해제: [/^\/payments/, "api-payments"], [/^\/billing/, "billing-run"],
