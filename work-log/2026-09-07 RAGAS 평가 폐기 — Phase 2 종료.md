@@ -1144,3 +1144,100 @@ sticky title 이 경계를 넘을 일이 없어서다).
 | chunk 조각 c2 (`synonym_inject`) | ⬜ |
 | chunk_filter / content_gate / tag_summarize / embed / doc_embed / dedup | ⬜ |
 | `api-documents` HTTP 경로 | ⬜ |
+
+
+## 25. Phase 3 — `load` 이식. **chunks 테이블 실적재까지 E2E**
+
+§24.9 가 남긴 숙제(chunk 아티팩트가 SK 약 13MB)를 닫고 `load` 를 붙였다. 이제
+인제스트 사슬이 `extract → chunk → load` 로 이어져 **실제 `chunks` 테이블에 행이 들어간다.**
+
+### 25.1 분할 저장 — 13MB → 0.6MB
+
+`chunk` 가 레코드를 `CHUNKS_PER_ARTIFACT`(1,000) 개씩 나눠 `seq 0,1,2…` 로 저장하고
+각 행에 `total_parts` 를 적는다. `load` 는 **part 하나만** 읽어 upsert 하고 남았으면
+다음을 큐에 넣는다.
+
+| 문서 | 청크 | part | part 당 payload |
+|---|---|---|---|
+| 삼성 | 8,477 | 9 | 4.4MB → **0.7MB** |
+| SK | 25,831 | 26 | 약 13MB → **0.6MB** |
+
+1,000 개로 잡은 근거는 실측 청크당 약 500B 다. Edge 메모리 상한 240MB 대비 여유가 크다.
+
+### 25.2 `_serialize_chunk` — 키를 넣느냐 마느냐가 계약이다
+
+이 함수가 틀리면 DB 에 잘못된 행이 들어가는데 **대개 조용하다.**
+
+- `bbox` · `dense_vec` · `char_range` · `id` 는 **값이 있을 때만** 넣는다.
+  `dense_vec` 을 `null` 로 명시하면 `embed` 가 채워 둔 벡터를 `load` 재실행이 **지운다.**
+- `sparse_json` · `metadata` · `flags` 는 **빈 값이라도 반드시** 넣는다.
+  원본 주석 그대로 "직전 레코드 flags 가 잔존하지 않도록" 이다.
+- `char_range` 는 `INT4RANGE` 라 `"[start,end)"` **문자열**이다. 끝이 열린 구간이라
+  `]` 가 아니라 `)` 다.
+
+대조 20 건 전부 일치. 음성 대조 12 종 전부 깨짐 확인 — 특히 `id` 를 truthy 대신
+`!= null` 로 바꾸면 **빈 문자열 `chunk_id`** 케이스가 갈린다.
+
+`load` 는 upsert 를 다시 `chunk_upsert_batch_size`(기본 50)로 쪼갠다. 이유도 원본 주석
+그대로 Supabase `statement_timeout`(약 30~60s) 안에 들어가야 해서다.
+
+### 25.3 E2E — 실제 `chunks` 에 들어갔는지 본다
+
+| 문서 | 페이지 | 드레인 | 청크 | part | **적재** | 시간 |
+|---|---|---|---|---|---|---|
+| law sample3 | 4 | 4 | 26 | 1 | 26/26 | 2.0s |
+| 삼성 사업보고서 | 573 | 68 | 8,477 | 9 | 8,477/8,477 | 42.5s |
+| **SK 사업보고서** | **1,513** | **179** | **25,831** | **26** | **25,831/25,831** | **116.0s** |
+
+개수만 보지 않는다 — 첫 행을 실제로 열어 `char_range`("[0,311)") · `page` ·
+`section_title` · `text` 를 산출물과 대조한다. 개수만 맞고 내용이 비면 소용없다.
+
+### 25.4 E2E 격리를 다시 짰다 — 운영 청크를 덮어쓸 뻔했다
+
+`load` 가 붙으면서 `chunks` **쓰기**가 생겼다. upsert 키가 `doc_id,chunk_idx` 라
+**원본 문서 id 로 돌리면 운영 청크를 통째로 덮어쓴다.**
+
+그래서 대상 문서를 그대로 쓰지 않는다:
+
+- 샌드박스 `user_id`(`ingest_sandbox.py` 와 같은 uuid5 네임스페이스)로 **복제
+  `documents` 행**을 만들고 그 doc_id 로 돌린다.
+- 원본 `documents` 행과 Storage 파일은 **읽기만** 한다(경로만 재사용).
+- 끝나면 복제 문서를 지운다 → `chunks` 가 `ON DELETE CASCADE` 로 함께 사라진다.
+- 지우기 직전에 `user_id` 가 샌드박스인지 **한 번 더 확인**한다. 원본을 지우는 사고를
+  막는 마지막 관문이다.
+
+실행 전후 운영 무손상 확인:
+
+```
+chunks 37,080 → 37,080   documents 13 → 13   큐 0   artifacts 0
+```
+
+### 25.5 검증
+
+| 항목 | 결과 |
+|---|---|
+| Deno `_shared/` 전체 | **157 passed / 0 failed** (load 7 · chunk 분할 3 신규) |
+| `chunkRecordToRow` 대조 | 20 건 일치, 음성 대조 12 종 |
+| 파이프라인 대조 | FAIL 0 (알려진 차이 8 건 그대로) |
+| E2E | 3 문서, 최대 SK 25,831 청크 적재 |
+
+### 25.6 커밋
+
+| 해시 | 내용 |
+|---|---|
+| `822cb67` | load 이식 + chunk 분할 저장 + E2E 격리 재설계 |
+
+### 25.7 남은 것
+
+인제스트 사슬은 이제 `extract → chunk → load` 까지 돈다. 다만 **`chunks.dense_vec` 이
+NULL 이라 검색은 아직 안 된다** — `embed` 가 없다. 그래서 잡을 `completed` 로 만들지
+않고 사실대로 running 에 둔다.
+
+| 항목 | 상태 |
+|---|---|
+| `embed` — BGE-M3 임베딩 (검색이 되려면 필수) | ⬜ |
+| pg_cron 드레인(마이그 028) · Edge 배포 | ⬜ |
+| HWPML / hwpx / docx / pptx extract | ⬜ |
+| chunk 조각 c2 (`synonym_inject`) | ⬜ |
+| chunk_filter / content_gate / tag_summarize / doc_embed / dedup | ⬜ |
+| `api-documents` HTTP 경로 | ⬜ |
