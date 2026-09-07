@@ -3769,3 +3769,75 @@ chunk 조각 c2. `chunk_records.ts` 가 `notPortedInjector` 로 **던지며** �
 | **A** | secret 4개 설정 → 이메일 + 결제 컷오버 — **Railway 종료의 유일한 차단 요인** |
 | **B** | `golden_v1` 죽은 40행 처리 (§52.4) |
 | **C** | `JETRAG_SYNONYM_INJECTION_ENABLED` 를 켤지 결정 (§54.5) |
+
+---
+
+## 55. **컷오버 — 이메일·결제가 Edge 로 넘어갔다** (`6bc534d`)
+
+Railway 종료의 유일한 차단 요인이었던 secret 을 사용자가 넣고, 프록시를 배포했다.
+
+### 55.1 차단 요인이 4 개가 아니라 3 개였다
+
+`verify_cutover.ts` 가 결제 준비 조건에 `JETRAG_KAKAOPAY_SECRET_KEY` 를 요구하고 있었다.
+그런데 그 키는 **발급된 적이 없다** — 카카오페이 심사 대기라 Railway 에도 없다
+(memory `jetrag_w5_6_kakaopay_ship`). 없으면 **Railway 도 Edge 도 똑같이 503** 이다.
+
+컷오버가 요구하는 건 "결제가 켜져 있을 것" 이 아니라 **"Edge 가 Railway 와 같을 것"**
+이다. 원래 판정대로면 심사가 끝날 때까지 이메일까지 못 넘겼다. 판정을 고쳤다.
+
+| secret | 필요한가 | 어디에 있었나 |
+|---|---|---|
+| `JETRAG_EMAIL_WEBHOOK_SECRET` | ✅ | Railway + Cloudflare Worker |
+| `JETRAG_BILLING_KEY_ENCRYPTION_KEY` | ✅ | Railway (2026-07-08 생성) |
+| `JETRAG_BILLING_CRON_SECRET` | ✅ | Railway (2026-07-08 생성) |
+| `JETRAG_KAKAOPAY_SECRET_KEY` | ❌ | **없다** — 심사 대기. 발급되면 그때 넣으면 활성 |
+
+### 55.2 셸에 직접 치지 않게 했다
+
+`cutover_secrets.env.example` + `supabase secrets set --env-file`.
+
+Fernet 키와 cron secret 은 base64url 이라 `-`·`_`·`+`·`=` 가 섞인다. 따옴표를 빠뜨리면
+값이 잘린 채 저장되고, 그러면 **기존 빌링키를 못 푸는데 원인도 안 보인다.**
+
+같은 이유로 **TextEdit 를 권하지 않았다** — 자동 대체가 `--` 를 em-dash(`—`)로 바꾼다.
+base64url 에는 `-` 가 연달아 나올 수 있다. 별도 터미널의 `nano` 를 안내했다.
+
+### 55.3 전환 결과
+
+```
+전:  POST /billing/run → 401 [railway]
+후:  POST /billing/run → 401 [edge]
+
+verify_cutover.ts   이메일 준비 완료 · 결제 준비 완료 · 프록시 edge
+리허설 --live       저장소 ↔ 배포 **드리프트 0** (전에는 3건)
+```
+
+Edge 응답 확인: `/ingest/email` 401(secret 불일치 시) · `/payments/subscribe/ready`
+401(비인증) · `/billing/run` 401(secret 불일치) · `GET /billing/run` 405.
+
+### 55.4 **아직 증명 안 된 것 하나** — 실제 메일
+
+점검기는 secret 이 **설정됐는지**만 안다(503 → 401). Cloudflare Worker 의 값과
+**같은지**는 모른다. 다르면 수신 메일이 401 로 **조용히 버려진다**.
+
+실제 메일 1 통이 유일한 확인이다:
+
+```
+받는 사람 : u-o8nzne1j@in.woong-s.com
+보내는 곳 : dndals1991@gmail.com   ← 발신자 화이트리스트
+첨부      : pdf/hwp/hwpx/docx/jpg/png/heic 중 1개 (첨부 없으면 ignored)
+구독      : pro/active ✅
+```
+
+성공하면 `documents` 에 `source_channel='email'` 행이 생긴다.
+
+### 55.5 Railway 종료 체크리스트
+
+```
+1. secret 3개 설정                       ✅ (사용자, 2026-09-07)
+2. 프록시 배포 → 드리프트 0                ✅
+3. billing cron 마이그 029 적용            ⬜ Vault 2건 + SQL Editor (사용자)
+4. monitor-search-slo API base            ✅ §49
+5. 실제 메일 E2E                          ⬜ §55.4
+6. LEGACY_ORIGIN 비우기                   ⬜ 3·5 이후
+```
