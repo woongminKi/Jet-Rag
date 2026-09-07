@@ -2622,3 +2622,172 @@ OCR 을 돌린다(텍스트 0 이면 `pptx_rerouting`, 1~49 자면 `pptx_augment
 | 단독 이미지 업로드 (`ImageParser._normalize` EXIF·HEIC) | 305줄 |
 | PPTX Vision 보강 | §41.6 |
 | chunk 조각 c2 (`synonym_inject`) | 200줄 |
+
+---
+
+## 42. Phase 4 — 이메일 인제스트 채널 (`ebd0519`)
+
+`POST /ingest/email` 을 Edge 로 옮겼다. Cloudflare Email Worker 는 이미
+`https://jetrag-api.woong-s.com/ingest/email` 로 쏘고 있고 **그 호스트가 프록시**라
+(`pattern = "jetrag-api.woong-s.com/*"`), 프록시 규칙만 추가하면 **Worker 변경 없이**
+전환된다. Worker 를 건드리지 않는다는 게 이 경로의 핵심이었다.
+
+### 42.1 거절 정책이 곧 명세다
+
+| 상황 | 응답 | 이유 |
+|---|---|---|
+| secret 미설정 | **503** | 기능이 꺼진 상태 |
+| secret 불일치 | **401** | Worker 설정 오류는 시끄럽게 드러나야 발견된다 |
+| 잘못된 주소·모르는 토큰·발신자 불일치·Pro 아님·첨부 없음 | **200 `ignored`** | 4xx 를 내면 Worker 가 재시도하거나 발신자에게 반송 메일이 간다 |
+
+### 42.2 대조에서 갈린 것 2 건
+
+원본과 **다르게 동작하고 있던** 것들이다. 둘 다 눈에 보이는 차이다.
+
+1. **base64 가 더 관대했다.** `atob("aGVsbG8")` 는 패딩이 없어도 `"hello"` 를 돌려주지만
+   Python `b64decode(validate=True)` 는 `binascii.Error` 다. 거절돼야 할 첨부가 실제로
+   인제스트되는 차이라 **길이 4 배수**를 강제했다.
+2. **첨부 검증 시점이 달랐다.** pydantic 은 처리 **전에** 본문 전체를 본다.
+   `content_base64` 는 기본값이 없어서 첨부 하나만 빠져도 요청 전체가 422 인데,
+   관대하게 `""` 를 채우고 있었다("빈 첨부" 로 조용히 skip 됐다).
+
+### 42.3 검증
+
+`api/scripts/verify_email_ingest_parity.py` — **비교 102건 / 불일치 0건**.
+
+- 서비스·플랜 판정은 **진짜 함수**를 돌리고 DB 만 스텁이다. 재구현끼리 비교하면 대조가
+  아무것도 증명하지 않는다 — 처음엔 `ingest_email_attachment` 를 harness 안에 다시
+  구현했다가 되돌렸다.
+- 라우트 23 케이스 status·body 일치. 50MB 경계 3 케이스 일치 — 버퍼를 **양쪽에서 직접**
+  만든다(base64 로 JSON 에 실으면 67MB 다).
+- 음성 대조: `tokens`·`routes`·`sizes` **세 다리를 각각** 흔들어 3 건 전부 검출.
+  한 다리만 흔들면 나머지가 실제로 비교되는지 알 수 없다.
+- `deno test _shared/` 221 passed / 0 failed(신규 4), 프록시 20 passed / 0 failed.
+
+### 42.4 원본과 다른 점 1 건 (의도)
+
+원본은 `pending/` 에 올리고 BG 가 최종 경로로 옮긴다. Edge 는 업로드 경로와 같이
+**먼저 올리고 최종 경로**를 쓴다 — `extract` 가 `pending/` 을 재시도 대상으로 던지기
+때문이다. 반환 dict 에 안 들어가서 대조 대상이 아니다.
+
+### 42.5 컷오버가 아직 안 됐다 — **secret 이 필요하다**
+
+`api-documents` 는 배포했고 라우트는 살아 있다(실측: `POST` → 503 "미설정",
+`GET` → 405). 그런데 `JETRAG_EMAIL_WEBHOOK_SECRET` 이 **Supabase Edge 에 없다**
+(`supabase secrets list` 확인 — 17개 중 없음).
+
+**프록시 규칙을 먼저 배포하면 라이브 이메일 채널이 503 으로 죽는다.** 값은 Railway
+variables 와 Cloudflare Worker secret 에 있고 로컬에는 없다. 순서:
+
+1. Supabase Edge 에 `JETRAG_EMAIL_WEBHOOK_SECRET` 설정 (Worker 와 **같은 값**)
+2. 그 다음 프록시 배포
+3. 실제 메일 1 통으로 E2E
+
+프록시 규칙은 커밋돼 있지만 **배포는 안 했다**.
+
+---
+
+## 43. `.txt`/`.md` 업로드가 실패하던 이관 회귀 (`677cc89`)
+
+### 43.1 무엇이 깨져 있었나
+
+`ALLOWED_EXTENSIONS`(업로드 게이트)는 `.txt .md .jpg .jpeg .png .heic` 를 받는데
+`SUPPORTED_DOC_TYPES`(extract)에는 5 종뿐이라, **202 로 받아진 뒤 extract 에서
+잡이 실패**했다. `POST /documents` 가 Edge 로 넘어온 시점부터 라이브에서 그랬다.
+
+실측(`e2e_upload_chain.ts probe.txt`):
+```
+업로드 응답  202
+**잡 오류**: 아직 이식되지 않은 포맷: txt
+logs    1행  extract:failed
+```
+
+### 43.2 원본은 실패시키지 않는다
+
+원본은 파서가 없는 doc_type 을 `flags.extract_skipped` 로 마킹하고 `ingest_logs` 에
+`skipped` 를 남긴 뒤 **잡을 정상 완료**시킨다
+(`extract.py:166` parser is None → `skip_stage` → `pipeline.py:48` `finish_job`).
+그 동작을 그대로 옮겼다. 수정 후:
+```
+done/completed   logs 1행  extract:skipped
+결과  graceful skip — 원본에도 파서가 없는 포맷.
+```
+
+### 43.3 `image`·`url` 은 일부러 안 넣었다
+
+원본은 그 둘을 **실제로 파싱한다**(`ImageParser`·`UrlParser`). 조용히 완료시키면
+빈 문서가 쌓인다 — 이식 전까지는 시끄럽게 실패하는 쪽이 맞다.
+`GRACEFUL_SKIP_DOC_TYPES = {txt, md}` 로 원본과 정확히 같은 집합만 넣었다.
+
+### 43.4 자[尺]도 같이 고쳤다
+
+`e2e_upload_chain.ts` 가 graceful skip 을 종료 상태로 몰라 **성공을 실패로 읽었다**
+(`사슬이 끝까지 안 갔다` + content_gate 경고 3건). 하네스가 틀리면 다음에 또 오판하므로
+같이 고쳤다. 대조군으로 `sample-report.pdf` 를 같은 하네스로 돌려 **항상 통과하게
+바뀐 게 아님**을 확인했다(청크 998 · 태그 17개 · vision 창 13개로 정상 진행).
+
+### 43.5 새 회귀 방지선
+
+이번 회귀가 안 보였던 이유는 **업로드 화이트리스트와 extract 목록을 대조하는 곳이
+없었기** 때문이다. 그 대조를 테스트로 만들었다 — 업로드가 받는 doc_type 이 전부
+`SUPPORTED` / `GRACEFUL_SKIP` 중 하나로 분류돼 있어야 하고, 남는 것은
+`["image"]` 뿐이어야 한다. 새 값이 나타나면 그게 곧 조용한 회귀다.
+
+> §41.7 의 "미이식 예시가 이식되면 테스트가 무의미해진다" 와 **다른 종류**다.
+> 그건 예시가 낡는 문제였고, 이건 **두 목록이 따로 자라는** 문제다.
+
+### 43.6 비용 실수 1건
+
+대조군으로 93페이지짜리 `sample-report.pdf` 를 골라서 vision 40 회가 돌았다
+(§35.1 실측 단가 기준 **$0.20~1.2**). 하네스가 항상 통과하지 않는지만 보면 됐으므로
+작은 문서로 충분했다. 대조군은 **가장 싼 것**으로 고른다.
+
+---
+
+## 44. 입력 채널 3종 — 나머지 2개는 결정이 필요하다
+
+`GET /me/email-ingest` · `POST /me/email-ingest/rotate` 는 이미 Edge 다
+(`/me/*` 전체가 `api-account`). 실측: 비인증 401. 즉 주소 발급·회전은 이미 넘어가 있고
+webhook 하나만 남아 있었다.
+
+### 44.1 채널 사용량 실측 (2026-09-07)
+
+```
+총 문서 13
+source_channel  {'drag-drop': 9, 'api': 3, 'email': 1}
+doc_type        {'pdf': 9, 'hwpx': 2, 'pptx': 1, 'hwp': 1}
+url 채널 0 · image doc_type 0 (삭제 포함)
+```
+
+### 44.2 `POST /documents/url` — trafilatura 가 막는다
+
+본문 추출이 `trafilatura` 다. SSRF 검증·fetch·DNS rebinding 재검증은 전부 옮길 수 있는데
+**추출 알고리즘만 JS 등가물이 없다**(Readability.js 계열은 출력이 다르다).
+
+다만 **출력 대조의 보호 대상이 없다** — url 채널로 만들어진 문서가 **0건**이고,
+웹 UI 에도 이 엔드포인트를 부르는 코드가 **없다**(`web/` 전체 검색 0건).
+
+### 44.3 단독 이미지 업로드 — **막혀 있지 않다. 이전 보고를 정정한다**
+
+직전에 "EXIF/HEIC 디코드가 Pillow 없이 필요하다"고 했는데 **HEIC 부분이 틀렸다.**
+원본 `image_parser.py:101` 은 HEIC/HEIF 를 **디코드하지 않고 raw bytes 그대로**
+Gemini 에 넘긴다(주석: "pillow-heif 등 추가 의존성 회피"). 필요한 건:
+
+| 조각 | 상태 |
+|---|---|
+| LANCZOS 다운스케일 | **이미 있다** — `image_normalize.ts`, Pillow 와 12/12 바이트 일치 |
+| png/jpg/webp 디코드·JPEG 인코드 | mupdf `Image → Pixmap → asJPEG` — vision 경로에서 이미 쓰는 방식 |
+| EXIF orientation | 미구현. JPEG APP1 에서 Orientation 태그 읽고 8 변환 중 하나 적용 (~80줄) |
+| PNG alpha 분기 | `optimize=True` PNG 인코딩은 바이트 일치가 어렵다 (LLM 입력이라 무해) |
+
+`web/src/app/share/route.ts` 가 **Web Share Target 으로 이미지를 받는다** — 폰에서
+사진을 공유하면 들어오는 경로다. 지금은 §43 의 판단대로 **시끄럽게 실패**한다.
+
+### 44.4 다음 후보
+
+| 후보 | 내용 | 근거 |
+|---|---|---|
+| **A** | secret 설정 → `/ingest/email` 컷오버 + 실제 메일 E2E | §42.5. 이미 만든 것을 라이브로 만드는 마지막 한 걸음 |
+| **B** | 단독 이미지 업로드 이식 | §44.3. 막혀 있지 않다. Share Target 이 실제로 이미지를 받는다 |
+| **C** | `POST /documents/url` 처리 방향 결정 | §44.2. 이식/폐기/보류 중 선택 — 사용 0건이라 폐기가 RAGAS 패턴과 같다 |
+| **D** | 결제 3종 + `POST /billing/run` (135 + 398줄) | Railway 제거의 마지막 큰 덩어리 |
