@@ -2434,3 +2434,110 @@ gate  filtered={"extreme_short":2}  pii청크 1  워터마크청크 1
 
 `§38` 참조. 인제스트 단계는 `tag_summarize` · `doc_embed` · `dedup` 3개가 남았고,
 **셋을 옮기면 잡 마감 지점을 embed 에서 그쪽 끝으로 옮겨야 한다**(§36.7).
+
+---
+
+## 40. Phase 4 — `tag_summarize` · `doc_embed` · `dedup`. **인제스트 9단계가 다 찼다**
+
+```
+extract → [scan | vision] → chunk(+chunk_filter+content_gate)
+        → tag_summarize → load → embed → doc_embed → dedup(마감)
+```
+
+잡 마감 지점을 `embed` 에서 **`dedup`** 으로 옮겼다(원본 `run_pipeline` 의 `finish_job`
+자리). `doc_embed` 가 벡터를 못 채우면 원본처럼 `dedup` 을 건너뛰고 `finish` 로 간다.
+
+### 40.1 `ingest_logs` 를 이제 **쓴다**
+
+Edge 는 지금까지 읽기만 했다. 그래서 두 기능이 조용히 죽어 있었다.
+- `GET /documents/{id}/status?include_logs=true` → 늘 빈 배열
+- `eta.ts` → stage 별 median 을 못 구해 **항상 cold-start 추정**
+
+워커가 핸들러 실행을 `ingest_logs` 1 행으로 감싼다(원본 `jobs.stage()` 자리). 여기서
+감싸야 모든 핸들러가 자동으로 남는다. 핸들러가 `logStatus` 를 돌려주면 그걸 쓰는데,
+`tag_summarize` 가 "LLM 둘 다 실패했지만 파이프라인은 계속" 을 그렇게 표현한다
+(원본도 예외를 던지지 않고 로그만 `failed` 로 남긴다).
+
+### 40.2 **CPython 3.12 의 `sum()` 은 보정 합이다**
+
+```python
+sum([1e100, 1.0, -1e100, 1.0])   # 2.0  ← Neumaier 보정
+t = 0.0; [t := t + x for x in ...]  # 1.0  ← 단순 루프
+```
+
+3.12 가 `sum()` 의 부동소수 경로를 Neumaier 합으로 바꿨다(gh-100425). 단순 루프로 옮긴
+`_cosine` 이 1024 차원에서 **마지막 자리가 어긋났다**(실측 상대오차 ~1e-16).
+유사도 임계(0.95 / 0.85) 근처에서 tier 판정을 바꿀 수 있는 값이다.
+
+`pynum.pySum` 으로 옮기고 **이식한 모든 `sum()` 을 감사했다** — 나머지는 전부 정수 합
+(글자 수·개수)이라 영향이 없다. `budget_guard` 는 `sum()` 이 아니라 `for total += x`
+라서 단순 합이 맞다. **Python 쪽이 어느 쪽인지 보고 골라야 한다.**
+
+### 40.3 `difflib.SequenceMatcher` 를 통째로 옮겼다
+
+Tier 3 이 파일명 유사도 **0.6** 을 임계로 쓴다. "레벤슈타인으로 대충" 은 다른 값이 나와
+판정이 뒤집힌다. Ratcliff/Obershelp 재귀와 **autojunk**(길이 200 이상에서 `len/100+1`
+회 초과 원소를 색인에서 제외)까지 옮겼다.
+
+`isjunk=None` 이라 junk 확장 루프 두 개는 절대 안 돈다 — 옮기지 않았고 그게 누락이
+아니라는 걸 코드에 적었다.
+
+**681 쌍 대조에서 오차 0.0.** autojunk 경계(199/200/201), 이모지, 실제 storage_path,
+무작위 400 쌍 포함.
+
+### 40.4 그 밖에 맞춘 것
+
+| 항목 | 함정 |
+|---|---|
+| `raw_text[:3000]` / `[:12000]` | 코드포인트 슬라이스 — 이모지에서 갈린다 |
+| `_parse_json` | `split("```", 2)[1]` 은 **가운데** 조각 |
+| `list("보고서")` | 문자열이면 **글자 단위**로 쪼개진다 |
+| `dict.fromkeys` | 순서 보존 dedup + unhashable 은 TypeError |
+| `summary_3line` | `is not None` 이라 **빈 문자열도 저장**된다 |
+| `round(sim, 4)` | 은행가 반올림 |
+| `_parse_vec('"x"')` | 문자열을 그대로 순회해 **ValueError**(TypeError 아님) |
+
+### 40.5 창으로 나뉜 `raw_text` 를 다시 붙인다
+
+`tag_summarize` · `doc_embed` 는 문서 전체 `raw_text` 를 받는다. Edge 는 창으로 나뉘어
+있어 `raw_text.ts` 가 되붙인다 — **extract 전부 → vision 전부** 순(원본
+`_enrich_pdf_with_vision` 의 `[base] + [페이지들]` 과 같다), 스캔 PDF 면 scan 만.
+빈 창은 `raw_part_count` 로 걸러 구분자 개수를 맞춘다(§37.2 와 같은 이유).
+
+12,000 자만 있으면 되므로 seq 순으로 조금씩 읽다가 채워지면 멈춘다 — 1,513 페이지
+문서의 본문을 통째로 끌어오지 않는다.
+
+### 40.6 실측
+
+| 검사 | 결과 |
+|---|---|
+| `verify_pydifflib_parity` | **681쌍 오차 0.0** (음성 대조 1e-9 검출) |
+| `verify_pipeline_tail_parity` | 118건 0 불일치 (음성 대조 검출) |
+| `deno test _shared/` | 216 passed |
+| 라이브 E2E | 9단계 완주 · 로그 8행 |
+
+라이브 결과:
+```
+tail  태그 9개  요약 있음  함의 있음  doc_embedding 1024차원(L2=1.0000)
+logs  extract:succeeded vision:succeeded chunk:succeeded tag_summarize:succeeded
+      load:succeeded embed:succeeded doc_embed:succeeded dedup:succeeded
+태그: 상속증여세, 시가 인정, 매매사례가액, 평가기준일, 비상장주식, 보충적 평가방법, 대법원 …
+```
+
+### 40.7 원본의 미심쩍은 점 — 고치지 않고 남긴다
+
+`dedup` 이 후보를 **`settings.default_user_id`** 로 고른다. 문서 소유자가 아니다.
+다중 사용자에서는 뜻대로 동작하지 않을 값이지만 원본이 그렇게 한다 — 여기서 고치면
+같은 입력에 다른 결과가 나오므로 두고 코드 주석으로 남겼다.
+
+### 40.8 남은 것
+
+**인제스트 단계는 전부 옮겼다.** 남은 건 파서와 라우트다(§38).
+
+| 항목 | 상태 |
+|---|---|
+| `POST /documents/url` | ⬜ URL 파서 69줄 |
+| `POST /ingest/email` | ⬜ 136줄 |
+| `POST /payments/subscribe/*` · `POST /billing/run` | ⬜ 135 + 398줄 |
+| HWPML(149) · hwpx(187) · docx(157) · pptx(331) · 단독 image(305) | ⬜ |
+| chunk 조각 c2 (`synonym_inject`) | ⬜ 200줄 |
