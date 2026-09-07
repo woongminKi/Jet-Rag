@@ -23,6 +23,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { isUuid } from "./uuid_guard.ts";
 
 /** `ingest_jobs` 한 행 → 응답의 `JobStatus`. */
 export interface JobStatus {
@@ -245,6 +246,8 @@ export async function getDocument(
   userId: string,
   docId: string,
 ): Promise<ReadResult> {
+  // UUID 가 아니면 DB 에 보내지 않는다 — 보내면 Postgres 가 500 을 만든다.
+  if (!isUuid(docId)) return NOT_FOUND;
   const { data, error } = await client
     .from("documents")
     .select(
@@ -294,6 +297,7 @@ export async function getDocumentStatus(
   docId: string,
   includeLogs: boolean,
 ): Promise<ReadResult> {
+  if (!isUuid(docId)) return NOT_FOUND;
   const { data, error } = await client
     .from("documents")
     .select("id, user_id")

@@ -17,6 +17,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { isUuid } from "./uuid_guard.ts";
 
 import { computeRemainingMs, type StageProgress } from "./eta.ts";
 import { parseIntParam, type ReadResult, type ValidationItem } from "./read.ts";
@@ -175,11 +176,16 @@ export async function batchStatus(
     };
   }
 
+  // UUID 가 아닌 id 는 여기서 뺀다 — 넣으면 Postgres 가 통째로 500 을 낸다.
+  // 존재할 수 없는 id 이므로 **없는 문서와 같은 취급**이다(응답에서 빠진다).
+  const queryIds = docIds.filter(isUuid);
+  if (queryIds.length === 0) return { status: 200, body: { items: [] } };
+
   // 본인 소유만 — IDOR 차단. **입력 순서를 보존한다.**
   const { data: owned, error } = await client
     .from("documents")
     .select("id")
-    .in("id", docIds)
+    .in("id", queryIds)
     .eq("user_id", userId);
   if (error) throw new Error(`documents 조회 실패: ${error.message}`);
   const ownedIds = new Set((owned ?? []).map((r) => (r as { id: string }).id));

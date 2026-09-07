@@ -15,13 +15,18 @@
  * "SK 사업보고서 매출" 처럼 문서유형어와 내용어가 섞인 질의에서 제목 ILIKE 가 0 건이
  * 되는데, 예전엔 그대로 빈 결과를 반환해서 "어렴풋한 기억으로 검색" 의도를 배신했다.
  *
- * ## 원본이 죽는 입력을 그대로 재현한다
- * Python `datetime` 의 최대 연도는 9999 라, `9999-12-31`(하루 더하기) 과 `9999년 12월`
- * (다음 달 1 일) 에서 **잡히지 않은 예외**가 난다. 운영 실측(2026-09-05):
- * `/search?q=9999-12-31 자료` → **500 Internal Server Error**. 사용자가 만들 수 있는 500 이다.
+ * ## 원본이 죽던 입력을 **여기서는 고쳤다** (2026-09-07)
+ * Python `datetime` 의 최대 연도는 9999 라, 원본은 `9999-12-31`(하루 더하기) 과
+ * `9999년 12월`(다음 달 1 일) 에서 잡히지 않은 예외를 낸다 — 사용자가 주소창으로
+ * 만들 수 있는 **500** 이다(실측 2026-09-05, 2026-09-07 재확인).
  *
- * 여기서 조용히 고치면 Edge 만 200 을 돌려주게 되므로, 이관 중에는 **같이 던진다**.
- * 고치는 건 이관과 분리된 별도 작업이다(플랜의 결정 항목 참조).
+ * 이관 중에는 동작을 맞추려고 같이 던졌다. `/search` 가 **100% Edge** 가 된 뒤
+ * (프록시가 Railway 로 안 보낸다) 두 백엔드가 갈릴 구간이 없어져 고쳤다.
+ *
+ * 고침은 특별한 처리를 넣은 게 아니라 **인위적으로 넣었던 throw 를 뺀 것**이다.
+ * 상한 계산은 JS 에서 자연스럽게 되고(`Date` 는 275760 년까지),
+ * `utcMidnightIso` 가 수동 포맷이라 `10000-01-01T00:00:00+00:00` 문자열이 나오며,
+ * **Postgres 가 그 값을 받는다**(timestamptz 상한은 294276 년 — 실측으로 확인).
  *
  * ## 판정이 보수적인 이유
  * 명사 단독 질의(`결론`, `시트 종류`)는 RAG 로 보낸다. 문서유형 접미어(`문서`·`보고서`…)가
@@ -176,7 +181,12 @@ function addDays(y: number, m: number, d: number, days: number): [number, number
   return [t.getUTCFullYear(), t.getUTCMonth() + 1, t.getUTCDate()];
 }
 
-/** Python `datetime` 의 상한(9999 년)을 넘었을 때 원본이 내는 예외에 대응한다. */
+/**
+ * 원본이 9999 년 상한에서 내던 예외.
+ *
+ * **더 이상 던지지 않는다**(2026-09-07). 호출부가 아직 잡고 있을 수 있어 타입은 남긴다 —
+ * 지우려면 호출부를 같이 정리해야 한다.
+ */
 export class MetaDateRangeError extends Error {
   constructor(message: string) {
     super(message);
@@ -184,24 +194,18 @@ export class MetaDateRangeError extends Error {
   }
 }
 
-const MAX_YEAR = 9999;
-
 function ymdToRange(y: number, m: number, d: number): [string, string] | null {
   if (!validYmd(y, m, d)) return null;
-  // 원본: `start + timedelta(days=1)` 이 `OverflowError` 를 던진다 (try 밖이라 안 잡힌다).
-  if (y === MAX_YEAR && m === 12 && d === 31) {
-    throw new MetaDateRangeError("date value out of range");
-  }
+  // 9999-12-31 이면 상한이 10000-01-01 이 된다. Python 은 여기서 OverflowError 지만
+  // JS `Date` 와 Postgres timestamptz 는 둘 다 받는다(실측).
   const [ny, nm, nd] = addDays(y, m, d, 1);
   return [utcMidnightIso(y, m, d), utcMidnightIso(ny, nm, nd)];
 }
 
 function ymToRange(y: number, m: number): [string, string] | null {
   if (!validYmd(y, m, 1)) return null;
-  // 원본: 다음 달 1 일 계산이 try 밖이라 `datetime(10000, 1, 1)` 의 ValueError 가 샌다.
-  if (y === MAX_YEAR && m === 12) {
-    throw new MetaDateRangeError("year 10000 is out of range");
-  }
+  // 9999 년 12 월이면 상한이 10000-01-01 이다. 원본은 `datetime(10000,1,1)` 에서
+  // ValueError 를 내지만 여기서는 그냥 계산된다.
   const end = m === 12 ? utcMidnightIso(y + 1, 1, 1) : utcMidnightIso(y, m + 1, 1);
   return [utcMidnightIso(y, m, 1), end];
 }

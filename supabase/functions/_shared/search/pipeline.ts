@@ -348,23 +348,25 @@ export async function runSearch(
   // 5) 정렬 → MMR → 페이지네이션.
   let sortedDocIds = sortDocIds(docsMeta.keys(), grouped.docScore);
 
-  // ⚠️ 원본에서 **MMR 은 도달 불가능한 코드**다. 그대로 재현한다.
+  // MMR 은 원본에서 **도달 불가능한 코드**였다. 여기서는 되살렸다(2026-09-07).
   //
-  // `search.py` 3) 단계의 `for r in rpc_rows: doc_id = r["doc_id"]` 가 **함수 파라미터
-  // `doc_id` 를 덮어쓴다**(1286 행). 그 뒤 5) 단계의 MMR 게이트가 `doc_id is None` 을
-  // 보므로(1458 행), rpc_rows 가 비지 않는 한 — 즉 여기 도달한 모든 경우 — 항상 False 다.
-  // 두 행 사이에 `doc_id` 를 다시 대입하는 곳은 없다(전 구간 확인).
-  //
+  // 원본 `search.py` 3) 단계의 `for r in rpc_rows: doc_id = r["doc_id"]` 가 **함수
+  // 파라미터 `doc_id` 를 덮어쓴다**(1286 행). 그 뒤 5) 단계 게이트가 `doc_id is None` 을
+  // 보므로(1458 행) rpc_rows 가 비지 않는 한 항상 False 다 — 즉 여기 도달한 모든 경우.
   // 실측(2026-09-05): T1 이 뜨고 문서가 5~8 건인 질의 7 개에서 `mmr.rerank` 호출 **0 회**.
   //
-  // 파라미터 `docId` 를 그냥 쓰면 Edge 에서만 MMR 이 되살아나 cross-doc 질의의 순위가
-  // 조용히 바뀐다. 그래서 덮어쓰기까지 재현한다 — 나중에 원본의 shadowing 이 고쳐지면
-  // 패리티 검사기가 그 차이를 잡는다.
-  const shadowedDocId: string | null = rpcRows.length > 0 ? rpcRows[rpcRows.length - 1].doc_id : docId;
+  // 이관 중에는 덮어쓰기까지 재현했다. `/search` 가 **100% Edge** 가 된 뒤(프록시가
+  // Railway 로 안 보낸다) 두 백엔드가 갈릴 구간이 없어져 파라미터를 그대로 쓴다.
+  //
+  // ## 영향 범위를 재고 켰다
+  // 게이트의 실질 조건은 `isCrossDocQuery`(T1 단독)다. 실측(2026-09-07):
+  // - 골든 20 건 중 **발화 0 건** — 골든셋 순위는 하나도 안 바뀐다
+  // - T1 패턴("A 와 B 문서", "문서들에서") 8 건은 8 건 다 발화
+  // 즉 바뀌는 건 cross-doc 질의뿐이다.
+  //
+  // 되돌리려면 배포 없이 `JETRAG_MMR_DISABLE=1` 하나면 된다.
   const crossDoc = isCrossDocQuery(cleanQ, decision);
-  if (
-    !mmrDisabled(deps.read) && sortedDocIds.length > 1 && shadowedDocId === null && crossDoc
-  ) {
+  if (!mmrDisabled(deps.read) && sortedDocIds.length > 1 && docId === null && crossDoc) {
     const embeddings = new Map<string, number[]>();
     for (const did of sortedDocIds) {
       const vec = coerceEmbedding(

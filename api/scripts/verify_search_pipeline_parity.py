@@ -78,6 +78,19 @@ CASES: list[tuple[str, dict]] = [
     ("fast path + 페이지", {"q": "2026년 5월 보여줘", "limit": "3", "offset": "2"}),
     ("fast path 0건 → RAG fallback", {"q": "존재하지않는제목 보고서"}),
 ]
+# ---------------------------------------------------------------------------
+# 원본 버그를 **일부러 안 따라간** 자리. 여기 없는 불일치는 전부 실패다.
+#
+# `/search` 가 100% Edge 가 되어 두 백엔드가 갈릴 구간이 없어진 뒤에만 이렇게 한다.
+# ---------------------------------------------------------------------------
+INTENTIONAL_DIVERGENCE: dict[str, str] = {
+    "cross-doc (MMR 발화)":
+        "원본은 `doc_id` 변수 가림(search.py:1286)으로 MMR 이 도달 불가라 rerank 가 "
+        "0회다. Edge 는 파라미터를 그대로 써서 되살렸다 — cross-doc 질의만 순서가 "
+        "바뀐다(골든 20건 발화 0건, T1 패턴 8/8 발화로 실측). "
+        "끄려면 JETRAG_MMR_DISABLE=1. 2026-09-07 — work-log §51.",
+}
+
 
 RUNNER_TS = f"""
 import {{ createClient }} from "@supabase/supabase-js";
@@ -263,6 +276,7 @@ def main() -> None:
     })
 
     fails = 0
+    seen_diverged: set[str] = set()
     fast_n = 0
     print()
     print("=== 응답 대조 (took_ms 제외 전 필드) ===")
@@ -280,7 +294,14 @@ def main() -> None:
         # 헤더 — 키는 대소문자 무시로 맞추고 값은 그대로 비교한다.
         th = {k.lower(): v for k, v in (tv.get("headers") or {}).items()}
         d += diff({k.lower(): v for k, v in ph.items()}, th, path="[headers]")
-        if d:
+        if d and name in INTENTIONAL_DIVERGENCE:
+            # 원본 버그를 **일부러** 안 따라간 자리. 조용히 통과시키지 않고 매번
+            # 출력해서 "왜 다른지" 가 보이게 둔다.
+            seen_diverged.add(name)
+            print(f"  {name:<26} 의도된 차이 ({len(d)}건) — {INTENTIONAL_DIVERGENCE[name]}")
+            for line in d[:3]:
+                print(f"      {line}")
+        elif d:
             fails += 1
             print(f"  {name:<26} MISMATCH ({len(d)}건)")
             for line in d[:6]:
@@ -296,6 +317,12 @@ def main() -> None:
     print()
     print(f"대조 {len(cases)}건 — 그중 원본이 meta fast path 로 답한 질의 {fast_n}건")
     print()
+    # 목록에 적어 놓고 실제로는 일치하면 목록에서 빼야 한다 — 죽은 예외가 쌓이면
+    # 진짜 회귀를 덮는다.
+    unused = set(INTENTIONAL_DIVERGENCE) - seen_diverged
+    if unused:
+        fails += len(unused)
+        print(f"  **의도된 차이로 적어 뒀는데 실제로는 일치한다: {sorted(unused)}**")
     print("FAIL 0" if fails == 0 else f"FAIL {fails}")
     sys.exit(1 if fails else 0)
 

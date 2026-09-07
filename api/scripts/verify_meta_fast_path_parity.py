@@ -198,6 +198,20 @@ def run_deno(script: str, payload: dict, timeout: int = 600) -> list:
     return json.loads(proc.stdout)
 
 
+# ---------------------------------------------------------------------------
+# 원본 버그를 **일부러 안 따라간** 자리. 여기 없는 불일치는 전부 실패다.
+#
+# 이관 원칙은 "동작을 맞춘다" 지만, 해당 라우트가 **100% Edge** 가 되어 두 백엔드가
+# 갈릴 구간이 없어지면 고칠 수 있다. `/search` 가 그 상태다(프록시가 Railway 로 안 보낸다).
+# ---------------------------------------------------------------------------
+INTENTIONAL_DIVERGENCE: dict[str, str] = {
+    "9999-12-31 자료":
+        "원본은 datetime 상한(9999)에서 OverflowError → 사용자가 만들 수 있는 500. "
+        "Edge 는 10000-01-01 상한으로 정상 응답(Postgres timestamptz 상한은 294276년). "
+        "2026-09-07 수정 — work-log §51.",
+}
+
+
 def main() -> None:
     from datetime import date
 
@@ -210,6 +224,8 @@ def main() -> None:
     ts = run_deno(RUNNER_TS, {"queries": QUERIES, "today": list(TODAY)})
 
     fails = 0
+    diverged = 0
+    seen_diverged: set[str] = set()
     fired = 0
     print(f"=== plan 판정 (오늘 = {today}) ===")
     for q, tv in zip(QUERIES, ts):
@@ -236,11 +252,29 @@ def main() -> None:
         if pv is not None and pv != "ERR":
             fired += 1
         if pv != tv:
+            if q in INTENTIONAL_DIVERGENCE:
+                # 원본 버그를 **일부러** 안 따라간 자리. 조용히 통과시키지 않고
+                # 매번 출력해서 "왜 다른지" 가 보이게 둔다.
+                diverged += 1
+                seen_diverged.add(q)
+                print(f"  의도된 차이 {q!r} — {INTENTIONAL_DIVERGENCE[q]}")
+                print(f"      py={pv}")
+                print(f"      ts={tv}")
+                continue
             fails += 1
             print(f"  MISMATCH {q!r}")
             print(f"      py={pv}")
             print(f"      ts={tv}")
-    print(f"  {len(QUERIES)}건 대조 — fast path 발화 {fired}건 / RAG {len(QUERIES) - fired}건")
+    print(
+        f"  {len(QUERIES)}건 대조 — fast path 발화 {fired}건 / RAG {len(QUERIES) - fired}건"
+        + (f" / 의도된 차이 {diverged}건" if diverged else "")
+    )
+    # 목록에 적어 놓고 실제로는 일치하면, 원본이 고쳐졌거나 케이스가 사라진 것이다.
+    # 그때는 목록에서 빼야 한다 — 안 그러면 죽은 예외 목록이 쌓인다.
+    unused = set(INTENTIONAL_DIVERGENCE) - seen_diverged
+    if unused:
+        fails += len(unused)
+        print(f"  **의도된 차이로 적어 뒀는데 실제로는 일치한다: {sorted(unused)}**")
 
     fails += compare_query_urls()
 

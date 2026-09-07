@@ -27,7 +27,14 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-_BASE = os.environ.get("JETRAG_API_BASE_URL", "http://localhost:8000").rstrip("/")
+# 두 이름을 다 받는다. `monitor_search_slo.py` 는 `JET_RAG_API_BASE` 를 쓰는데 여기만
+# `JETRAG_API_BASE_URL` 이라, 한쪽 이름으로 넘기면 조용히 localhost 로 떨어져 **20건
+# 전부 err** 이 된다(실측으로 한 번 헛돌았다). 이름 하나 때문에 측정을 못 하면 안 된다.
+_BASE = (
+    os.environ.get("JETRAG_API_BASE_URL")
+    or os.environ.get("JET_RAG_API_BASE")
+    or "http://localhost:8000"
+).rstrip("/")
 
 # 2026-09-04 — Cloudflare 프록시 전환(Phase 1 Task 1.7) 이후 `Python-urllib/*` UA 가
 # 403(Cloudflare error 1010)으로 차단된다. 실측: urllib 만 막히고 requests·httpx·Go·

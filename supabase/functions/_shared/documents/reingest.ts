@@ -26,6 +26,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { isUuid } from "./uuid_guard.ts";
 
 import { countPdfPages } from "../ingest/pdf_raster.ts";
 import {
@@ -77,6 +78,8 @@ async function fetchOwnedDoc(
   userId: string,
   columns: string,
 ): Promise<DocRow> {
+  // UUID 가 아니면 DB 에 보내지 않는다 — Postgres 가 500 을 만든다. 없는 문서와 같은 404.
+  if (!isUuid(docId)) throw new HttpError(404, "문서를 찾을 수 없습니다.");
   const { data, error } = await client
     .from("documents")
     .select(columns)
