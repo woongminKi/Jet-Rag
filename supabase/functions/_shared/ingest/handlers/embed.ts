@@ -23,6 +23,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { embedBatch, type EmbedDeps } from "../embed_provider.ts";
 import type { TaskHandler, TaskPayload } from "../worker.ts";
+import { pyIsoUtc } from "../../pytime.ts";
 
 /** 원본 `_BATCH_SIZE` — API 호출 하나에 묶는 텍스트 수. */
 export const EMBED_BATCH_SIZE = 16;
@@ -43,6 +44,8 @@ export interface EmbedHandlerDeps {
   /** 테스트 주입 — 실제 API 를 때리지 않는다. */
   embed?: (texts: string[], deps: EmbedDeps) => Promise<number[][]>;
   embedDeps?: Partial<EmbedDeps>;
+  /** 테스트 주입 — `finished_at` 을 고정한다. */
+  nowMs?: () => number;
 }
 
 export function makeEmbedHandler(deps: EmbedHandlerDeps): TaskHandler {
@@ -65,7 +68,11 @@ export function makeEmbedHandler(deps: EmbedHandlerDeps): TaskHandler {
     if (error) throw new Error(`chunks 조회 실패: ${error.message}`);
 
     const rows = (data ?? []) as { id: string; text: string }[];
-    if (rows.length === 0) return; // 남은 게 없으면 여기서 끝. 다음 작업도 안 넣는다.
+    if (rows.length === 0) {
+      // 채울 게 없으면 여기가 사슬의 끝이다.
+      await finishJob(deps.client, task.job_id, deps.nowMs?.() ?? Date.now());
+      return;
+    }
 
     for (let i = 0; i < rows.length; i += batchSize) {
       const batch = rows.slice(i, i + batchSize);
@@ -91,6 +98,39 @@ export function makeEmbedHandler(deps: EmbedHandlerDeps): TaskHandler {
         payload: { job_id: task.job_id, doc_id: task.doc_id, stage: "embed" },
       });
       if (sendErr) throw new Error(`다음 embed 작업 enqueue 실패: ${sendErr.message}`);
+    } else {
+      await finishJob(deps.client, task.job_id, deps.nowMs?.() ?? Date.now());
     }
   };
+}
+
+/**
+ * 원본 `jobs.finish_job` — 잡을 completed 로 마감한다.
+ *
+ * ## 왜 embed 에서 마감하는가 — 원본은 더 뒤에서 한다
+ * 원본은 `doc_embed` · `dedup` 까지 돈 뒤 마감한다. 그 둘은 아직 안 옮겼다.
+ * 그렇다고 running 으로 두면 **잡이 영원히 끝나지 않는다.** 그 대가는 두 가지였다:
+ * - `/documents/active` 가 이미 검색 가능한 문서를 계속 "진행 중" 으로 보여 준다
+ * - `reingest` 2 종이 "진행 중인 작업이 있습니다" 로 **항상 409** 를 낸다 (E2E 가 잡음)
+ *
+ * 지금 존재하는 사슬(extract → vision → chunk → load → embed)은 여기서 정말 끝나고,
+ * 그 시점에 문서는 dense·lexical 양쪽으로 검색된다. 남은 단계는 태그·요약·문서 임베딩·
+ * 중복 판정으로 검색 가능 여부를 바꾸지 않는다.
+ *
+ * **남은 단계를 옮기면 마감 지점을 그쪽 끝으로 옮겨야 한다.**
+ */
+async function finishJob(
+  client: SupabaseClient,
+  jobId: string,
+  nowMs: number,
+): Promise<void> {
+  const { error } = await client
+    .from("ingest_jobs")
+    .update({
+      status: "completed",
+      current_stage: "done",
+      finished_at: pyIsoUtc(nowMs),
+    })
+    .eq("id", jobId);
+  if (error) throw new Error(`잡 마감 실패: ${error.message}`);
 }

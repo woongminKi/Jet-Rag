@@ -20,8 +20,20 @@ function fakeClient(texts: string[]) {
   let orderedAsc: boolean | null = null;
   let isNullSeen = false;
 
+  const jobUpdates: Record<string, unknown>[] = [];
+
   const client = {
-    from(_t: string) {
+    from(table: string) {
+      // **테이블을 구분해야 한다.** 구분 안 하면 잡 마감 업데이트가
+      // `dense_vec` 채움으로 잘못 세어져 개수 단언이 조용히 어긋난다.
+      if (table === "ingest_jobs") {
+        return {
+          update(patch: Record<string, unknown>) {
+            jobUpdates.push(patch);
+            return { eq: () => Promise.resolve({ error: null }) };
+          },
+        };
+      }
       const q = {
         _id: null as string | null,
         eq(col: string, v: unknown) {
@@ -58,6 +70,7 @@ function fakeClient(texts: string[]) {
     },
   };
   return {
+    jobUpdates,
     client,
     filled,
     sends,
@@ -172,4 +185,38 @@ Deno.test("임베딩 개수가 안 맞으면 던진다", async () => {
     embed: () => Promise.resolve([[1, 2, 3]]), // 2개 요청에 1개 응답
   });
   await assertRejects(() => h(TASK, {} as never), Error, "개수 불일치");
+});
+
+Deno.test("남은 게 없으면 잡을 completed 로 마감한다 — 사슬의 끝이다", async () => {
+  // 원본은 doc_embed·dedup 뒤에 마감한다. 그 둘이 아직 없어 embed 가 끝이다.
+  // 마감을 안 하면 잡이 영원히 running 이라 `/documents/active` 가 계속 진행 중으로
+  // 보여 주고 reingest 2 종이 항상 409 를 낸다(E2E 가 실제로 잡았다).
+  const f = fakeClient([]);
+  const h = makeEmbedHandler({
+    // deno-lint-ignore no-explicit-any
+    client: f.client as any,
+    token: "T",
+    embed: (t) => Promise.resolve(vecFor(t)),
+    nowMs: () => 1_757_251_496_000,
+  });
+  await h(TASK, {} as never);
+  assertEquals(f.jobUpdates, [{
+    status: "completed",
+    current_stage: "done",
+    finished_at: "2025-09-07T13:24:56+00:00",
+  }]);
+});
+
+Deno.test("아직 남았으면 마감하지 않고 다음 embed 를 넣는다", async () => {
+  const f = fakeClient(Array.from({ length: 4 }, (_, i) => `t${i}`));
+  const h = makeEmbedHandler({
+    // deno-lint-ignore no-explicit-any
+    client: f.client as any,
+    token: "T",
+    chunksPerTask: 4, // 가득 채웠다 = 더 남았을 수 있다
+    embed: (t) => Promise.resolve(vecFor(t)),
+  });
+  await h(TASK, {} as never);
+  assertEquals(f.jobUpdates, []);
+  assertEquals(f.sends.length, 1);
 });
