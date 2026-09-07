@@ -2031,3 +2031,85 @@ page cap 3/1 케이스로 cap 도달 경로도 태웠다. 음성 대조 검출 �
 | HWPML / hwpx / docx / pptx extract | ⬜ |
 | chunk 조각 c2 (`synonym_inject`) | ⬜ |
 | `/payments` · `/billing` · `/email` (Phase 4~5) | ⬜ |
+
+---
+
+## 35. 배포 + 라이브 스모크. **vision 이 실제로 돈다**
+
+`supabase functions deploy api-ingest-worker` + Edge secret
+`JETRAG_PDF_VISION_ENRICH=true`. `GEMINI_API_KEY` 는 이미 있었다(2026-09-06).
+
+스모크 문서로 `law_sample2.pdf` 를 골랐다 — **2 페이지인데 둘 다 need_score 가 vision
+대상으로 판정**한다(`law sample3.pdf` 는 4 페이지 전부 skip 이라 스모크에 못 쓴다).
+
+```
+업로드 202 → extract → vision → chunk → load → embed
+결과  청크 9  dense_vec 9/9
+vision  창 1개  호출 2  처리 2  need_score skip 0  청크 2건
+  (vision) p.1 OCR 텍스트 → [문서] 상속증여세법상 주식 시가 인정 여부에 대한 대법원 판결 요약 …
+  (vision) p.2 OCR 텍스트 → [문서] 비상장주식 시가평가 관련 법리 오해 주장을 기각하고 …
+```
+
+캡션 내용이 실제 문서(국세법령정보시스템 판결문)와 맞는다. `vision_client.ts` 는 대조에서
+스텁으로 물렸던 유일한 구간이었는데 이걸로 닫혔다.
+
+### 35.1 **비용 추정을 정정한다**
+
+배포 전 사용자에게 "페이지당 ~$0.0008" 이라고 했다. **틀렸다.** 실측:
+
+| 출처 | 페이지당 |
+|---|---|
+| 이번 스모크 | $0.0110 / $0.0024 |
+| 기존 이력(`vision_usage_log`) | $0.0052 ~ $0.0287 |
+
+**대략 $0.005~$0.03/페이지, 내 추정의 6~35 배다.** 원본 docstring 의 `~$0.00075/페이지`
+를 그대로 옮겨 적었는데 그건 thinking 토큰이 붙기 전 수치로 보인다. 외부 단가는
+실측하라는 규칙을 내가 어겼다.
+
+다만 **한도가 이걸 막는다** — `doc_budget_usd` 기본 $0.10, `daily_budget_usd` $0.50.
+즉 문서 하나당 vision 은 $0.10(대략 10~20 페이지)에서 멈추고 하루 $0.50 에서 멈춘다.
+그래서 아래 결함이 중요했다.
+
+### 35.2 `vision_usage_log` 가 조용히 비면 **비용 한도가 죽는다** (`11b1899`)
+
+1 차 스모크에서 `vision_page_cache` 는 2 행 적재됐는데 `vision_usage_log` 는 **0 행**이었다.
+`budget_guard` 는 그 테이블의 SUM 으로 비용을 재므로, 비면 누적이 영원히 0 →
+**doc/daily/24h 한도가 절대 발동하지 않는다.** 지출이 무제한이 된다는 뜻이다.
+
+원본은 이 insert 실패를 삼키고 끝낸다. 그대로 옮겼더니 고장이 완전히 보이지 않았다.
+그래서 바꿨다 — `recordCall` 이 실패 사유를 반환하고, 핸들러가 vision 아티팩트의
+`metric_errors` 에 남기고 `console.error` 를 찍는다. 인제스트는 원본처럼 계속 간다.
+
+재배포 후 2 차 스모크: `metric_errors=[]`, `vision_usage_log` 2 행 정상 적재.
+
+**1 차가 왜 0 행이었는지는 특정하지 못했다.** 두 실행 사이에 쓰기 경로의 기능 변경이
+없었고(오류 노출만 추가), 08:50~09:20 구간을 조건 없이 조회해도 0 행이었다. 추측으로
+메우지 않는다 — 대신 재발하면 이제 드러난다.
+
+### 35.3 내가 낸 데이터 손실 1 건
+
+진단 중 정리 스크립트를 `source_type='pdf_vision_enrich'` 상위 3 행 삭제로 썼다가
+**기존 이력 2 행(call_id 2154·2155, 합계 $0.0336)까지 지웠다.** 복구 불가다.
+영향은 그 두 행이 속한 문서의 doc 단위 비용 누적이 $0.0336 낮게 잡히는 것 —
+해당 문서가 $0.10 한도에 그만큼 늦게 닿는다. daily/24h 창(2026-09-06 이후)에는
+안 들어가므로 그쪽 영향은 0 이다.
+
+**정리 대상은 방금 만든 행을 call_id 로 지정해서만 지운다.** 조건으로 긁어 지우지 않는다.
+
+2 차 스모크의 `vision_usage_log` 2 행과 `vision_page_cache` 2 행은 **남겼다** — 전자는
+실제로 쓴 돈의 기록이고, 후자는 같은 파일 재업로드 시 비용을 0 으로 만든다.
+
+### 35.4 현재 운영 상태
+
+| 항목 | 상태 |
+|---|---|
+| `api-ingest-worker` 배포 | ✅ (2회) |
+| Edge secret `JETRAG_PDF_VISION_ENRICH=true` | ✅ |
+| `GEMINI_API_KEY` | ✅ (기존) |
+| 라이브 사슬 | ✅ 업로드 → … → dense_vec 완주 |
+| 비용 한도 | doc $0.10 / daily $0.50 / 24h $0.50 (기본값, ENV 미설정) |
+| deno test | 204 passed |
+
+### 35.5 남은 것
+
+`§34.9` 그대로. 다음 후보는 **`reingest` 2 종** — 차단이 풀렸고 vision 과 같은 기계를 쓴다.
