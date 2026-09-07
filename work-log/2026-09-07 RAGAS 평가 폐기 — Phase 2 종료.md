@@ -3156,3 +3156,95 @@ Railway 를 끄면 함께 사라진다 — 옮길 대상이 아니다.
 | **B** | billing cron 마이그 029 |
 | **C** | Railway 종료 리허설 — `LEGACY_ORIGIN=""` 로 두고 무엇이 깨지는지 실측 |
 | **D** | PPTX Vision 보강 · `synonym_inject` 등 잔여 이식 |
+
+---
+
+## 48. Railway 종료 리허설 (`c337e8a`). **드리프트 3건을 잡았다**
+
+`LEGACY_ORIGIN` 을 비우면 Railway 의존이 끝난다. 진짜로 비우면 그 순간 트래픽이 죽으므로
+**오프라인에서 재현**했다. `api/scripts/rehearse_railway_shutdown.ts`.
+
+### 48.1 표만 보지 않고 워커를 그대로 돌린다
+
+`resolveTarget` 만 부르면 라우팅 표만 보는 것이고 `LEGACY_ORIGIN` 분기·자기참조 검사·
+헤더 주입을 안 거친다. 워커의 `fetch` 핸들러를 그대로 부르고 **네트워크만 가로챘다.**
+
+### 48.2 저장소 기준 결과
+
+```
+라우트 33개 · 메서드 단위 33건
+  그대로 도는 것  28건 — 전부 Edge
+  끄면 404       5건 — 전부 FastAPI 자체 문서
+                       (/ · /docs · /docs/oauth2-redirect · /openapi.json · /redoc)
+앱 라우트: 0건
+```
+
+라우트 표 밖도 확인했다:
+
+| 경로 | 지금 | 끈 뒤 |
+|---|---|---|
+| `GET /search/` · `/documents/` | Edge 200 | Edge 200 (후행 슬래시를 떼고 받는다) |
+| `GET /me` · `/favicon.ico` · 없는 경로 | Railway | **404** |
+| `POST /documents/url` (§47 폐기) | Railway | **404** |
+
+### 48.3 **`--live` 가 핵심이었다 — 자를 의심한 게 맞았다**
+
+리허설이 "끄면 문서 페이지만 사라진다" 고 말했다. 그런데 이 스크립트는 `routes.js` 를
+import 해서 도는 것이라 **저장소를 재는 것**이지 프로덕션이 아니다. 이메일·결제 규칙은
+커밋만 돼 있고 **배포 전**이다.
+
+그래서 배포된 워커를 실제로 찔러 대조하는 `--live` 를 붙였다. 헤더로 판정한다
+(`x-served-by` vs `x-railway-request-id`) — 오류 본문은 양쪽이 비슷할 수 있다.
+
+```
+POST /ingest/email               저장소 Edge / 배포 Railway   ← 드리프트
+POST /billing/run                저장소 Edge / 배포 Railway   ← 드리프트
+POST /payments/subscribe/ready   저장소 Edge / 배포 Railway   ← 드리프트
+GET  /health                     저장소 Edge / 배포 Edge      일치
+GET  /documents/active           저장소 Edge / 배포 Edge      일치
+```
+
+드리프트가 있으면 **exit 1**. 이게 없었으면 리허설이 "안전하다" 고 말하는데 프로덕션은
+아닌 상태로 남았을 것이다.
+
+> 이번 세션에서 자[尺]를 의심해 건진 게 이걸로 네 번째다
+> (mupdf 알파 오프셋 §45.2 · PSNR 판정 기준 §45.3 · e2e graceful skip §43.4 · 여기).
+
+### 48.4 비-HTTP 의존 — 자동으로 못 잰다
+
+| # | 항목 | 끄면 |
+|---|---|---|
+| 1 | Railway cron `billing_charge.py` | **월 자동결제가 멈춘다.** 마이그 029 미작성 |
+| 2 | `.github/workflows/monitor-search-slo.yml` | 매일 02:00 UTC `JET_RAG_API_BASE` 로 `/stats` 를 친다. 그 secret 이 Railway 면 실패 → 프록시 도메인으로 교체 |
+| 3 | `verify_documents_read_parity.py` | 비교 대상이 사라져 못 돈다 — 이관이 끝나면 역할도 끝나므로 정상 |
+| 4 | FastAPI 자체 문서 | 함께 사라진다. 대체물을 둘지는 결정 사항 |
+| 5 | 프런트(Vercel) | **의존 아님** — §48.5 |
+
+`gh` 가 미인증이라 워크플로 실행 이력은 확인 못 했다(미검증).
+
+### 48.5 §47.8 의 "확인 필요" 항목을 닫는다 — 프런트는 의존이 아니다
+
+Vercel `NEXT_PUBLIC_API_BASE_URL` = `https://jetrag-api.woong-s.com` (**프록시 도메인**).
+2026-05-19 도메인 부착 때 그렇게 설정한 기록이 있다.
+
+배포된 번들에서 직접 확인하려 했지만 랜딩 청크 9 개에는 값이 없었다(인증 페이지 청크에
+inlining 된다). **기록 기반 확인**이고 라이브 재확인은 Vercel 대시보드에서 1 분이면 된다.
+
+### 48.6 끄기 전 순서
+
+```
+1. secret 4개 설정 → deno run --allow-net api/scripts/verify_cutover.ts
+2. 프록시 배포 (이메일·결제가 Edge 로) → 리허설 --live 가 드리프트 0 이 된다
+3. billing cron 대체 (마이그 029)
+4. monitor-search-slo 의 JET_RAG_API_BASE 를 프록시 도메인으로
+5. 그 다음에 LEGACY_ORIGIN 비우기
+```
+
+### 48.7 다음 후보
+
+| 후보 | 내용 |
+|---|---|
+| **A** | secret 4개 설정 → 이메일 + 결제 컷오버 (1·2단계) |
+| **B** | billing cron 마이그 029 (3단계) — 신규 마이그레이션이라 확인 필요 |
+| **C** | `monitor-search-slo` 의 API base 교체 (4단계) — 저장소 안에서 할 수 있는 유일한 잔여 |
+| **D** | PPTX Vision 보강 · `synonym_inject` 등 기능 잔여 |
