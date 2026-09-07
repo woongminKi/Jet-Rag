@@ -10,10 +10,16 @@
  * extract 는 `seq = page_from` 으로 저장한다. **정렬 없이 읽으면 안 된다** —
  * PostgREST 기본 순서는 보장되지 않는다.
  *
- * ## 아직 다음 단계를 큐에 넣지 않는다
- * `chunk_filter` 이후 핸들러가 없다. 넣으면 "모르는 stage" 로 즉시 archive 되고 잡이
- * failed 가 된다(`worker.ts` 계약). 청킹까지가 이번 범위이므로 산출물만 남기고
- * **잡도 completed 로 만들지 않는다** — 임베딩·적재가 안 끝났으므로 완료가 아니다.
+ * ## 산출물을 **쪼개서** 저장한다
+ * 처음엔 레코드 전부를 `seq=0` 한 행에 넣었다. 실측하니 SK 사업보고서가 25,831 청크 ≈
+ * 13MB 였다(삼성 8,477 청크 = 4.4MB 실측). `load` 가 그걸 통째로 읽으면 Edge 메모리
+ * 상한 240MB(Phase 0 실측) 위에 JSON 파싱 힙이 얹힌다. 그래서 `CHUNKS_PER_ARTIFACT`
+ * 개씩 나눠 `seq = 0, 1, 2 …` 로 저장하고, 각 행에 `total_parts` 를 적어 `load` 가
+ * 어디까지 있는지 알게 한다.
+ *
+ * ## 다음 단계
+ * 저장이 다 끝난 뒤 `load` 를 큐에 넣는다. `load` 는 part 를 하나씩 처리하며 스스로
+ * 다음 part 를 큐에 넣는다.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -23,10 +29,20 @@ import type { ExtractedSection } from "../pdf_extract.ts";
 import { stripNulls } from "../strip_nul.ts";
 import type { TaskHandler, TaskPayload } from "../worker.ts";
 
+/**
+ * 아티팩트 한 행에 담을 청크 수.
+ *
+ * 실측 청크당 약 500B(삼성 8,477 청크 = 4.4MB). 1,000 개면 한 행 ≈ 500KB 로, SK 최대
+ * 문서도 26 행에 담긴다. `load` 가 한 번에 드는 메모리도 그만큼이다.
+ */
+export const CHUNKS_PER_ARTIFACT = 1000;
+
 export interface ChunkDeps {
   client: SupabaseClient;
   /** 테스트 주입 — ENV 를 직접 준다. */
   env?: ReturnType<typeof readChunkEnv>;
+  /** 테스트 주입 — 분할 크기. */
+  chunksPerArtifact?: number;
 }
 
 interface ExtractArtifact {
@@ -35,6 +51,8 @@ interface ExtractArtifact {
 }
 
 export function makeChunkHandler(deps: ChunkDeps): TaskHandler {
+  const perPart = deps.chunksPerArtifact ?? CHUNKS_PER_ARTIFACT;
+
   return async (task: TaskPayload) => {
     const { data, error } = await deps.client
       .from("ingest_artifacts")
@@ -71,25 +89,38 @@ export function makeChunkHandler(deps: ChunkDeps): TaskHandler {
       env: deps.env ?? readChunkEnv(),
     });
 
-    // extract 가 이미 씻었지만 여기서도 한 번 더 본다 — 청킹이 만든 문자열(제목 합성 등)
-    // 에도 NUL 이 섞일 수 있고, 놓치면 저장이 통째로 실패한다.
-    const cleaned = stripNulls({
-      chunk_count: records.length,
-      section_count: sections.length,
-      extract_parts: rows.length,
-      records,
-    } as Record<string, unknown>);
-    if (cleaned.removed > 0) cleaned.value["nul_removed"] = cleaned.removed;
+    // 빈 문서라도 part 를 **하나는** 남긴다. 없으면 `load` 가 "순서가 깨졌다" 로 오해한다.
+    const totalParts = Math.max(1, Math.ceil(records.length / perPart));
+    for (let part = 0; part < totalParts; part++) {
+      const slice = records.slice(part * perPart, (part + 1) * perPart);
+      // extract 가 이미 씻었지만 여기서도 본다 — 청킹이 만든 문자열(제목 합성 등)에도
+      // NUL 이 섞일 수 있고, 놓치면 저장이 통째로 실패한다.
+      const cleaned = stripNulls({
+        part,
+        total_parts: totalParts,
+        chunk_count: records.length,
+        section_count: sections.length,
+        extract_parts: rows.length,
+        records: slice,
+      } as Record<string, unknown>);
+      if (cleaned.removed > 0) cleaned.value["nul_removed"] = cleaned.removed;
 
-    const { error: upErr } = await deps.client
-      .from("ingest_artifacts")
-      .upsert({
-        job_id: task.job_id,
-        doc_id: task.doc_id,
-        stage: "chunk",
-        seq: 0,
-        payload: cleaned.value,
-      }, { onConflict: "job_id,stage,seq" });
-    if (upErr) throw new Error(`chunk 산출물 저장 실패: ${upErr.message}`);
+      const { error: upErr } = await deps.client
+        .from("ingest_artifacts")
+        .upsert({
+          job_id: task.job_id,
+          doc_id: task.doc_id,
+          stage: "chunk",
+          seq: part,
+          payload: cleaned.value,
+        }, { onConflict: "job_id,stage,seq" });
+      if (upErr) throw new Error(`chunk 산출물 저장 실패 (part=${part}): ${upErr.message}`);
+    }
+
+    // 저장이 **다 끝난 뒤에** 다음 단계를 넣는다.
+    const { error: sendErr } = await deps.client.rpc("ingest_queue_send", {
+      payload: { job_id: task.job_id, doc_id: task.doc_id, stage: "load", from: 0 },
+    });
+    if (sendErr) throw new Error(`load enqueue 실패: ${sendErr.message}`);
   };
 }

@@ -26,8 +26,15 @@ function sec(text: string, page: number) {
  */
 function fakeClient(rows: { seq: number; payload: unknown }[]) {
   const upserts: { row: Record<string, unknown>; opts: unknown }[] = [];
+  const sends: Record<string, unknown>[] = [];
+  const calls: string[] = [];
   let ordered = false;
   const client = {
+    rpc(name: string, args: Record<string, unknown>) {
+      calls.push(`rpc:${name}`);
+      if (name === "ingest_queue_send") sends.push(args.payload as Record<string, unknown>);
+      return Promise.resolve({ data: 1, error: null });
+    },
     from(_t: string) {
       const q = {
         eq: () => q,
@@ -42,13 +49,14 @@ function fakeClient(rows: { seq: number; payload: unknown }[]) {
       return {
         select: () => q,
         upsert(row: Record<string, unknown>, opts: unknown) {
+          calls.push("upsert");
           upserts.push({ row, opts });
           return Promise.resolve({ data: null, error: null });
         },
       };
     },
   };
-  return { client, upserts, wasOrdered: () => ordered };
+  return { client, upserts, sends, calls, wasOrdered: () => ordered };
 }
 
 Deno.test("extract 산출물이 없으면 던진다 — 빈 청크로 덮지 않는다", async () => {
@@ -84,6 +92,7 @@ Deno.test("여러 extract 조각을 seq 순으로 이어붙인다", async () => 
     chunk_count: number;
     section_count: number;
     extract_parts: number;
+    total_parts: number;
     records: { text: string; chunk_idx: number; page: number }[];
   };
   assertEquals(payload.section_count, 3);
@@ -140,4 +149,65 @@ Deno.test("chunk 산출물은 seq 0 에 onConflict 로 upsert 한다", async () 
   assertEquals(upserts[0].row.job_id, "j1");
   assertEquals(upserts[0].row.doc_id, "d1");
   assertEquals(upserts[0].opts, { onConflict: "job_id,stage,seq" });
+});
+
+Deno.test("레코드를 CHUNKS_PER_ARTIFACT 개씩 쪼개 저장한다", async () => {
+  // page 를 전부 다르게 줘서 병합을 막는다 → 섹션 수 = 청크 수.
+  const secs = Array.from({ length: 7 }, (_, i) => sec(`문장 ${i} 입니다.`, i + 1));
+  const { client, upserts, sends } = fakeClient([{ seq: 0, payload: { sections: secs } }]);
+  const h = makeChunkHandler({
+    // deno-lint-ignore no-explicit-any
+    client: client as any,
+    env: ENV,
+    chunksPerArtifact: 3,
+  });
+  await h(TASK, {} as never);
+
+  // 7 청크 / 3 = 3 part (3, 3, 1)
+  assertEquals(upserts.length, 3);
+  assertEquals(upserts.map((u) => u.row.seq), [0, 1, 2]);
+  const parts = upserts.map((u) =>
+    u.row.payload as { part: number; total_parts: number; records: unknown[] }
+  );
+  assertEquals(parts.map((p) => p.records.length), [3, 3, 1]);
+  assertEquals(parts.map((p) => p.part), [0, 1, 2]);
+  // 모든 part 가 total_parts 를 안다 — load 가 어디서 멈출지 판단하는 근거다.
+  assertEquals(parts.map((p) => p.total_parts), [3, 3, 3]);
+  // chunk_count 는 **전체** 수다(그 part 의 수가 아니다).
+  assertEquals(parts.map((p) => (p as unknown as { chunk_count: number }).chunk_count), [7, 7, 7]);
+
+  // 쪼개도 순서는 이어진다.
+  const all = parts.flatMap((p) => p.records) as { chunk_idx: number }[];
+  assertEquals(all.map((r) => r.chunk_idx), [0, 1, 2, 3, 4, 5, 6]);
+
+  assertEquals(sends.length, 1);
+  assertEquals(sends[0], { job_id: "j1", doc_id: "d1", stage: "load", from: 0 });
+});
+
+Deno.test("청크가 0 개여도 part 를 하나는 남긴다", async () => {
+  // 빈 텍스트만 있으면 섹션이 걸러져 청크가 안 나온다.
+  const { client, upserts, sends } = fakeClient([{ seq: 0, payload: { sections: [] } }]);
+  // deno-lint-ignore no-explicit-any
+  const h = makeChunkHandler({ client: client as any, env: ENV });
+  await h(TASK, {} as never);
+  assertEquals(upserts.length, 1);
+  const p = upserts[0].row.payload as { total_parts: number; records: unknown[] };
+  assertEquals(p.total_parts, 1);
+  assertEquals(p.records.length, 0);
+  // 그래도 load 는 넣는다 — 안 넣으면 잡이 조용히 멈춘다.
+  assertEquals(sends.length, 1);
+});
+
+Deno.test("저장이 **다 끝난 뒤에** load 를 넣는다", async () => {
+  const secs = Array.from({ length: 5 }, (_, i) => sec(`문장 ${i} 입니다.`, i + 1));
+  const { client, calls } = fakeClient([{ seq: 0, payload: { sections: secs } }]);
+  const h = makeChunkHandler({
+    // deno-lint-ignore no-explicit-any
+    client: client as any,
+    env: ENV,
+    chunksPerArtifact: 2,
+  });
+  await h(TASK, {} as never);
+  // upsert 3 회(2/2/1) 뒤에 enqueue 1 회.
+  assertEquals(calls, ["upsert", "upsert", "upsert", "rpc:ingest_queue_send"]);
 });
