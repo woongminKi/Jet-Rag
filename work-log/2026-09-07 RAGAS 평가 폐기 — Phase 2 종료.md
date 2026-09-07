@@ -1514,14 +1514,56 @@ HEIC major=mif1 brand 없음   py={"ok": false, "status": 400}  ts={"ok": true}
 | `ee94432` | `POST /documents` 업로드 + 프록시 메서드 인지 |
 | `21fd38a` | 입력 게이트(확장자·매직바이트) |
 
-### 28.7 남은 것
+### 28.7 프록시 배포 — 실측으로 확인
 
-**프록시는 아직 배포하지 않았다.** 규칙과 테스트는 준비됐고, 배포하는 순간 실제 사용자
-업로드가 Edge 로 간다. 되돌리기는 규칙 한 줄을 지우고 재배포하면 된다.
+사용자 승인 후 배포했다. 헤더로 백엔드를 구분해 전수 확인했다
+(`x-served-by: supabase-edge-runtime` vs `x-railway-request-id`).
+
+| 요청 | 결과 |
+|---|---|
+| `POST /documents` | 401 **Edge** |
+| `POST /documents/` | 401 **Edge** (trailing slash) |
+| `GET /documents` | 200 Railway (목록 — 아직 이관 안 함) |
+| `PUT /documents` | 405 Railway |
+| `POST /documents/url` | 401 Railway |
+| `GET /documents/active` | 200 Railway |
+| `GET /documents/batch-status` | 422 Railway |
+| `POST /documents/{id}/reingest` | 401 Railway |
+| `POST /documentsfoo` | 404 Railway |
+
+기존 전환분 회귀 없음 — `/health` 200 Edge, `/answer/feedback` 401 Edge.
+`/me/usage` 404 와 `/search/eval-precision` 404 는 **원본에 없는 경로**라 정상이다
+(후자는 §1~9 의 RAGAS 폐기로 제거됐다).
+
+> 배포 직후 첫 확인에서 `POST` 가 Railway 로 갔다. **전파 지연**이었고 20 초 뒤 정상이다.
+> 배포 직후 한 번만 보고 판단했으면 "라우팅이 안 걸린다" 고 잘못 결론 냈을 것이다.
+
+### 28.8 배포 중 발견 — `GET /documents` 가 인증 없이 목록을 준다
+
+이번 작업과 무관한 **기존 Railway 동작**이다. 내가 만든 것도, 악화시킨 것도 아니지만
+확인했으니 적어 둔다.
+
+```
+$ curl -s "https://jetrag-api.woong-s.com/documents?limit=3"   # 토큰 없음
+{"total":13,"items":[{"title":"25년케이터링제이(한국은행)…"},
+                     {"title":"[SK]사업보고서(2026.03.18)"}, …]}
+```
+
+실측:
+- 운영 `documents` 13 건이 **전부 한 user_id**(`2af8fca5…`) 소유다.
+- 인증 없이 부르면 그 **13 건 전부**가 제목·태그까지 나온다.
+- `list_documents` 에는 `require_authenticated_user` 가 걸려 있지 않다
+  (`POST` 에는 걸려 있다 — "쓰기 = 로그인 필수(수익화 W1)").
+
+**미검증**: 인증이 없을 때 왜 그 사용자로 떨어지는지(기본 사용자 fallback 으로 보이나
+`get_current_user` 를 읽고 확인하지 않았다), 그리고 이게 의도된 설계인지.
+판단이 필요한 사안이라 고치지 않고 남긴다.
+
+### 28.9 남은 것
 
 | 항목 | 상태 |
 |---|---|
-| **프록시 배포** (업로드를 실제로 전환) | ⬜ — 사용자 확인 대기 |
+| **`GET /documents` 무인증 노출 판단** | ⬜ — 위 28.8 |
 | `/documents` 나머지 8 라우트 (목록·상세·삭제·재인제스트·URL) | ⬜ |
 | `tag_summarize` · `doc_embed` | ⬜ |
 | `chunk_filter` · `content_gate` · `dedup` | ⬜ |
