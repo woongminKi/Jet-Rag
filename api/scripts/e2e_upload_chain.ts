@@ -146,6 +146,36 @@ try {
     exitCode = 1;
   }
 
+  // ---- tag_summarize · doc_embed · dedup ----
+  const { data: tailRow } = await client
+    .from("documents")
+    .select("tags, summary, implications, doc_embedding, flags")
+    .eq("id", docId).single();
+  const tr = tailRow as {
+    tags?: unknown[]; summary?: string | null; implications?: string | null;
+    doc_embedding?: unknown; flags?: Record<string, unknown>;
+  } | null;
+  const vecLen = Array.isArray(tr?.doc_embedding)
+    ? tr!.doc_embedding.length
+    : (typeof tr?.doc_embedding === "string" ? "문자열" : 0);
+  console.log(
+    `  tail    태그 ${(tr?.tags ?? []).length}개  요약 ${tr?.summary ? "있음" : "없음"}  ` +
+      `함의 ${tr?.implications ? "있음" : "없음"}  doc_embedding ${vecLen}차원  ` +
+      `dup_tier=${tr?.flags?.["duplicate_tier"] ?? "-"}`,
+  );
+  if (tr?.tags?.length) console.log(`    태그: ${(tr.tags as string[]).slice(0, 8).join(", ")}`);
+  if (tr?.summary) console.log(`    요약: ${String(tr.summary).replace(/\n/g, " / ").slice(0, 90)}`);
+  // 스테이지 로그가 남는지 — 이게 비면 `/status?include_logs` 와 ETA 가 죽는다.
+  const { data: logRows } = await client
+    .from("ingest_logs").select("stage, status, duration_ms")
+    .eq("job_id", jobId).order("id", { ascending: true });
+  const lg = (logRows ?? []) as { stage: string; status: string; duration_ms: number }[];
+  console.log(`  logs    ${lg.length}행  ${lg.map((l) => `${l.stage}:${l.status}`).join(" ")}`);
+  if (lg.length === 0) {
+    console.log("  **ingest_logs 가 비었다 — /status?include_logs 와 ETA 가 죽는다**");
+    exitCode = 1;
+  }
+
   // ---- chunk_filter · content_gate ----
   const { data: allChunks } = await client
     .from("chunks").select("flags, metadata").eq("doc_id", docId);
