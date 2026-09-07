@@ -27,6 +27,13 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { extractHwp } from "../hwp_extract.ts";
+import { isHwpmlBytes } from "../../documents/hwpml_sniff.ts";
+import {
+  extractDocxResult,
+  extractHwpmlResult,
+  extractHwpxResult,
+  extractPptxResult,
+} from "../xml_extract.ts";
 import { PDF_PAGES_PER_TASK } from "../pdf_extract.ts";
 import { extractPdfRange, type PdfRangeResult } from "../pdf_open.ts";
 import { stripNulls } from "../strip_nul.ts";
@@ -36,7 +43,9 @@ import { pyIsSpace } from "../../pychar.ts";
 import type { TaskHandler, TaskPayload } from "../worker.ts";
 
 /** 지금 처리할 수 있는 `documents.doc_type`. */
-export const SUPPORTED_DOC_TYPES = new Set(["hwp", "pdf"]);
+export const SUPPORTED_DOC_TYPES = new Set([
+  "hwp", "pdf", "hwpx", "docx", "pptx",
+]);
 
 export interface ExtractDeps {
   client: SupabaseClient;
@@ -167,9 +176,28 @@ export function makeExtractHandler(deps: ExtractDeps): TaskHandler {
       const done = from + r.processed;
       if (done < r.totalPages && r.processed > 0) nextFrom = done;
     } else {
-      // HWP — 페이지 개념이 없다. 한 번에 끝난다.
-      const result = await extractHwp(bytes);
-      payload = { ...result, next_title: null, page_from: 0, page_count: 0, total_pages: 0 };
+      // PDF 말고는 전부 문서 하나를 한 번에 읽는다 — 페이지 범위 개념이 없다.
+      const result = docType === "hwp"
+        // 확장자가 `.hwp` 여도 내용이 HWPML(XML) 인 파일이 있다 — **바이트로** 가른다.
+        // 원본 `run_extract_stage` 가 같은 자리에서 같은 판정을 한다.
+        ? (isHwpmlBytes(bytes.subarray(0, 4096))
+          ? extractHwpmlResult(bytes)
+          : await extractHwp(bytes))
+        : docType === "hwpx"
+        ? extractHwpxResult(bytes)
+        : docType === "docx"
+        ? extractDocxResult(bytes)
+        : extractPptxResult(bytes);
+      payload = {
+        ...result,
+        next_title: null,
+        page_from: 0,
+        page_count: 0,
+        total_pages: 0,
+        // 창이 하나뿐이라 `raw_text` 가 곧 전체다. `raw_text.ts` 가 빈 창을 거를 때
+        // 쓰는 값이므로 섹션이 있으면 1 이상이어야 한다.
+        raw_part_count: result.sections.length,
+      };
     }
 
     // Postgres jsonb 는 U+0000 을 아예 못 받는다. arXiv(LaTeX) PDF 가 실제로 뱉어서

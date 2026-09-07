@@ -5,7 +5,8 @@
     "jose": "npm:jose@^6.2.10",
     "@supabase/supabase-js": "npm:@supabase/supabase-js@^2.115.0",
     "@rhwp/core": "npm:@rhwp/core@0.8.4",
-    "mupdf": "npm:mupdf@1.27.0"
+    "mupdf": "npm:mupdf@1.27.0",
+    "fflate": "npm:fflate@0.8.3"
   },
   "fmt": {
     "lineWidth": 110

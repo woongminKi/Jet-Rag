@@ -11,7 +11,7 @@
  */
 
 import { assertEquals, assertRejects } from "@std/assert";
-import { makeExtractHandler } from "./extract.ts";
+import { makeExtractHandler, SUPPORTED_DOC_TYPES } from "./extract.ts";
 import type { PdfRangeResult } from "../pdf_open.ts";
 import type { TaskPayload } from "../worker.ts";
 
@@ -144,10 +144,21 @@ Deno.test("문서가 없으면 던진다", async () => {
 });
 
 Deno.test("이식 안 된 포맷은 **조용히 넘기지 않고** 던진다", async () => {
-  const { client } = fakeClient({ id: "d1", doc_type: "hwpx", storage_path: "user/u/x.hwpx" });
+  // `hwpx` 는 이제 이식됐다 — 아직 안 된 것으로 골라야 이 테스트가 살아 있다.
+  // (예시로 쓴 포맷이 이식되면 여기가 조용히 무의미해진다. 실제로 한 번 그랬다.)
+  const { client } = fakeClient({ id: "d1", doc_type: "image", storage_path: "user/u/x.png" });
   // deno-lint-ignore no-explicit-any
   const h = makeExtractHandler({ client: client as any, bucket: "documents" });
-  await assertRejects(() => h(TASK, {} as never), Error, "아직 이식되지 않은 포맷: hwpx");
+  await assertRejects(() => h(TASK, {} as never), Error, "아직 이식되지 않은 포맷: image");
+});
+
+Deno.test("SUPPORTED_DOC_TYPES — ZIP/XML 4종이 들어왔다", () => {
+  // 목록이 곧 계약이다. 빠지면 업로드는 되는데 인제스트가 던진다.
+  assertEquals([...SUPPORTED_DOC_TYPES].sort(), ["docx", "hwp", "hwpx", "pdf", "pptx"]);
+  // 아직 안 된 것들 — 이식하면 이 줄이 먼저 깨진다.
+  for (const t of ["image", "url", "txt", "md"]) {
+    assertEquals(SUPPORTED_DOC_TYPES.has(t), false, t);
+  }
 });
 
 Deno.test("storage_path 가 pending 이면 던진다 (재시도 대상)", async () => {

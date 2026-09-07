@@ -32,7 +32,15 @@
 
 import { unzipSync } from "fflate";
 
-import { allDescendants, attrValue, decodeXml, directChildren, scanTags, stripComments } from "./xml_scan.ts";
+import {
+  allDescendants,
+  attrValue,
+  decodeXml,
+  directChildren,
+  firstDescendantInner,
+  scanTags,
+  stripComments,
+} from "./xml_scan.ts";
 
 export interface HwpSection {
   text: string;
@@ -44,6 +52,30 @@ export interface HwpResult {
   sourceType: "hwpx" | "hwpml";
   sections: HwpSection[];
   warnings: string[];
+  /**
+   * HWPML 의 `<DOCSUMMARY>` 값(`hwpml_title` 등). HWPX 는 비어 있다.
+   * 원본 `ExtractionResult.metadata` 자리 — 현재 후속 단계가 쓰지는 않지만
+   * 안 채우면 `documents` 에 남는 값이 달라진다.
+   */
+  metadata: Record<string, string>;
+}
+
+/** 원본 `_extract_summary_metadata` — `HEAD/DOCSUMMARY` 직계만 본다. */
+function summaryMetadata(xml: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const head = firstDescendantInner(xml, "HEAD");
+  if (head === null) return out;
+  const summary = firstDescendantInner(head, "DOCSUMMARY");
+  if (summary === null) return out;
+  for (const tag of ["TITLE", "SUBJECT", "AUTHOR", "DATE", "KEYWORDS"]) {
+    // `find` 는 **첫 번째** 것만 본다.
+    const el = directChildren(summary, new Set([tag]))[0];
+    if (!el) continue;
+    // ElementTree `.text` 는 첫 자식 태그 앞까지다 — 여기 값은 순수 텍스트라 같다.
+    const v = decodeXml(el.inner).trim();
+    if (v !== "") out[`hwpml_${tag.toLowerCase()}`] = v;
+  }
+  return out;
 }
 
 /** HWPX/HWPML 공용 — DOCX 와 같은 정규식이지만 출처가 달라 별도로 둔다. */
@@ -127,7 +159,8 @@ export function extractHwpx(bytes: Uint8Array): HwpResult {
     }
   }
 
-  return { sourceType: "hwpx", sections, warnings };
+  // HWPX 파서는 metadata 를 안 만든다 — 원본도 그렇다(기본값 빈 dict).
+  return { sourceType: "hwpx", sections, warnings, metadata: {} };
 }
 
 /* ------------------------------------------------------------------ HWPML */
@@ -177,7 +210,7 @@ export function extractHwpml(bytes: Uint8Array): HwpResult {
   }
 
   if (!sections.length) warnings.push("HWPML 본문에서 텍스트 단락을 찾지 못했습니다.");
-  return { sourceType: "hwpml", sections, warnings };
+  return { sourceType: "hwpml", sections, warnings, metadata: summaryMetadata(xml) };
 }
 
 /** 매직 바이트로 갈라 준다 — 확장자는 믿을 수 없다(`law sample2.hwp` 가 실제로는 HWPML). */
