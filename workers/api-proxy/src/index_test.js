@@ -74,6 +74,7 @@ const MIGRATED_METHOD_PATHS = new Set([
   "GET /documents/batch-status",
   "POST /documents/{doc_id}/reingest",
   "POST /documents/{doc_id}/reingest-missing",
+  "POST /ingest/email",
 ]);
 
 Deno.test("프록시가 Edge 로 보내는 원본 라우트는 전부 이관돼 있어야 한다", async () => {
@@ -136,6 +137,11 @@ Deno.test("`/documents` — 이관한 것만 Edge, 나머지는 Railway", () => 
   assertEquals(resolveTarget("/documents/abc/reingest", "GET"), null);
   // **아직 Railway** — URL 업로드. GET 전용 규칙이라 자연히 안 걸린다.
   assertEquals(resolveTarget("/documents/url", "POST"), null);
+  // 2026-09-07 전환 — 이메일 webhook. 경로가 정확히 일치해야 한다.
+  assertEquals(resolveTarget("/ingest/email", "POST"), "api-documents");
+  assertEquals(resolveTarget("/ingest/email", "GET"), null);
+  assertEquals(resolveTarget("/ingest/email/extra", "POST"), null);
+  assertEquals(resolveTarget("/ingest", "POST"), null);
   // 쓰기 메서드는 상세 경로라도 안 넘긴다(삭제 등이 생기면 Railway 로).
   assertEquals(resolveTarget("/documents/abc", "DELETE"), null);
   assertEquals(resolveTarget("/documentsfoo", "POST"), null);

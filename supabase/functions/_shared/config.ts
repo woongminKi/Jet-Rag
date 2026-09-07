@@ -60,6 +60,8 @@ export interface Settings {
   embedProvider: string;
   defaultUserId: string;
   ownerUserId: string | null;
+  /** 이메일 인제스트 webhook 공유 secret. **빈 값이면 기능 비활성(503)** 이다. */
+  emailWebhookSecret: string;
   authEnabled: boolean;
   supabaseJwtSecret: string | null;
   supabaseJwtAlgorithm: string;
@@ -148,6 +150,7 @@ export function loadSettings(read: EnvReader = (k) => Deno.env.get(k)): Settings
     embedProvider: read("JETRAG_EMBED_PROVIDER") ?? "hf",
     // 접두어 없음 — §플랜 초안에서 고친 것 1 참조.
     defaultUserId: read("DEFAULT_USER_ID") ?? DEFAULT_USER_ID,
+    emailWebhookSecret: read("JETRAG_EMAIL_WEBHOOK_SECRET") ?? "",
     ownerUserId: optional(read, "OWNER_USER_ID"),
     authEnabled: bool(read, "JETRAG_AUTH_ENABLED", false),
     supabaseJwtSecret: aliased(read, "SUPABASE_JWT_SECRET", "JETRAG_SUPABASE_JWT_SECRET") || null,

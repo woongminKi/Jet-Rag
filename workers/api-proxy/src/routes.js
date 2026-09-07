@@ -66,6 +66,9 @@ export const ROUTES = [
   // 세그먼트가 하나뿐이라 `/documents/x/reingest` 와 겹치지 않는다.
   [/^\/documents\/[^/]+\/reingest$/, "api-documents", new Set(["POST"])],
   [/^\/documents\/[^/]+\/reingest-missing$/, "api-documents", new Set(["POST"])],
+  // 2026-09-07 전환 — 이메일 인제스트 webhook. `/documents` 아래가 아니지만 문서를
+  // 만드는 경로라 같은 함수(`api-documents`)가 받는다.
+  [/^\/ingest\/email$/, "api-documents", new Set(["POST"])],
   // Phase 4 에서 해제: [/^\/payments/, "api-payments"], [/^\/billing/, "billing-run"],
   // Phase 5 에서 해제: [/^\/email/, "email-webhook"],
 ];

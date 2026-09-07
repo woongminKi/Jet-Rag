@@ -12,6 +12,7 @@
  * | `GET /documents/batch-status` | 여러 문서 상태 일괄 |
  * | `POST /documents/{id}/reingest` | 전체 재인제스트 — chunks 삭제 후 재실행 |
  * | `POST /documents/{id}/reingest-missing` | 증분 — chunks 보존 + 누락 vision 페이지만 |
+ * | `POST /ingest/email` | 이메일 첨부 인제스트 (공유 secret 인증) |
  *
  * ## 아직 Railway 인 것
  * `POST /documents/url` (URL 파서 미이관).
@@ -44,6 +45,7 @@ import {
   reingestDocument,
   reingestMissingVision,
 } from "../_shared/documents/reingest.ts";
+import { handleEmailWebhook } from "../_shared/ingest/email_route.ts";
 
 const FUNCTION_PREFIX = "/api-documents";
 
@@ -67,6 +69,19 @@ Deno.serve(async (req: Request) => {
     const client = createServiceClient(settings);
     // 읽기·쓰기 공통으로 호출자를 먼저 정한다. 토큰이 없으면 owner 컨텍스트다.
     const caller = await getCurrentUser(req, settings);
+
+    // ---- 이메일 인제스트 webhook ----
+    // JWT 가 아니라 공유 secret 으로 인증한다 — 발신자가 Cloudflare Email Worker 다.
+    // `/documents` 아래가 아니지만 같은 함수에 둔다(문서를 만드는 경로이고,
+    // 함수를 하나 더 만들면 배포 단위만 늘어난다).
+    if (path === "/ingest/email") {
+      if (req.method !== "POST") return methodNotAllowed();
+      const r = await handleEmailWebhook(
+        { client, bucket: settings.supabaseStorageBucket, settings },
+        req,
+      );
+      return applyCorsHeaders(req, jsonResponse(r.body, r.status), settings);
+    }
 
     // ---- 재인제스트 2종 — **GET 블록보다 먼저** 본다 ----
     // 경로를 메서드보다 먼저 매칭해야 `GET /documents/{id}/reingest` 가 404 가 아니라
