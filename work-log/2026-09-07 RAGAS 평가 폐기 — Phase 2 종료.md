@@ -879,3 +879,156 @@ raw_text   py 985자  ts 993자   공백 제외 동일? True   (+8자)
 | chunk 핸들러 결선 | ⬜ |
 | chunk_filter / content_gate / tag_summarize / load / embed / doc_embed / dedup | ⬜ |
 | `api-documents` HTTP 경로 · pg_cron 드레인(마이그 028) | ⬜ |
+
+
+## 23. Phase 3 — PDF extract 이식 (운영 99.3%). **Phase 0 결론 2건이 뒤집혔다**
+
+§22.6 에서 실측한 대로 PDF 가 운영 chunk 의 99.3% 라 다음 순위로 잡았다. 파서 자체는
+하루 만에 옮겼지만, 넓은 범위로 대조하자 **Phase 0 이 7 페이지로 내린 판정 2 건이
+깨졌다.** 이번 절의 대부분은 그걸 찾아 고친 기록이다.
+
+### 23.1 CPU 는 제약이 아니었다 — 제약은 순차 의존성이다
+
+착수 전에 "대형 PDF 를 Edge CPU 2s 안에 처리 가능한가" 를 미검증 가정으로 잡았는데,
+**Phase 0 이 이미 쟀다**(400p = 1,421ms). 확인 없이 미검증이라 말한 건 부정확했다.
+
+새로 잰 것은 **문서 열기 비용**이다. 워커는 상태가 없어 태스크마다 문서를 새로 여는데,
+그게 비싸면 페이지 분할 설계가 통째로 바뀐다.
+
+| 파일 | 페이지 | 문서 열기 | 페이지당(로컬) |
+|---|---|---|---|
+| law sample3 | 4 | 1.4ms | 11.7ms |
+| 삼성 사업보고서 | 573 | **0.7ms** | 2.1ms |
+| SK 사업보고서 | 1,513 | **2.0ms** | 1.7ms |
+
+mupdf 는 lazy loading 이라 **열기가 사실상 공짜**다. 페이지 분할은 자유롭다.
+
+진짜 제약은 따로 있었다. `current_title` 이 **문서 전체 sticky** 다 —
+
+```python
+current_title = None
+for page_num, page in enumerate(doc, start=1):
+    ...  # heading 을 만날 때까지 직전 제목을 상속
+```
+
+페이지 범위를 **병렬로 돌리면 제목이 어긋난다.** 음성 대조에서 sticky 전파를 끊자
+실자산 145 페이지가 깨져 실증됐다. 순차 처리 + 태스크 경계에서 title 인계가 필요하다
+(`extractDictBlocks` 가 `currentTitle` 을 받고 `nextTitle` 을 돌려주는 이유).
+
+### 23.2 **뒤집힌 Phase 0 판정 ① — `STEXT_OPTS` 에 `preserve-ligatures` 누락**
+
+Phase 0 이 정한 값은 `preserve-whitespace,preserve-images` 둘뿐이었다.
+PyMuPDF 의 실제 기본값을 확인하니 다섯 개다:
+
+```
+fitz.TEXTFLAGS_DICT == 199
+  = 1 PRESERVE_LIGATURES | 2 PRESERVE_WHITESPACE | 4 PRESERVE_IMAGES
+  | 64 MEDIABOX_CLIP     | 128 CID_FOR_UNKNOWN_UNICODE
+```
+
+`preserve-ligatures` 가 빠져서 mupdf 가 `ﬀ`(U+FB00)를 `ff` 로 풀었다. arXiv 문서
+텍스트가 491 자 길어지고 800 자 분할 경계가 밀려 **청크 749 → 803 개(+7.2%)**.
+옵션을 맞추자 blocks 10 / lines 25 / chars 1,682 / 리거처 4 로 완전 일치.
+
+> **라이브러리 기본값을 짐작하지 말 것** — 누락 점검 §2 그대로다. 옵션 이름도
+> 상상하지 않고 WASM 바이너리에서 문자열을 뽑아 확인했다.
+
+버전도 다시 채점했다(Phase 0 이 "올릴 때 채점기 재실행" 을 지시해 뒀다):
+
+| | 블록목록 완전일치 |
+|---|---|
+| mupdf@1.27.0 | **301/309p (97.4%)** |
+| mupdf@1.28.1 | 160/232p (69.0%) |
+
+1.27.0 유지가 옳다. `preserve-spans` 도 재평가했는데 텍스트 불일치가 5 → 138 페이지로
+훨씬 나빠져 기각을 유지했다.
+
+### 23.3 **뒤집힌 Phase 0 판정 ② — "합성 공백 영향 0" 은 heading 경로를 안 봤다**
+
+Phase 0 은 span 분할 잔차를 알고 있었고 "섹션 텍스트·bbox·needs_vision·triggers
+7/7 동일" 이라 영향 0 으로 적었다. **`pageMedianSize` 를 통한 heading 판정은 보지
+않았다.**
+
+PyMuPDF 는 MuPDF 가 간격 때문에 끼워 넣은 공백을 독립 span 으로 둔다. 같은 페이지인데
+span 수가 3 배 차이난다(arXiv 47,479 vs 16,522). **size 값 자체는 편차 0** 이었다 —
+문제는 `_page_median_size` 가 **span 하나당 1표**로 중앙값을 낸다는 것이다. 표 수가
+달라지면 중앙값이 이동하고 `_HEADING_FONT_RATIO`(1.15) 임계에서 판정이 뒤집힌다.
+
+| `pageMedianSize` 방식 | py≠ts |
+|---|---|
+| span 가중 (기존 원본) | 14/249p |
+| **글자 수 가중** | **0/249p** |
+| 알고리즘 변경이 Python 결과를 바꾸는 양 | 39/249p (15.7%) |
+
+**사용자 결정: 글자 수 가중으로 변경**(Python·TS 양쪽). 텍스트 내용에만 의존해 span
+분할과 무관해지고, 구하려는 값이 "페이지 본문의 대표 글자 크기" 이므로 의미에도 맞다.
+span 가중은 애초에 파서 버전에 흔들리는 불안정한 지표였다.
+
+대가: 해당 39 페이지를 재인제스트하면 `section_title` 이 바뀐다. 검색 품질이 더 낫다는
+증거는 **없다**(RAGAS 폐기로 측정 수단이 없음) — 안정성 논거로만 택했다.
+
+### 23.4 내 대조에도 구멍이 있었다
+
+`has_section_title`(bool) 만 비교하고 **title 문자열을 비교하지 않았다.** arXiv 가
+그래서 "일치" 로 통과했는데 실제로는 105 행이 달랐다. `title_sha16` 을 추가해 메웠다.
+
+> 누락 점검 §8 계열이다 — 판정기가 무엇을 **안 보는지**를 확인하지 않았다.
+
+### 23.5 대조 결과
+
+| 대상 | 규모 | 결과 |
+|---|---|---|
+| median / isHeadingBlock / extractDictBlocks | 10 / 53 / 19 건 | 전부 일치 |
+| 실자산 (PyMuPDF dict 를 양쪽에 먹임) | 7 문서 **5,619 섹션** | 전부 일치 |
+| 전체 파이프라인 (mupdf 직접) | 8 문서 249p | 5 문서 완전 일치 |
+| 음성 대조 | **19 종 전부** 깨짐 확인 | |
+
+음성 대조 0 건이 처음 6 종 나왔고 전부 원인을 규명해 해소했다. 마지막 UTF-16 케이스는
+**판정 대상 블록의 글자도 median 에 들어간다**는 걸 빼고 계산한 내 실수였다. 표를 전부
+세서 다시 잡으니(20pt×10 / 10pt×15 / 12pt×4) 판정이 갈린다.
+
+### 23.6 맞출 수 없는 차이 — 스냅샷으로 고정
+
+3 개 문서가 여전히 갈린다. **MuPDF 1.27.0 vs 1.27.2 블록 분할 패치 차이**인데
+npm 에 1.27.2 가 없다(1.27.0 다음이 1.28.0).
+
+| 문서 | 청크 py/ts | 섹션 py/ts |
+|---|---|---|
+| 데이터센터 안내서 41p | 384 / 386 | 1,202 / 1,214 |
+| sample-report 60p | 525 / 526 | 1,040 / 1,049 |
+| 보건의료 26p | 148 / 149 | 613 / 614 |
+
+**텍스트 손실은 0 이다.** 5 개 자산에서 공백을 모두 제거한 전체 텍스트가 동일했다 —
+블록 경계만 이동한다.
+
+늘 FAIL 을 내면 검사는 곧 무시된다. `fixtures/pdf_known_divergence.json` 에 값을
+고정하고 **"알려진 값과 다르면 실패"** 로 바꿔 악화를 잡는다(`UPDATE_KNOWN=1` 로 갱신).
+
+### 23.7 검증
+
+| 항목 | 결과 |
+|---|---|
+| Deno `_shared/` 전체 | **129 passed / 0 failed** |
+| Python `test_*pdf*` | 48 OK |
+| Python `test_*pars*` | 30 OK |
+| Python 전체 discover | 1,465 tests, 4 failed (전부 기존 `test_embed_cache`) |
+
+### 23.8 커밋
+
+| 해시 | 내용 |
+|---|---|
+| `336eda2` | pageMedianSize 글자 수 가중 (Python·TS) |
+| `ed8ce7c` | STEXT_OPTS preserve-ligatures 누락 수정 |
+| `1b3e085` | PDF extract 이식 |
+
+### 23.9 남은 것
+
+| 항목 | 상태 |
+|---|---|
+| PDF extract 핸들러 결선 (`deno.json` 에 `mupdf@1.27.0` 추가 필요) | ⬜ |
+| 페이지 분할 워커 — **순차 + title 인계** | ⬜ |
+| chunk 핸들러 결선 | ⬜ |
+| HWPML / hwpx / docx / pptx extract | ⬜ |
+| chunk 조각 c2 (`synonym_inject`) | ⬜ |
+| chunk_filter / content_gate / tag_summarize / load / embed / doc_embed / dedup | ⬜ |
+| `api-documents` HTTP 경로 · pg_cron 드레인(마이그 028) | ⬜ |
