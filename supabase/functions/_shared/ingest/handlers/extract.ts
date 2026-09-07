@@ -32,13 +32,13 @@ import {
   extractDocxResult,
   extractHwpmlResult,
   extractHwpxResult,
-  extractPptxResult,
 } from "../xml_extract.ts";
 import { PDF_PAGES_PER_TASK } from "../pdf_extract.ts";
 import { extractPdfRange, type PdfRangeResult } from "../pdf_open.ts";
 import { finishJob } from "../finish.ts";
 import { stripNulls } from "../strip_nul.ts";
 import { parseImage } from "../image_parser.ts";
+import { extractPptxWithVision } from "../pptx_vision.ts";
 import { readVisionEnv } from "../vision_enrich.ts";
 import { isScanPdf } from "../vision_scan.ts";
 import { pyIsSpace } from "../../pychar.ts";
@@ -260,7 +260,35 @@ export function makeExtractHandler(deps: ExtractDeps): TaskHandler {
         ? extractHwpxResult(bytes)
         : docType === "docx"
         ? extractDocxResult(bytes)
-        : extractPptxResult(bytes);
+        // PPTX 는 텍스트가 거의 없는 슬라이드를 Vision 으로 읽는다(원본 W8 Day 2·W9 Day 1).
+        // 실측: 코퍼스의 pptx 1건이 11장 전부 텍스트 0자라 이게 없으면 **0청크**가 된다.
+        // 상위 5장 정규화 CPU 합계 432ms — extract 의 2s 예산 안이라 창을 안 나눈다.
+        : await (async () => {
+          const ve = readVisionEnv(env);
+          const vdeps = ve.geminiApiKey
+            ? {
+              client: deps.client,
+              env,
+              geminiApiKey: ve.geminiApiKey,
+              nowMs: now(),
+              docId: task.doc_id,
+            }
+            : null; // 키가 없으면 원본의 `image_parser=None` 과 같다 — 텍스트만 쓴다
+          const r = await extractPptxWithVision(bytes, fileName, vdeps);
+          if (r.metricErrors.length > 0) {
+            console.error(
+              `vision_usage_log 적재 실패 ${r.metricErrors.length}건 — 비용 한도가 ` +
+                `안 걸린다. doc=${task.doc_id} ${r.metricErrors.join(" / ")}`,
+            );
+          }
+          return {
+            source_type: "pptx",
+            sections: r.sections,
+            raw_text: r.rawParts.join("\n\n"),
+            warnings: r.warnings,
+            metadata: {},
+          };
+        })();
       payload = {
         ...result,
         next_title: null,

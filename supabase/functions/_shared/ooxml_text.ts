@@ -220,23 +220,63 @@ export function slidePaths(files: Record<string, Uint8Array>): string[] {
     .sort((a, b) => Number(a.match(/\d+/)![0]) - Number(b.match(/\d+/)![0]));
 }
 
-export function extractPptx(bytes: Uint8Array): OoxmlResult {
+/**
+ * 슬라이드를 **전부** 돌려준다 — 텍스트가 0 인 것도 포함한다.
+ *
+ * `extractPptx` 는 텍스트 0 슬라이드를 버리는데, 그 슬라이드들이 바로 Vision OCR
+ * 대상이다(원본 `PptxParser` 의 rerouting 모드). 버린 뒤에는 되살릴 수 없어서
+ * **거르기 전 상태**를 여기서 한 번 노출한다.
+ *
+ * `files` 와 `treeInner` 를 같이 주는 이유: 그림은 `<a:blip r:embed="rIdN">` 로만
+ * 가리키고 실제 바이트는 `_rels` 를 거쳐 `ppt/media/...` 에 있다. 호출자가 zip 을
+ * 다시 풀지 않아도 되게 한다(이 파일은 10MB 도 된다).
+ */
+export interface PptxSlide {
+  /** 1-based. */
+  page: number;
+  /** 텍스트 조각. **비어 있을 수 있다.** */
+  parts: string[];
+  title: string | null;
+  /** `ppt/slides/slideN.xml` — `_rels` 경로를 만들 때 쓴다. */
+  slidePath: string;
+  /** `<p:spTree>` 안쪽 XML — 그림 탐색용. */
+  treeInner: string;
+}
+
+export function extractPptxSlides(
+  bytes: Uint8Array,
+): { files: Record<string, Uint8Array>; slides: PptxSlide[] } {
   const files = readZip(bytes);
+  const slides: PptxSlide[] = [];
+  slidePaths(files).forEach((path, idx) => {
+    const xml = stripComments(new TextDecoder().decode(files[path]));
+    const treeInner = firstDescendantInner(xml, "p:spTree") ?? "";
+    const parts: string[] = [];
+    walkShapes(treeInner, parts);
+    slides.push({
+      page: idx + 1,
+      parts,
+      title: slideTitle(treeInner),
+      slidePath: path,
+      treeInner,
+    });
+  });
+  return { files, slides };
+}
+
+export function extractPptx(bytes: Uint8Array): OoxmlResult {
   const sections: OoxmlSection[] = [];
   const warnings: string[] = [];
 
-  slidePaths(files).forEach((path, idx) => {
-    const xml = stripComments(new TextDecoder().decode(files[path]));
-    const tree = firstDescendantInner(xml, "p:spTree") ?? "";
-    const parts: string[] = [];
-    walkShapes(tree, parts);
-    if (!parts.length) return; // 텍스트 0 슬라이드는 운영에서 Vision 경로로 간다
+  for (const s of extractPptxSlides(bytes).slides) {
+    // 텍스트 0 슬라이드는 운영에서 Vision 경로로 간다(`pptx_vision.ts`).
+    if (!s.parts.length) continue;
     sections.push({
-      text: parts.join("\n"),
-      page: idx + 1,
-      sectionTitle: slideTitle(tree),
+      text: s.parts.join("\n"),
+      page: s.page,
+      sectionTitle: s.title,
     });
-  });
+  }
 
   return { sourceType: "pptx", sections, warnings };
 }

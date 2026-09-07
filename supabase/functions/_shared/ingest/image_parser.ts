@@ -22,6 +22,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { ExtractedSection, ExtractionResult } from "./hwp_extract.ts";
 import { normalizeImage } from "./image_decode.ts";
+import { isQuotaExhausted } from "./quota_detect.ts";
 import type { VisionCaption } from "./vision_caption.ts";
 import { pyStr } from "./vision_caption.ts";
 import { captionImage, type VisionClientDeps } from "./vision_client.ts";
@@ -144,6 +145,11 @@ export interface ImageParseDeps {
   env: Record<string, string | undefined>;
   geminiApiKey: string;
   nowMs: number;
+  /**
+   * `vision_usage_log.source_type`. 원본 `ImageParser.parse(source_type=...)` 자리다 —
+   * 호출처가 `pptx_rerouting` · `pptx_augment` 등을 명시한다. 기본은 `image`(단독 업로드).
+   */
+  sourceType?: string;
   /** 테스트 주입 — Gemini 를 부르지 않는다. */
   caption?: (bytes: Uint8Array, mimeType: string) => Promise<VisionCaption>;
 }
@@ -194,7 +200,10 @@ export async function parseImage(
     const me = await recordCall(deps.client, deps.env, deps.nowMs, {
       success: false,
       errorMsg: pyStrError(e),
-      sourceType: "image",
+      // 원본 `image_parser.py:122` — 실패 경로에 quota 판정을 같이 기록한다.
+      // 안 넣으면 `vision_usage_log.quota_exhausted` 가 늘 false 라 한도 분석이 눈을 잃는다.
+      quotaExhausted: isQuotaExhausted(e),
+      sourceType: deps.sourceType ?? "image",
       docId: opts.docId ?? null,
       page: null,
       retryAttempt: (e as { retryAttempt?: number })?.retryAttempt ?? null,
@@ -205,7 +214,7 @@ export async function parseImage(
 
   const me = await recordCall(deps.client, deps.env, deps.nowMs, {
     success: true,
-    sourceType: "image",
+    sourceType: deps.sourceType ?? "image",
     usage: caption.usage as unknown as Record<string, unknown> | null,
     docId: opts.docId ?? null,
     page: null,
