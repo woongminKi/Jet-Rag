@@ -28,21 +28,30 @@ import { makeChunkHandler } from "../_shared/ingest/handlers/chunk.ts";
 import { makeEmbedHandler } from "../_shared/ingest/handlers/embed.ts";
 import { makeExtractHandler } from "../_shared/ingest/handlers/extract.ts";
 import { makeLoadHandler } from "../_shared/ingest/handlers/load.ts";
+import { makeDedupHandler, makeFinishHandler } from "../_shared/ingest/handlers/dedup.ts";
+import { makeDocEmbedHandler } from "../_shared/ingest/handlers/doc_embed.ts";
 import { makeScanHandler } from "../_shared/ingest/handlers/scan.ts";
+import { makeTagSummarizeHandler } from "../_shared/ingest/handlers/tag_summarize.ts";
 import { makeVisionHandler } from "../_shared/ingest/handlers/vision.ts";
 import { makeVisionMissingHandler } from "../_shared/ingest/handlers/vision_missing.ts";
 
 const FUNCTION_PREFIX = "/api-ingest-worker";
 
 /**
- * stage → 핸들러.
+ * stage → 핸들러. 사슬 순서대로다.
  *
- * `extract` · `chunk` · `load` · `embed` 넷이다. 그 뒤(`chunk_filter` · `tag_summarize` …)는
- * 아직 안 옮겼고, **없는 stage 를 큐에 넣으면 즉시 archive + 잡 failed** 가 되므로
- * (`worker.ts` 계약) embed 핸들러는 남은 청크가 없으면 아무것도 enqueue 하지 않는다.
+ * ```
+ * extract → [scan | vision] → chunk → tag_summarize → load → embed → doc_embed → dedup
+ *                                                                        └→ finish
+ * ```
+ * `vision_missing` 은 `reingest-missing` 전용 진입점이고 `embed` 로 합류한다.
+ * `finish` 는 `doc_embed` 가 벡터를 못 채웠을 때만 온다(원본 `if doc_embedded`).
+ *
+ * **없는 stage 를 큐에 넣으면 즉시 archive + 잡 failed** 다(`worker.ts` 계약) —
+ * 새 단계를 이을 때 여기 등록을 같이 해야 한다.
  */
 function buildHandlers(
-  settings: { supabaseStorageBucket: string },
+  settings: { supabaseStorageBucket: string; defaultUserId: string },
   client: SupabaseClient,
 ): Record<string, TaskHandler> {
   return {
@@ -54,7 +63,15 @@ function buildHandlers(
     }),
     chunk: makeChunkHandler({ client }),
     load: makeLoadHandler({ client }),
+    tag_summarize: makeTagSummarizeHandler({ client }),
     embed: makeEmbedHandler({ client, token: Deno.env.get("DEEPINFRA_API_TOKEN") ?? "" }),
+    doc_embed: makeDocEmbedHandler({
+      client,
+      embedDeps: { token: Deno.env.get("DEEPINFRA_API_TOKEN") ?? "" },
+    }),
+    dedup: makeDedupHandler({ client, defaultUserId: settings.defaultUserId }),
+    // `doc_embed` 가 벡터를 못 채웠을 때만 온다 — 마감만 한다.
+    finish: makeFinishHandler({ client, defaultUserId: settings.defaultUserId }),
   };
 }
 

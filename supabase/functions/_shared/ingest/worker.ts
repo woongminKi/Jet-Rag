@@ -22,6 +22,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { beginStage, endStage } from "./stage_log.ts";
 
 /** 큐에서 꺼낸 작업 1건. `ingest_queue_read` 의 반환 모양과 같다. */
 export interface QueueMessage {
@@ -51,8 +52,22 @@ export interface TaskPayload {
  */
 export const MAX_ATTEMPTS = 3;
 
+/**
+ * 핸들러가 스테이지 로그 상태를 직접 정하고 싶을 때 돌려주는 값.
+ *
+ * `tag_summarize` 가 필요로 한다 — LLM 두 호출이 **둘 다** 실패하면 원본이 로그를
+ * `failed` 로 남기지만 예외는 던지지 않는다(파이프라인은 계속 간다).
+ */
+export interface HandlerOutcome {
+  logStatus?: "succeeded" | "failed";
+  logError?: string | null;
+}
+
 /** 작업을 처리한다. 던지면 재시도 대상이 된다. */
-export type TaskHandler = (task: TaskPayload, msg: QueueMessage) => Promise<void>;
+export type TaskHandler = (
+  task: TaskPayload,
+  msg: QueueMessage,
+) => Promise<void | HandlerOutcome>;
 
 export interface WorkerDeps {
   client: SupabaseClient;
@@ -203,14 +218,27 @@ export async function drainOnce(deps: WorkerDeps): Promise<DrainResult> {
       continue;
     }
 
+    // 원본 `jobs.stage()` 자리 — 스테이지 1 회 실행을 `ingest_logs` 1 행으로 감싼다.
+    // 여기서 감싸야 모든 핸들러가 자동으로 기록된다. 안 남기면
+    // `/status?include_logs` 가 비고 `eta.ts` 가 median 을 못 구한다.
+    const startedMs = Date.now();
+    const logId = await beginStage(deps.client, task.job_id, stage, startedMs);
     try {
       await touchJob(deps.client, task.job_id, {
         status: "running",
         current_stage: stage,
         last_heartbeat_at: nowIso(),
       });
-      await handler(task, msg);
+      const outcome = await handler(task, msg);
       await deps.client.rpc("ingest_queue_delete", { message_id: msg.msg_id });
+      const doneMs = Date.now();
+      await endStage(deps.client, logId, {
+        // 핸들러가 말해 주면 그걸 쓴다 — 던지지 않고도 `failed` 로 남길 수 있다.
+        status: outcome?.logStatus ?? "succeeded",
+        errorMsg: outcome?.logError ?? null,
+        durationMs: doneMs - startedMs,
+        nowMs: doneMs,
+      });
       out.ok++;
     } catch (e) {
       // **지우지 않는다.** vt 가 지나면 다시 보이고, read_ct 가 올라간다.
@@ -218,6 +246,13 @@ export async function drainOnce(deps: WorkerDeps): Promise<DrainResult> {
       const detail = e instanceof Error ? e.message : String(e);
       out.errors.push({ msg_id: msg.msg_id, stage, error: detail });
       console.error(`작업 실패 (stage=${stage}, msg=${msg.msg_id}):`, e);
+      const doneMs = Date.now();
+      await endStage(deps.client, logId, {
+        status: "failed",
+        errorMsg: detail,
+        durationMs: doneMs - startedMs,
+        nowMs: doneMs,
+      });
       await touchJob(deps.client, task.job_id, {
         error_msg: detail.slice(0, 500),
         last_heartbeat_at: nowIso(),

@@ -265,6 +265,8 @@ export function makeVisionHandler(deps: VisionDeps): TaskHandler {
     const payload = stripNulls({
       sections: result.sections,
       raw_text: result.rawParts.join("\n\n"),
+      // 빈 창이 join 에서 빠져야 문서 전체 raw_text 가 원본과 같아진다(§37.2).
+      raw_part_count: result.rawParts.length,
       warnings: [...warnings, ...result.warnings],
       carry: result.carry,
       page_from: from,

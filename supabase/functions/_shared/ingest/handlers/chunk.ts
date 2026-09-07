@@ -213,9 +213,10 @@ export function makeChunkHandler(deps: ChunkDeps): TaskHandler {
     }
 
     // 저장이 **다 끝난 뒤에** 다음 단계를 넣는다.
+    // 원본 순서: chunk_filter → content_gate → **tag_summarize** → load.
     const { error: sendErr } = await deps.client.rpc("ingest_queue_send", {
-      payload: { job_id: task.job_id, doc_id: task.doc_id, stage: "load", from: 0 },
+      payload: { job_id: task.job_id, doc_id: task.doc_id, stage: "tag_summarize" },
     });
-    if (sendErr) throw new Error(`load enqueue 실패: ${sendErr.message}`);
+    if (sendErr) throw new Error(`tag_summarize enqueue 실패: ${sendErr.message}`);
   };
 }

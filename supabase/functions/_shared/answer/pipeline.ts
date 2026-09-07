@@ -36,6 +36,7 @@ import { findEnabledUnsupported, unsupportedDetail } from "../search/unsupported
 import { type ChatMessage, complete } from "../llm/gemini.ts";
 import { type EnrichedChunk, gatherChunks, type QueryParsedInfo } from "./chunks.ts";
 import { buildMessages, LLM_MODEL_FALLBACK, NO_RESULT_ANSWER } from "./prompt.ts";
+import { isQuotaExhausted } from "../llm/quota.ts";
 
 /** `_LOW_CONFIDENCE_THRESHOLD`. */
 export const LOW_CONFIDENCE_THRESHOLD = 0.75;
@@ -51,19 +52,9 @@ export class AnswerHttpError extends Error {
   }
 }
 
-/** `is_quota_exhausted` 포팅 — 클래스명·429·메시지 3 단계 중 Edge 에서 가능한 것. */
-export function isQuotaExhausted(e: unknown): boolean {
-  if (e && typeof e === "object") {
-    const anyE = e as Record<string, unknown>;
-    for (const attr of ["status_code", "code"]) {
-      if (anyE[attr] === 429) return true;
-    }
-  }
-  const msg = e instanceof Error ? e.message : String(e ?? "");
-  if (!msg) return false;
-  const upper = msg.toUpperCase();
-  return upper.includes("RESOURCE_EXHAUSTED") || msg.includes("429") || upper.includes("QUOTA");
-}
+// `isQuotaExhausted` 는 인제스트(tag_summarize)도 쓴다 — `llm/quota.ts` 로 옮겼다.
+// 이 모듈 안에서도 쓰므로 import 한 뒤 다시 내보낸다(기존 import 경로 보존).
+export { isQuotaExhausted };
 
 export interface AnswerDeps {
   client: SupabaseClient;

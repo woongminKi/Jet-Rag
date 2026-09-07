@@ -171,3 +171,29 @@ export function pyFloat(v: unknown): number | null {
   if (!/^(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(cleaned)) return null;
   return sign * Number(cleaned);
 }
+
+/**
+ * Python `sum(floats)` — **보정 합(Neumaier)** 이다. 단순 루프와 값이 다르다.
+ *
+ * CPython 3.12 가 `sum()` 의 부동소수 경로를 Neumaier 합으로 바꿨다(gh-100425).
+ * ```
+ * sum([1e100, 1.0, -1e100, 1.0]) == 2.0   # 보정 합
+ * 단순 루프                        == 1.0   # 큰 수에 묻혀 1.0 이 사라진다
+ * ```
+ * `dedup` 의 cosine 이 1024 차원을 더하는데, 단순 루프로 옮겼더니 마지막 자리가
+ * 어긋났다(실측 상대오차 ~1e-16). 유사도 임계(0.95/0.85) 근처에서 판정을 바꿀 수 있다.
+ *
+ * **Python 쪽이 `sum()` 인지 `for` 루프인지 보고 골라야 한다.** `for total += x` 는
+ * 보정이 없으므로 그냥 더해야 맞다.
+ */
+export function pySum(values: readonly number[]): number {
+  let result = 0.0;
+  let c = 0.0;
+  for (const x of values) {
+    const t = result + x;
+    if (Math.abs(result) >= Math.abs(x)) c += (result - t) + x;
+    else c += (x - t) + result;
+    result = t;
+  }
+  return result + c;
+}

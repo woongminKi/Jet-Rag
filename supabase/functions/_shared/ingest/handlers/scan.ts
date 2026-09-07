@@ -126,6 +126,7 @@ export function makeScanHandler(deps: ScanDeps): TaskHandler {
       source_type: "pdf",
       sections: result.sections,
       raw_text: result.rawParts.join("\n\n"),
+      raw_part_count: result.rawParts.length,
       warnings: [...warnings, ...result.warnings],
       page_from: from,
       page_count: pages.length,

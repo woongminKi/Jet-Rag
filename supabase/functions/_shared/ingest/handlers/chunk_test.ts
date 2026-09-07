@@ -213,7 +213,8 @@ Deno.test("레코드를 CHUNKS_PER_ARTIFACT 개씩 쪼개 저장한다", async (
   assertEquals(all.map((r) => r.chunk_idx), [0, 1, 2, 3, 4, 5, 6]);
 
   assertEquals(sends.length, 1);
-  assertEquals(sends[0], { job_id: "j1", doc_id: "d1", stage: "load", from: 0 });
+  // 원본 순서: chunk_filter → content_gate → **tag_summarize** → load.
+  assertEquals(sends[0], { job_id: "j1", doc_id: "d1", stage: "tag_summarize" });
 });
 
 Deno.test("청크가 0 개여도 part 를 하나는 남긴다", async () => {
