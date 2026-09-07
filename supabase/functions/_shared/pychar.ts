@@ -177,3 +177,30 @@ export function pyIsAlnum(ch: string): boolean {
   const cp = ch.codePointAt(0);
   return cp !== undefined && !inRanges(cp, ALNUM_EXCESS);
 }
+
+/**
+ * Python `\w` — 실측 결과 **`isalnum()` + `_`** 와 정확히 같다(137,936 = 137,935 + 1).
+ * JS `[\p{L}\p{N}_]` 와의 차이 5,004 자(27 범위)도 `ALNUM_EXCESS` 와 **동일**이라
+ * 그대로 재사용한다.
+ */
+export function pyIsWord(ch: string): boolean {
+  return ch === "_" || pyIsAlnum(ch);
+}
+
+/**
+ * 정규식 안에서 Python `\b` 를 흉내낼 때 쓰는 **문자 클래스 조각**.
+ *
+ * Python `\b` 는 유니코드 `\w` 경계인데 JS `\b` 는 ASCII `\w` 경계다. 한국어 문서에서
+ * 정면으로 갈린다 — 실측 6 건(`50,000원` 이 JS 에서 아예 안 잡힘, `약25%` 는 JS 에서만
+ * 잡힘). 그래서 `\b` 를 lookaround 로 풀어 쓴다:
+ *
+ * ```
+ * 패턴 앞의 \b  →  (?<!${PY_WORD_CLASS})
+ * 패턴 뒤의 \b  →  (?!${PY_WORD_CLASS})
+ * ```
+ *
+ * **`v` 플래그가 필요하다**(집합 뺄셈 `--`). Deno 지원을 확인했다.
+ * `u` 플래그와는 함께 못 쓴다.
+ */
+export const PY_WORD_CLASS =
+  "[[\\p{L}\\p{N}_]--[\u{1C89}-\u{1C8A}\u{A7CB}-\u{A7CD}\u{A7DA}-\u{A7DC}\u{105C0}-\u{105F3}\u{10D40}-\u{10D65}\u{10D6F}-\u{10D85}\u{10EC2}-\u{10EC4}\u{11380}-\u{11389}\u{1138B}\u{1138E}\u{11390}-\u{113B5}\u{113B7}\u{113D1}\u{113D3}\u{116D0}-\u{116E3}\u{11BC0}-\u{11BE0}\u{11BF0}-\u{11BF9}\u{13460}-\u{143FA}\u{16100}-\u{1611D}\u{16130}-\u{16139}\u{16D40}-\u{16D6C}\u{16D70}-\u{16D79}\u{18CFF}\u{1CCF0}-\u{1CCF9}\u{1E5D0}-\u{1E5ED}\u{1E5F0}-\u{1E5FA}\u{2EBF0}-\u{2EE5D}]]";

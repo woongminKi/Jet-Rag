@@ -9,7 +9,7 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { pyIsAlnum, pyIsDigit, pyIsSpace } from "./pychar.ts";
+import { PY_WORD_CLASS, pyIsAlnum, pyIsDigit, pyIsSpace, pyIsWord } from "./pychar.ts";
 
 const fixture = JSON.parse(
   await Deno.readTextFile(
@@ -76,4 +76,28 @@ Deno.test("알려진 함정 값들", () => {
 
 Deno.test("빈 문자열은 전부 거짓", () => {
   assertEquals([pyIsSpace(""), pyIsDigit(""), pyIsAlnum("")], [false, false, false]);
+});
+
+Deno.test("pyIsWord — Python \\w 와 같다 (isalnum + '_')", () => {
+  const want = toSet(fixture.isalnum);
+  const diff: number[] = [];
+  for (let cp = 0; cp <= 0x10FFFF; cp++) {
+    if (cp >= 0xD800 && cp <= 0xDFFF) continue;
+    const expected = want.has(cp) || cp === 0x5F; // '_'
+    if (pyIsWord(String.fromCodePoint(cp)) !== expected) diff.push(cp);
+  }
+  assertEquals(diff.slice(0, 10), [], `다른 코드포인트 ${diff.length}개`);
+});
+
+Deno.test("PY_WORD_CLASS — 정규식 안에서도 같은 판정", () => {
+  // `v` 플래그 집합 뺄셈. 이게 깨지면 `\b` 치환이 전부 틀어진다.
+  const re = new RegExp(`^${PY_WORD_CLASS}$`, "v");
+  const want = toSet(fixture.isalnum);
+  const diff: number[] = [];
+  for (let cp = 0; cp <= 0x10FFFF; cp++) {
+    if (cp >= 0xD800 && cp <= 0xDFFF) continue;
+    const expected = want.has(cp) || cp === 0x5F;
+    if (re.test(String.fromCodePoint(cp)) !== expected) diff.push(cp);
+  }
+  assertEquals(diff.slice(0, 10), [], `다른 코드포인트 ${diff.length}개`);
 });
