@@ -2910,3 +2910,139 @@ vision_usage_log  call_id 2197  source_type='image'  page=null  $0.006152
 | `POST /payments/subscribe/*` · `POST /billing/run` | 135 + 398줄 — Railway 제거의 마지막 큰 덩어리 |
 | PPTX Vision 보강 (`_vision_ocr_largest_picture`) | §41.6 |
 | chunk 조각 c2 (`synonym_inject`) | 200줄 |
+
+---
+
+## 46. Phase 4 — 카카오페이 정기결제 (`35a1ed4`). **앱 라우트가 1개 남았다**
+
+Railway 제거의 마지막 큰 덩어리. `/payments/subscribe/{ready,approve,cancel}` +
+`POST /billing/run` 을 옮겼다. **프록시는 아직 배포하지 않았다** — §46.6 참조.
+
+### 46.1 시작 전에 실측한 것 — 위험이 생각보다 낮았다
+
+```
+subscriptions 1행 — plan=pro status=active, billing_key **없음**, period_end=None
+payment_history 0행
+plans: free(0원) / pro(6900원)
+```
+
+암호문이 **아직 하나도 없다**(카카오페이 심사 대기). 즉 "기존 Fernet 암호문을 Edge 가
+못 풀어 자동결제가 멈추는" 최악 시나리오는 지금 존재하지 않는다. 그래도 Fernet 은
+정확히 맞춰야 한다 — 앞으로 쌓일 값을 양쪽이 다 읽어야 하기 때문이다.
+
+### 46.2 승부처는 Fernet 이었다 — 먼저 증명하고 나머지를 썼다
+
+`subscriptions.billing_key` = SID(빌링키)의 Fernet 암호문. Python `cryptography` 가
+만든 걸 Edge 가 못 풀면 **자동결제가 통째로 멈춘다.** 그래서 다른 걸 쓰기 전에 이것부터
+했다. WebCrypto(AES-128-CBC + HMAC-SHA256)로 명세대로 구현했다.
+
+`verify_fernet_parity.py` — **비교 40건 / 불일치 0건**:
+
+| 검사 | 결과 |
+|---|---|
+| Python 토큰 9종 → TS 가 푼다 (DB 의 기존 값) | 9/9 |
+| TS 토큰 9종 → Python 이 푼다 (이관 중 역방향) | 9/9 |
+| 손상 8패턴 (MAC·암호문·IV·버전·timestamp 변조, 절단, base64 아님, 빈 문자열) | 양쪽 다 거절 |
+| 다른 키 9건 | 전부 거절 |
+| 잘못된 키 4종 (빈 값·비 base64·16B·64B) | 양쪽 다 거절 |
+
+**바이트 일치는 애초에 불가능하다** — IV 가 난수고 timestamp 가 현재 시각이다.
+그래서 교차 복호화로 증명했다. 거절 동작까지 맞춘 건, 한쪽만 받아 주면 그게 곧 구멍이라서다.
+
+### 46.3 돈이 걸린 코드라 대조 기준을 올렸다
+
+검색 결과가 조금 달라지는 것과 **이중 청구**는 무게가 다르다. 응답만 보지 않고
+**DB write 가 어떤 순서로 나갔는지**까지 비교했다. 양쪽 DB·KakaoPay 를 같은 스텁으로
+갈고 서비스 함수는 진짜를 돌린다(재구현끼리 비교하면 아무것도 증명하지 않는다).
+
+`verify_billing_parity.py` — **비교 69건 / 불일치 0건**. 시나리오 20건 중 핵심:
+
+| 시나리오 | 지켜야 하는 것 |
+|---|---|
+| `billing_key` 없음 | `past_due` — 조용한 무한 skip 방지 |
+| SID 복호화 실패 | **`past_due` 아님** — 설정 오류라 grace clock 을 건드리면 안 된다 |
+| 이미 `past_due` | `past_due_since` 를 **덮어쓰지 않는다** — 덮으면 7일이 영원히 안 온다 |
+| 이번 주기 이미 결제됨 | 결제 호출 **0회** (멱등 마커) |
+| 결제 성공 후 갱신 실패 | `charged` 로 세고, 다음 배치가 멱등 처리 |
+| 재클릭 | `pending_tid` 만 갱신 — Pro 접근이 끊기면 안 된다 |
+
+날짜 9건도 같이: 말일 clamp(1/31→2/28, 윤년 2/29), 연도 넘김, 마이크로초 표기.
+
+### 46.4 대조가 잡은 것 2건
+
+**① `payment_history.detail` 에 `"Error: "` 가 붙고 있었다.**
+JS `String(err)` 는 클래스 이름을 앞에 붙이는데 Python `str(exc)` 는 메시지만 준다.
+관리자 화면에 보이는 값이라 실제 차이다.
+
+같은 패턴이 **vision 경로 3곳**에도 있었다(`vision_usage_log.error_msg` —
+`image_parser.ts` · `vision_enrich.ts` · `vision_scan.ts`). 전부 이번 세션에 내가 이식한
+것들이다. `_shared/pyerror.ts` 로 빼고 4곳을 고친 뒤 vision 대조 4종을 재실행해
+회귀 없음을 확인했다.
+
+> 교훈: **DB 컬럼으로 나가는 예외 문자열**은 로그와 다르게 취급해야 한다.
+> 결제 대조를 안 했으면 vision 쪽 3건은 계속 몰랐을 것이다.
+
+**② `parseIso` 가 불가능한 날짜를 통과시켰다.**
+`2026-02-29`(2026 은 윤년이 아니다)를 정규식이 받아 조용히 틀린 값을 계산했다.
+Python `fromisoformat` 은 거부한다. 날짜 유효성 검사를 넣었다.
+— 이건 **내 테스트 데이터의 오류**가 먼저 드러낸 것이다. 데이터가 틀렸다고 고치고
+넘어갈 뻔했는데, 구현도 같이 틀려 있었다.
+
+### 46.5 배포 중 걸린 것
+
+`config.toml` 에 `[functions.api-payments]` 항목이 없어 **첫 배포가 실패**했다
+(`Relative import path "jose" not prefixed` — import_map 을 못 찾는다).
+함수 디렉터리만 만들면 되는 게 아니라 항목을 같이 넣어야 한다.
+
+배포 후 실측:
+```
+POST /payments/subscribe/ready (비인증) → 401 {"detail":"로그인이 필요합니다."}
+POST /billing/run (틀린 secret)        → 503 "billing cron 이 비활성 상태입니다"
+GET  /billing/run                      → 405
+프록시                                  → 아직 railway
+```
+
+### 46.6 컷오버가 막혀 있다 — **secret 3개**
+
+| ENV | 없으면 |
+|---|---|
+| `JETRAG_KAKAOPAY_SECRET_KEY` | 결제 3종 **503** |
+| `JETRAG_BILLING_KEY_ENCRYPTION_KEY` | 결제 3종 **503** |
+| `JETRAG_BILLING_CRON_SECRET` | `/billing/run` **503** |
+
+`verify_email_cutover.ts` → **`verify_cutover.ts`** 로 확장했다. 이제 이메일·결제 두
+경로의 준비 상태를 함께 보고, 하나라도 미완료면 "워커를 배포하면 준비 안 된 쪽이
+죽는다" 로 막는다. 이식은 됐는데 프록시를 안 돌린 경로가 **둘**이 되면서 배포 순서
+사고 위험이 커졌기 때문이다.
+
+### 46.7 cron 은 아직 안 만들었다 (사용자 결정 필요)
+
+현재 주 경로는 Railway cron 의 `scripts/billing_charge.py` 다. Railway 를 없애면
+누군가 매일 `/billing/run` 을 불러야 한다. Supabase 에서는 pg_cron 인데 그건
+**신규 마이그레이션**(029)이라 가드레일상 사용자 확인이 필요하다.
+마이그 028(인제스트 drain)이 Vault + `net.http_post` 패턴을 이미 만들어 뒀으므로
+그걸 그대로 따르면 된다.
+
+### 46.8 이관 현황 실측 (2026-09-07 기준)
+
+프록시 `resolveTarget` 으로 FastAPI 라우트 전수를 판정한 결과:
+
+```
+총 라우트(메서드 단위) 34  ·  Edge 28  ·  Railway 6
+```
+
+남은 6개:
+
+| 라우트 | 성격 |
+|---|---|
+| `GET /` · `/docs` · `/docs/oauth2-redirect` · `/openapi.json` · `/redoc` | FastAPI 자체 문서 — **Railway 와 함께 사라진다** |
+| `POST /documents/url` | **유일하게 남은 앱 라우트** — trafilatura 차단 |
+
+### 46.9 다음 후보
+
+| 후보 | 내용 |
+|---|---|
+| **A** | secret 설정 → 이메일 + 결제 **동시 컷오버** (`verify_cutover.ts` 가 순서를 지킨다) |
+| **B** | `POST /documents/url` 처리 — 사용 0건 · 웹 UI 호출 0건이라 폐기가 RAGAS 패턴과 같다 |
+| **C** | billing cron 마이그 029 (pg_cron + Vault, 마이그 028 패턴) |
+| **D** | PPTX Vision 보강 · `synonym_inject` 등 잔여 이식 |
