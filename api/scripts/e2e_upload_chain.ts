@@ -145,6 +145,41 @@ try {
     console.log("  **사슬이 끝까지 안 갔다**");
     exitCode = 1;
   }
+
+  // ---- vision 이 실제로 돌았는지 ----
+  // 청크 수만 보면 vision 이 통째로 빠져도 통과한다. `(vision) p.N` 제목이 붙은
+  // 청크가 곧 Gemini 를 다녀온 증거다.
+  const { data: vArt } = await client
+    .from("ingest_artifacts").select("seq, payload")
+    .eq("job_id", jobId).eq("stage", "vision").order("seq", { ascending: true });
+  const vRows = (vArt ?? []) as { seq: number; payload: Record<string, unknown> }[];
+  const { data: vChunks } = await client
+    .from("chunks").select("section_title, text")
+    .eq("doc_id", docId).like("section_title", "(vision) p.%").limit(5);
+  const vc = (vChunks ?? []) as { section_title: string; text: string }[];
+
+  if (vRows.length === 0) {
+    console.log("  vision  아티팩트 없음 — 비활성이거나 대상 아님");
+  } else {
+    const carry = vRows[vRows.length - 1].payload?.["carry"] as
+      | { calledCount?: number; completed?: number; skippedByNeedScore?: number[] }
+      | undefined;
+    const warn = vRows.flatMap((r) => (r.payload?.["warnings"] as string[]) ?? []);
+    console.log(
+      `  vision  창 ${vRows.length}개  호출 ${carry?.calledCount ?? "?"}  ` +
+        `처리 ${carry?.completed ?? "?"}  ` +
+        `need_score skip ${carry?.skippedByNeedScore?.length ?? "?"}  ` +
+        `청크 ${vc.length}건`,
+    );
+    for (const w of warn) console.log(`    경고: ${w}`);
+    for (const c of vc.slice(0, 3)) {
+      console.log(`    ${c.section_title} → ${c.text.slice(0, 60).replace(/\n/g, " ")}`);
+    }
+    if (vc.length === 0) {
+      console.log("  **vision 아티팩트는 있는데 청크가 없다**");
+      exitCode = 1;
+    }
+  }
 } finally {
   if (keep) {
     console.log(`\n  --keep: doc ${docId} 유지`);

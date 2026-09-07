@@ -260,6 +260,8 @@ export function makeVisionHandler(deps: VisionDeps): TaskHandler {
       process_count: processCount,
       total_pages: totalPages,
       failed_pages: result.failedPages,
+      // 비어 있어야 정상 — 차면 비용 한도가 안 걸린다는 뜻이다.
+      metric_errors: result.metricErrors,
     } as Record<string, unknown>);
     if (payload.removed > 0) payload.value["nul_removed"] = payload.removed;
 
@@ -273,6 +275,13 @@ export function makeVisionHandler(deps: VisionDeps): TaskHandler {
         payload: payload.value,
       }, { onConflict: "job_id,stage,seq" });
     if (upErr) throw new Error(`ingest_artifacts 저장 실패: ${upErr.message}`);
+
+    if (result.metricErrors.length > 0) {
+      console.error(
+        `vision_usage_log 적재 실패 ${result.metricErrors.length}건 — 비용 한도가 ` +
+          `안 걸린다. doc=${task.doc_id} ${result.metricErrors.join(" / ")}`,
+      );
+    }
 
     const nextFrom = from + pagesPerTask;
     const hasMore = !result.stopped && nextFrom < processCount;

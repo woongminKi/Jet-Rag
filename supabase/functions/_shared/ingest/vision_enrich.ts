@@ -155,6 +155,11 @@ export interface VisionWindowResult {
   stopped: boolean;
   /** 이 창에서 `maxSweeps` 번 시도하고도 실패한 페이지(1-based). */
   failedPages: number[];
+  /**
+   * `vision_usage_log` 적재 실패 사유. **비어 있어야 정상이다.**
+   * 이게 차면 `budget_guard` 의 비용 SUM 이 0 이 되어 한도가 안 걸린다.
+   */
+  metricErrors: string[];
 }
 
 export interface VisionRunDeps {
@@ -193,6 +198,7 @@ export async function runVisionWindow(
   const sections: ExtractedSection[] = [];
   const rawParts: string[] = [];
   const warnings: string[] = [];
+  const metricErrors: string[] = [];
   const carry: VisionCarry = { ...opts.carry, skippedByNeedScore: [...opts.carry.skippedByNeedScore] };
 
   // deno-lint-ignore no-explicit-any
@@ -294,7 +300,7 @@ export async function runVisionWindow(
                 ? await deps.caption(img.jpeg, img.mimeType)
                 : await captionImage(clientDeps, img.jpeg, img.mimeType);
             } catch (e) {
-              await recordCall(deps.client, deps.env, deps.nowMs, {
+              const me = await recordCall(deps.client, deps.env, deps.nowMs, {
                 success: false,
                 errorMsg: String(e),
                 sourceType: "pdf_vision_enrich",
@@ -302,9 +308,10 @@ export async function runVisionWindow(
                 page: pageNum + 1,
                 retryAttempt: (e as { retryAttempt?: number })?.retryAttempt ?? null,
               });
+              if (me !== null) metricErrors.push(`p${pageNum + 1} 실패기록: ${me}`);
               throw e;
             }
-            await recordCall(deps.client, deps.env, deps.nowMs, {
+            const me = await recordCall(deps.client, deps.env, deps.nowMs, {
               success: true,
               sourceType: "pdf_vision_enrich",
               usage: caption.usage as unknown as Record<string, unknown> | null,
@@ -312,6 +319,7 @@ export async function runVisionWindow(
               page: pageNum + 1,
               retryAttempt: caption.usage?.retry_attempt ?? null,
             });
+            if (me !== null) metricErrors.push(`p${pageNum + 1}: ${me}`);
             const cost = caption.usage?.estimated_cost;
             await visionCache.upsert(cacheDeps, opts.sha256, pageNum + 1, {
               caption,
@@ -372,6 +380,7 @@ export async function runVisionWindow(
       carry,
       stopped: carry.budgetExceeded !== null || carry.pageCapExceeded !== null,
       failedPages: pending.map((p) => p + 1),
+      metricErrors,
     };
   } finally {
     doc.destroy?.();

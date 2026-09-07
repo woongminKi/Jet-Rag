@@ -98,14 +98,22 @@ export interface RecordCallOpts {
  *
  * `error_msg` 는 기본 200자에서 자른다 — 원본은 `(error_msg or "")[:n] or None` 이라
  * 빈 문자열이 `null` 이 된다. 그 동작까지 같다.
+ *
+ * ## 실패 사유를 **돌려준다**
+ * 원본은 삼키고 끝이다. 그런데 이 테이블이 비면 `budget_guard` 의 비용 SUM 이 영원히
+ * 0 이 되고 **한도가 절대 발동하지 않는다** — 지출이 무제한이 된다는 뜻이다. 그런
+ * 고장이 조용하면 안 된다. 인제스트는 원본처럼 계속 진행하되(던지지 않는다), 사유는
+ * 호출자에게 넘겨 아티팩트에 남긴다.
+ *
+ * @returns 실패 사유. 성공이거나 비활성이면 `null`.
  */
 export async function recordCall(
   client: SupabaseClient,
   env: Record<string, string | undefined>,
   nowMs: number,
   opts: RecordCallOpts,
-): Promise<void> {
-  if (env["JET_RAG_METRICS_PERSIST_ENABLED"] === "0") return;
+): Promise<string | null> {
+  if (env["JET_RAG_METRICS_PERSIST_ENABLED"] === "0") return null;
 
   const truncated = (opts.errorMsg ?? "").slice(0, errorMsgMaxLen(env));
   const row: Record<string, unknown> = {
@@ -121,16 +129,26 @@ export async function recordCall(
   };
   try {
     const { error } = await client.from("vision_usage_log").insert(row);
-    if (error) throw new Error(error.message);
+    if (error) {
+      throw new Error(
+        `${error.message}` +
+          `${error.details ? ` | details=${error.details}` : ""}` +
+          `${error.hint ? ` | hint=${error.hint}` : ""}` +
+          `${error.code ? ` | code=${error.code}` : ""}`,
+      );
+    }
+    return null;
   } catch (err) {
+    const msg = String(err);
     if (!firstPersistWarnLogged) {
       firstPersistWarnLogged = true;
       console.warn(
-        `vision_usage_log insert 실패 (graceful): ${err} — ` +
+        `vision_usage_log insert 실패 (graceful): ${msg} — ` +
           `마이그 005/014 적용 후 자동 회복.`,
       );
     } else {
-      console.debug(`vision_usage_log insert 실패: ${err}`);
+      console.debug(`vision_usage_log insert 실패: ${msg}`);
     }
+    return msg;
   }
 }
