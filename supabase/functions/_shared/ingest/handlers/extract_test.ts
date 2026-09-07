@@ -11,7 +11,12 @@
  */
 
 import { assertEquals, assertRejects } from "@std/assert";
-import { makeExtractHandler, SUPPORTED_DOC_TYPES } from "./extract.ts";
+import {
+  GRACEFUL_SKIP_DOC_TYPES,
+  makeExtractHandler,
+  SUPPORTED_DOC_TYPES,
+} from "./extract.ts";
+import { ALLOWED_EXTENSIONS } from "../../documents/input_gate.ts";
 import type { PdfRangeResult } from "../pdf_open.ts";
 import type { TaskPayload } from "../worker.ts";
 
@@ -28,17 +33,23 @@ function fakeClient(doc: Record<string, unknown> | null, opts: FakeOpts = {}) {
   const sends: Record<string, unknown>[] = [];
   /** upsert 와 rpc 가 **어떤 순서로** 불렸는지 — 계약이다. */
   const calls: string[] = [];
+  const updates: { table: string; row: Record<string, unknown> }[] = [];
   const artifacts = opts.artifacts ?? [];
 
   const client = {
     from(table: string) {
-      if (table === "documents") {
+      if (table === "documents" || table === "ingest_jobs") {
         return {
           select: () => ({
             eq: () => ({
               limit: () => Promise.resolve({ data: doc ? [doc] : [], error: null }),
             }),
           }),
+          update(row: Record<string, unknown>) {
+            calls.push(`update:${table}`);
+            updates.push({ table, row });
+            return { eq: () => Promise.resolve({ data: null, error: null }) };
+          },
         };
       }
       // ingest_artifacts
@@ -98,7 +109,7 @@ function fakeClient(doc: Record<string, unknown> | null, opts: FakeOpts = {}) {
       return Promise.resolve({ data: 1, error: null });
     },
   };
-  return { client, upserts, sends, calls };
+  return { client, upserts, sends, calls, updates };
 }
 
 const HWP_DOC = { id: "d1", doc_type: "hwp", storage_path: "user/u/x.hwp" };
@@ -156,9 +167,69 @@ Deno.test("SUPPORTED_DOC_TYPES — ZIP/XML 4종이 들어왔다", () => {
   // 목록이 곧 계약이다. 빠지면 업로드는 되는데 인제스트가 던진다.
   assertEquals([...SUPPORTED_DOC_TYPES].sort(), ["docx", "hwp", "hwpx", "pdf", "pptx"]);
   // 아직 안 된 것들 — 이식하면 이 줄이 먼저 깨진다.
-  for (const t of ["image", "url", "txt", "md"]) {
+  for (const t of ["image", "url"]) {
     assertEquals(SUPPORTED_DOC_TYPES.has(t), false, t);
   }
+});
+
+Deno.test("업로드가 받는 doc_type 은 **전부** 여기서 분류돼 있어야 한다", () => {
+  // 이 대조가 없어서 `.txt` 가 202 로 받아진 뒤 extract 에서 실패했다.
+  // 업로드 화이트리스트와 이 핸들러가 따로 자라면 그 틈이 곧 회귀다.
+  const uploadable = new Set(Object.values(ALLOWED_EXTENSIONS));
+  const 던지는것: string[] = [];
+  for (const t of uploadable) {
+    if (SUPPORTED_DOC_TYPES.has(t) || GRACEFUL_SKIP_DOC_TYPES.has(t)) continue;
+    던지는것.push(t);
+  }
+  // 남는 건 **원본이 실제로 파싱하는데 아직 못 옮긴 것**뿐이어야 한다.
+  // 여기에 새 값이 나타나면 그건 조용한 회귀다 — 목록에 넣거나 이식해야 한다.
+  // (`url` 은 확장자가 아니라 `POST /documents/url` 이 만드는 doc_type 이라 여기 없다.)
+  assertEquals(던지는것.sort(), ["image"]);
+  assertEquals(uploadable.has("url"), false);
+  // 원본에도 파서가 없는 것들 — 원본과 같이 정상 완료시킨다.
+  assertEquals([...GRACEFUL_SKIP_DOC_TYPES].sort(), ["md", "txt"]);
+});
+
+Deno.test("원본에도 파서가 없는 포맷은 잡을 **정상 완료**시킨다 (graceful skip)", async () => {
+  const { client, sends, updates, calls } = fakeClient({
+    id: "d1",
+    doc_type: "txt",
+    storage_path: "user/u/x.txt",
+    flags: { ingest_mode: "default" },
+  });
+  const h = makeExtractHandler({
+    // deno-lint-ignore no-explicit-any
+    client: client as any,
+    bucket: "documents",
+    nowMs: () => 0,
+    // 다운로드가 불리면 안 된다 — 파일을 읽지도 않고 넘겨야 한다.
+    download: () => Promise.reject(new Error("여기 오면 안 된다")),
+  });
+  const outcome = await h(TASK, {} as never);
+
+  // ① 로그는 `skipped` 다 — 실패가 아니다.
+  assertEquals(outcome, {
+    logStatus: "skipped",
+    logError: "txt 포맷은 아직 지원되지 않습니다 (후속 어댑터 도입 예정).",
+  });
+  // ② 기존 flags 를 보존하고 두 키만 얹는다.
+  assertEquals(updates[0], {
+    table: "documents",
+    row: {
+      flags: {
+        ingest_mode: "default",
+        extract_skipped: true,
+        extract_skipped_reason: "doc_type=txt 는 아직 지원되지 않는 포맷입니다 (W2 예정).",
+      },
+    },
+  });
+  // ③ 잡은 completed 로 마감된다.
+  assertEquals(updates[1].table, "ingest_jobs");
+  assertEquals((updates[1].row as { status: string }).status, "completed");
+  assertEquals((updates[1].row as { current_stage: string }).current_stage, "done");
+  // ④ 다음 스테이지를 큐에 넣지 않는다 — 안 넣는 것이 곧 사슬 종료다.
+  assertEquals(sends, []);
+  assertEquals(calls.filter((c) => c.startsWith("rpc:")), []);
 });
 
 Deno.test("storage_path 가 pending 이면 던진다 (재시도 대상)", async () => {

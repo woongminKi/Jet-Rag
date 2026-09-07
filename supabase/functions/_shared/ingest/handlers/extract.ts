@@ -36,6 +36,7 @@ import {
 } from "../xml_extract.ts";
 import { PDF_PAGES_PER_TASK } from "../pdf_extract.ts";
 import { extractPdfRange, type PdfRangeResult } from "../pdf_open.ts";
+import { finishJob } from "../finish.ts";
 import { stripNulls } from "../strip_nul.ts";
 import { readVisionEnv } from "../vision_enrich.ts";
 import { isScanPdf } from "../vision_scan.ts";
@@ -46,6 +47,20 @@ import type { TaskHandler, TaskPayload } from "../worker.ts";
 export const SUPPORTED_DOC_TYPES = new Set([
   "hwp", "pdf", "hwpx", "docx", "pptx",
 ]);
+
+/**
+ * **원본에도 파서가 없는** doc_type — 원본은 `flags.extract_skipped` 를 켜고 잡을
+ * **정상 완료**시킨다(`extract.py:166` parser is None → `skip_stage` → `finish_job`).
+ *
+ * 이 목록이 없으면 `.txt` 업로드가 202 로 받아진 뒤 extract 에서 실패한다. 업로드
+ * 화이트리스트(`ALLOWED_EXTENSIONS`)에는 있는데 여기 없어서 생긴 이관 회귀였다 —
+ * 실측으로 잡았다(`e2e_upload_chain.ts probe.txt` → `extract:failed`).
+ *
+ * **`image` · `url` 은 여기 넣으면 안 된다.** 원본은 그 둘을 실제로 파싱한다
+ * (`ImageParser` · `UrlParser`). 아직 못 옮긴 것이므로 조용히 완료시키지 말고
+ * 시끄럽게 실패해야 한다 — 완료로 뒤집으면 빈 문서가 조용히 쌓인다.
+ */
+export const GRACEFUL_SKIP_DOC_TYPES = new Set(["txt", "md"]);
 
 export interface ExtractDeps {
   client: SupabaseClient;
@@ -61,6 +76,7 @@ export interface ExtractDeps {
   pagesPerTask?: number;
   /** 테스트 주입 — ENV 를 직접 준다. */
   env?: Record<string, string | undefined>;
+  nowMs?: () => number;
 }
 
 async function defaultDownload(
@@ -114,18 +130,45 @@ export function makeExtractHandler(deps: ExtractDeps): TaskHandler {
   // 스캔 PDF 여부는 vision 핸들러가 판단해 스스로 chunk 로 넘긴다 — 여기서 flags 까지
   // 보면 extract 가 vision 정책을 알아야 해서 책임이 번진다.
   const visionEnabled = readVisionEnv(deps.env ?? Deno.env.toObject()).enabled;
+  const now = deps.nowMs ?? (() => Date.now());
 
   return async (task: TaskPayload) => {
     const { data: docs, error: docErr } = await deps.client
       .from("documents")
-      .select("id, doc_type, storage_path")
+      .select("id, doc_type, storage_path, flags")
       .eq("id", task.doc_id)
       .limit(1);
     if (docErr) throw new Error(`documents 조회 실패: ${docErr.message}`);
-    const doc = (docs ?? [])[0] as { doc_type?: string; storage_path?: string } | undefined;
+    const doc = (docs ?? [])[0] as {
+      doc_type?: string;
+      storage_path?: string;
+      flags?: Record<string, unknown> | null;
+    } | undefined;
     if (!doc) throw new Error(`문서를 찾을 수 없다: ${task.doc_id}`);
 
     const docType = doc.doc_type ?? "";
+    if (GRACEFUL_SKIP_DOC_TYPES.has(docType)) {
+      // 원본 `_mark_unsupported_format` — 기존 flags 를 보존하고 두 키만 얹는다.
+      const { error: flagErr } = await deps.client
+        .from("documents")
+        .update({
+          flags: {
+            ...(doc.flags ?? {}),
+            extract_skipped: true,
+            extract_skipped_reason:
+              `doc_type=${docType} 는 아직 지원되지 않는 포맷입니다 (W2 예정).`,
+          },
+        })
+        .eq("id", task.doc_id);
+      if (flagErr) throw new Error(`extract_skipped 마킹 실패: ${flagErr.message}`);
+      // 원본 `pipeline.py:48` — 후속 스테이지를 걸지 않고 **잡은 정상 완료**다.
+      // 다음 작업을 enqueue 하지 않는 것이 곧 사슬 종료다.
+      await finishJob(deps.client, task.job_id, now());
+      return {
+        logStatus: "skipped",
+        logError: `${docType} 포맷은 아직 지원되지 않습니다 (후속 어댑터 도입 예정).`,
+      };
+    }
     if (!SUPPORTED_DOC_TYPES.has(docType)) {
       // **조용히 넘기지 않는다.** 아직 못 하는 건 못 한다고 말해야 한다.
       throw new Error(`아직 이식되지 않은 포맷: ${docType || "(없음)"}`);

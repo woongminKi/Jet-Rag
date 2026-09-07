@@ -111,6 +111,7 @@ try {
   // ---- 여기서부터는 pg_cron 이 한다. 기다리기만 한다 ----
   console.log("  pg_cron 대기 …");
   let lastStage = "";
+  let gracefulSkip = false;
   let embedded = 0;
   let chunkCount = 0;
   const deadline = performance.now() + 300_000;
@@ -135,15 +136,31 @@ try {
       exitCode = 1;
       break;
     }
+    // 원본에도 파서가 없는 포맷(`txt`/`md`)은 여기서 **정상 종료**한다 — 청크가 0 인
+    // 것이 맞다. 이 분기가 없으면 하네스가 성공을 실패로 읽는다(실제로 그랬다).
+    if (job?.status === "completed" && (job?.current_stage ?? "") === "done") {
+      const { data: fr } = await client
+        .from("documents").select("flags").eq("id", docId).single();
+      gracefulSkip = Boolean((fr?.flags as Record<string, unknown> | null)?.["extract_skipped"]);
+      if (gracefulSkip) break;
+    }
     const { data: depth } = await client.rpc("ingest_queue_depth");
     const queued = Number((depth ?? [{}])[0]?.queue_length ?? 0);
     if (queued === 0 && chunkCount > 0 && embedded === chunkCount) break;
   }
 
-  console.log(`  결과  청크 ${chunkCount}  dense_vec ${embedded}/${chunkCount}`);
-  if (chunkCount === 0 || embedded !== chunkCount) {
-    console.log("  **사슬이 끝까지 안 갔다**");
-    exitCode = 1;
+  if (gracefulSkip) {
+    const { data: fr } = await client
+      .from("documents").select("flags").eq("id", docId).single();
+    const reason = (fr?.flags as Record<string, unknown>)?.["extract_skipped_reason"];
+    console.log(`  결과  graceful skip — 원본에도 파서가 없는 포맷. ${reason}`);
+    console.log("  (청크 0 · 후속 스테이지 없음이 정상이다. 잡은 completed.)");
+  } else {
+    console.log(`  결과  청크 ${chunkCount}  dense_vec ${embedded}/${chunkCount}`);
+    if (chunkCount === 0 || embedded !== chunkCount) {
+      console.log("  **사슬이 끝까지 안 갔다**");
+      exitCode = 1;
+    }
   }
 
   // ---- tag_summarize · doc_embed · dedup ----
@@ -201,7 +218,8 @@ try {
       `third_party=${df["third_party"]}`,
   );
   // content_gate 는 **항상** 이 세 키를 남긴다 — 없으면 단계가 안 돈 것이다.
-  for (const k of ["has_pii", "has_watermark", "third_party"]) {
+  // (graceful skip 은 chunk 자체를 안 만드므로 이 단계가 안 도는 게 맞다.)
+  for (const k of gracefulSkip ? [] : ["has_pii", "has_watermark", "third_party"]) {
     if (!(k in df)) {
       console.log(`  **documents.flags 에 ${k} 가 없다 — content_gate 가 안 돌았다**`);
       exitCode = 1;

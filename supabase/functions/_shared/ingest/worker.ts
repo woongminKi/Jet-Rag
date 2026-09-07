@@ -59,7 +59,8 @@ export const MAX_ATTEMPTS = 3;
  * `failed` 로 남기지만 예외는 던지지 않는다(파이프라인은 계속 간다).
  */
 export interface HandlerOutcome {
-  logStatus?: "succeeded" | "failed";
+  /** `skipped` 는 원본 `skip_stage()` 자리 — 실행하지 않았고 실패도 아니다. */
+  logStatus?: "succeeded" | "failed" | "skipped";
   logError?: string | null;
 }
 
