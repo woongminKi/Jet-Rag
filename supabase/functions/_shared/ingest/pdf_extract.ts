@@ -107,7 +107,15 @@ export function median(values: number[]): number {
   return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-/** 페이지 본문 폰트 size 중앙값. 표지의 60pt 한 글자에 끌려가지 않도록 median 이다. */
+/**
+ * 페이지 본문 폰트 size 중앙값. 표지의 60pt 한 글자에 끌려가지 않도록 median 이다.
+ *
+ * **글자 하나당 1표**다 (span 하나당 1표가 아니다). 2026-09-07 에 Python 원본과 함께
+ * 바꿨다 — span 분할 방식이 라이브러리마다 달라서(PyMuPDF 는 MuPDF 가 간격 때문에
+ * 끼워 넣은 공백을 독립 span 으로 둔다. arXiv 실측 47,479 vs 16,522, 3배) span 을
+ * 세면 중앙값이 이동하고 `HEADING_FONT_RATIO` 임계에서 판정이 뒤집혔다.
+ * 실측 249 페이지에서 py↔ts 불일치 14p → 0p.
+ */
 export function pageMedianSize(pageDict: PdfPageDict): number {
   const sizes: number[] = [];
   for (const block of pageDict.blocks ?? []) {
@@ -116,7 +124,8 @@ export function pageMedianSize(pageDict: PdfPageDict): number {
       for (const span of line.spans ?? []) {
         const size = span.size;
         if (typeof size === "number" && Number.isFinite(size) && size > 0) {
-          sizes.push(size);
+          // Python `len()` 과 같게 코드포인트로 센다. 빈 span 은 0표.
+          for (let i = cpLen(span.text ?? ""); i > 0; i--) sizes.push(size);
         }
       }
     }

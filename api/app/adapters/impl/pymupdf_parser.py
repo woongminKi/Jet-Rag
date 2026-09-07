@@ -234,6 +234,20 @@ def _page_median_size(page_dict: dict) -> float:
 
     median 사용 이유 — 카탈로그성 PDF (sonata) 는 표지에 60pt 한 글자가 박혀
     평균을 끌어올림. median 은 outlier 에 robust → 본문 9pt 가 그대로 잡힘.
+
+    2026-09-07 — **span 하나당 1표에서 글자 하나당 1표로 바꿨다.**
+
+    구 방식은 span 분할 방식에 값이 좌우됐다. PyMuPDF 는 MuPDF 가 간격 때문에 끼워
+    넣은 공백을 독립 span 으로 두기 때문에 같은 페이지라도 라이브러리·버전이 바뀌면
+    span 수가 통째로 달라진다(arXiv 실측 47,479 vs 16,522, 3배). 표 수가 달라지면
+    중앙값이 이동하고 `_HEADING_FONT_RATIO` 임계에서 heading 판정이 뒤집힌다.
+
+    글자 수 가중은 텍스트 내용에만 의존해 span 분할과 무관하다. 애초에 구하려는 값이
+    "이 페이지 본문의 대표 글자 크기" 이므로 글자를 세는 쪽이 의미에도 맞다.
+
+    실측(249 페이지, 자산 8건): Edge 이식본과의 불일치 14p → **0p**.
+    대신 이 변경으로 Python 자신의 결과도 39/249p(15.7%)에서 달라진다 —
+    해당 문서를 재인제스트하면 `section_title` 이 바뀐다.
     """
     sizes: list[float] = []
     for block in page_dict.get("blocks", []):
@@ -243,7 +257,8 @@ def _page_median_size(page_dict: dict) -> float:
             for span in line.get("spans", []):
                 size = span.get("size")
                 if isinstance(size, (int, float)) and size > 0:
-                    sizes.append(float(size))
+                    # 글자 수만큼 표를 준다. 빈 span 은 0표 (구 방식은 1표였다).
+                    sizes.extend([float(size)] * len(span.get("text", "")))
     if not sizes:
         return 0.0
     return float(median(sizes))
