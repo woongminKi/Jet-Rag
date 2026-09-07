@@ -1355,3 +1355,85 @@ cron 과 경합할 수 있다(pgmq visibility timeout 이 중복 처리는 막�
 | chunk_filter / content_gate / tag_summarize / doc_embed / dedup | ⬜ |
 | `api-documents` HTTP 경로 (업로드 → 큐 투입) | ⬜ |
 | `/payments` · `/billing` · `/email` (Phase 4~5) | ⬜ |
+
+
+## 27. Phase 3 — `embed` 이식. **사슬이 `dense_vec` 까지 채운다**
+
+`extract → chunk → load → embed` 가 pg_cron 으로 자동으로 돈다. 이제 인제스트된 문서가
+dense 검색 대상이 된다.
+
+### 27.1 어댑터 — 재시도 정책이 핵심이다
+
+운영 ENV 가 `JETRAG_EMBED_PROVIDER=deepinfra` 라 그쪽만 옮겼다(HF 경로는 v1.5 W-1 에
+always-warm 인 DeepInfra 로 갈아탔다). 원본 정책을 그대로 가져왔다:
+
+- 3 회, transient(네트워크·429·5xx)만, backoff `5s × 2^(n-1) + jitter`
+- `Retry-After` 헤더가 있으면 그걸 쓰되 **60s 로 자른다**(악의적 헤더 방어)
+- **401·파싱 실패는 재시도하지 않는다** — 다시 불러도 같고 쿼터만 태운다
+
+배치 응답은 `index` 로 정렬한다. 순서가 틀리면 **엉뚱한 청크에 벡터가 박히고** 검색이
+조용히 망가진다.
+
+### 27.2 핸들러 — offset 을 쓰지 않는다
+
+`dense_vec IS NULL` 은 **처리하면서 사라지는 조건**이다. offset 을 들고 다니면
+건너뛰는 청크가 생긴다. 그래서 매번 **NULL 인 앞쪽 64 개**를 집는다 — 자연히 멱등이고
+재시도해도 이미 채운 것을 다시 부르지 않는다.
+
+`upsert` 가 아니라 **단건 UPDATE** 다. 원본 주석 그대로 — upsert 는 보내지 않은 컬럼을
+NULL 로 처리해 `chunks.doc_id` NOT NULL 위반이 관찰된 적이 있다.
+
+### 27.3 **BGE-M3 는 비결정적이다** — 대조 기준을 두 번 고쳤다
+
+실 API 대조를 짰는데 "불일치 3 건" 이 나왔다. 두 번 다 **대상이 아니라 자[尺]가**
+문제였다.
+
+**① 로컬 `.env` 에 `JETRAG_EMBED_PROVIDER` 가 없었다.** 사용자가 알려준 `deepinfra` 는
+운영(Railway·Edge) 값이고 로컬엔 없다. 그래서 Python 이 기본값 `hf` 로 가서 **HF vs
+DeepInfra** 를 비교했다. 서로 다른 서비스니 다른 게 당연하다.
+
+**② provider 를 맞춰도 편차가 남았다.** Python 을 두 번 불러 봤더니 **같은 provider 로도
+1.494e-04** 가 흔들린다. 프로젝트가 이미 겪은 성질이다 — work-log 2026-05-12:
+
+> HF BGE-M3 embed query API 비결정성 (모델 서버 인스턴스·배치·fp 정밀도 차이 →
+> dense query 벡터 미세 변동 → dense_rank → RRF 재정렬 전파). **회귀 아님.**
+> 같은 세션 내 baseline↔f110 은 byte-identical — **세션 내 결정적, 세션 간 비결정적.**
+
+그래서 절대 일치가 아니라 **서비스 흔들림 폭 대비**로 판정하도록 바꿨다:
+
+| | 문장 0 | 문장 1 | 문장 2 |
+|---|---|---|---|
+| py↔py 기준선 (서비스 비결정성) | 1.42e-04 | 1.56e-04 | 1.53e-04 |
+| **py↔ts** | 1.44e-04 | 1.53e-04 | 9.52e-05 |
+| 한도 (기준선 × 3) | 4.26e-04 | 4.67e-04 | 4.58e-04 |
+| 코사인 유사도 | 0.99999936 | 0.99999935 | 0.99999947 |
+
+py↔ts 편차가 **기준선과 같은 수준**이다. 같은 경로를 탄다.
+
+> 편차만 보면 방향이 틀어져도 통과할 수 있어 코사인 유사도를 같이 본다.
+
+### 27.4 검증
+
+| 항목 | 결과 |
+|---|---|
+| Deno `_shared/` 전체 | **189 passed / 0 failed** (embed_provider 19 · embed 핸들러 8 신규) |
+| 순수 함수 대조 | `parseRetryAfter` 20 건 · `parseBatchResponse` 9 건 |
+| 실 API 대조 | 3 문장 (비용 최소 — **문장을 늘리지 말 것**) |
+| E2E (pg_cron 자동) | law sample3 → chunks 26/26, **dense_vec 26/26**, 33.6s |
+
+### 27.5 커밋
+
+| 해시 | 내용 |
+|---|---|
+| `50d69dd` | embed 이식 (어댑터 + 핸들러 + 대조 2종) |
+
+### 27.6 남은 것
+
+| 항목 | 상태 |
+|---|---|
+| `api-documents` HTTP 경로 (업로드 → 큐 투입) | ⬜ — **지금은 사람이 큐에 넣어야 시작된다** |
+| `tag_summarize` · `doc_embed` (문서 제목·요약·문서 벡터) | ⬜ |
+| `chunk_filter` · `content_gate` · `dedup` | ⬜ |
+| HWPML / hwpx / docx / pptx extract | ⬜ |
+| chunk 조각 c2 (`synonym_inject`) | ⬜ |
+| `/payments` · `/billing` · `/email` (Phase 4~5) | ⬜ |
