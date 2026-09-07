@@ -1600,3 +1600,101 @@ if token is None:
 | HWPML / hwpx / docx / pptx extract | ⬜ |
 | chunk 조각 c2 (`synonym_inject`) | ⬜ |
 | `/payments` · `/billing` · `/email` (Phase 4~5) | ⬜ |
+
+
+## 29. Phase 4 — `/documents` 읽기 3종. **응답 대조가 결함 3건을 잡았다**
+
+`GET /documents`(목록) · `GET /documents/{id}`(상세) · `GET /documents/{id}/status`.
+
+### 29.1 읽기에는 인증 게이트를 걸지 않는다
+
+§28.8 에서 확인한 대로 토큰이 없으면 `getCurrentUser` 가 owner 컨텍스트
+(`isAuthenticated: false`)를 준다 — 수익화 W1 "데모 병행" 설계다.
+쓰기(`POST`)에만 `requireAuthenticatedUser` 를 건다. **원본을 그대로 옮겼다.**
+
+### 29.2 함수 대조가 아니라 **응답 대조**를 했다
+
+이 라우트들은 DB 조회와 조립이 전부다. 함수 단위로 맞춰 봐야 "내가 고른 입력에서 같다"
+는 증거뿐이고, 진짜 위험은 **응답 스키마의 미세한 차이**다. 그래서 Railway 와 Edge 를
+같은 요청으로 두들겨 **JSON 을 통째로** 비교했다. 결함 3 건이 나왔다.
+
+**① `JobStatus` 에 필드 2 개가 빠졌다**
+
+```
+railway …"error_msg": null, "estimated_remaining_ms": null, "finished_at": …
+edge    …"error_msg": null,                                 "finished_at": …
+```
+
+원본 `JobStatus` 에는 `estimated_remaining_ms` 와 `stage_progress` 가 있고, 이
+라우트들은 그 둘을 안 넘겨 pydantic 기본값 `None` 이 들어간다(실제 값은 `/active` 만
+채운다). **키가 없는 것과 `null` 인 것은 다르다** — 프런트가 구조분해하면 갈린다.
+
+**② 422 본문이 FastAPI(pydantic v2) 형식이어야 한다**
+
+```
+railway {"detail":[{"type":"greater_than_equal","loc":["query","limit"],
+                    "msg":"Input should be greater than or equal to 1",
+                    "input":"0","ctx":{"ge":1}}]}
+edge    {"detail":"limit 는 1~100 범위여야 합니다."}     ← 내가 지어낸 문구
+```
+
+프런트가 `detail[].loc` 이나 `type` 으로 분기할 수 있어 지어내면 안 된다. 실측해
+`fixtures/documents_422_measured.json` 에 떠 뒀다. **오류가 여러 개면 전부 담는다** —
+`?limit=0&offset=-1` 은 항목이 2 개다(실측).
+
+**③ bool 쿼리를 느슨하게 파싱했다**
+
+`include_failed=maybe` 는 원본이 **422** 인데 나는 `false` 로 넘겼다. 유효값을
+실측했다:
+
+| 200 (유효) | 422 (무효) |
+|---|---|
+| `true/True/TRUE · false/False · 1/0 · yes/no · on/off · y/n · t/f` | `""` · `2` · `maybe` |
+
+`include_logs` 도 같은 bool 이라 같이 고쳤다. 처음엔 오류를 버리고 있었다.
+
+### 29.3 프록시 — `{doc_id}` 가 `/active` 를 삼키지 않게
+
+```js
+[/^\/documents\/(?!active$|batch-status$)[^/]+$/, "api-documents", new Set(["GET"])],
+```
+
+부정 전방탐색으로 제외했다. `/search` 를 접두어로 열었다가 `/search/eval-precision` 을
+삼킨 사고(5a74ea6)와 같은 실수를 막는다. 프록시 테스트가 이걸 고정한다.
+
+> "미이관 경로는 기존 백엔드로" 테스트 3 건이 깨졌다. 예시로 쓰던 `/documents` 가
+> 이관돼서다 — 주석에 "옮기고 나면 깨지므로 예시를 바꾸면 된다"고 적혀 있던 그대로다.
+> 아직 Railway 인 `/documents/active` 로 바꿨다.
+
+### 29.4 검증
+
+| 항목 | 결과 |
+|---|---|
+| 응답 대조 | **25 건 전부 일치** (200 ×12 · 404 ×2 · 422 ×10 · 500 ×1) |
+| Deno `_shared/` | 202 passed / 0 failed |
+| 프록시 | 20 passed / 0 failed |
+| 배포 후 실측 | 이관 3 종 **Edge**, `/active`·`batch-status`·`url`·`reingest`·`DELETE` 는 **Railway** |
+
+`/documents/not-a-uuid` 가 양쪽 다 **500** 이다. 잘못된 UUID 로 DB 를 조회해서 나는
+원본 동작이라 그대로 재현됐다 — 고치려면 원본을 고쳐야 한다.
+
+### 29.5 커밋
+
+| 해시 | 내용 |
+|---|---|
+| `37365ee` | `/documents` 읽기 3종 + 프록시 규칙 |
+
+### 29.6 남은 것
+
+Railway 에 남은 `/documents` 라우트는 **5 개**다(9 개 중 4 개 이관).
+
+| 항목 | 상태 |
+|---|---|
+| `GET /documents/active` · `batch-status` | ⬜ — `stage_progress` 동적 컬럼 + 잔여시간 추정이 얽혀 있다 |
+| `POST /documents/url` | ⬜ — URL 파서 필요 |
+| `POST /documents/{id}/reingest` · `reingest-missing` | ⬜ |
+| `tag_summarize` · `doc_embed` | ⬜ |
+| `chunk_filter` · `content_gate` · `dedup` | ⬜ |
+| HWPML / hwpx / docx / pptx extract | ⬜ |
+| chunk 조각 c2 (`synonym_inject`) | ⬜ |
+| `/payments` · `/billing` · `/email` (Phase 4~5) | ⬜ |
