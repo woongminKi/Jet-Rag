@@ -42,6 +42,7 @@ import {
   type VisionEnv,
 } from "../vision_enrich.ts";
 import { maxChunkIdx, sectionsToChunks, visionProcessedPages } from "../vision_incremental.ts";
+import { injectSynonyms } from "../synonym_inject.ts";
 import type { TaskHandler, TaskPayload } from "../worker.ts";
 
 /** `load` 와 같은 이유로 같은 값 — Supabase statement_timeout 안에 들어가야 한다. */
@@ -294,6 +295,10 @@ export function makeVisionMissingHandler(deps: VisionMissingDeps): TaskHandler {
       startChunkIdx: startIdx,
       // `readChunkEnv` 는 getter 를 받는다 — 주입한 env 를 그대로 쓰게 감싼다.
       env: readChunkEnv((k: string) => env[k]),
+      // 증분 경로도 같은 주입기를 쓴다. 원본은 doc-level LLM 후보를 여기서 만들지
+      // 않으므로(`sectionsToChunks` 는 dict 만) `null` 을 넘긴다 —
+      // `metadata.synonym_source` 가 항상 "dict" 인 것도 그래서다.
+      injectSynonyms: (text: string) => injectSynonyms(text, null),
     });
     for (let i = 0; i < records.length; i += batchSize) {
       const rows = records.slice(i, i + batchSize).map(chunkRecordToRow);

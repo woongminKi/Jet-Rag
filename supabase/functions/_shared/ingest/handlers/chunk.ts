@@ -25,6 +25,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { readChunkEnv, runChunkStage } from "../chunk_records.ts";
+import { complete } from "../../llm/gemini.ts";
+import { loadRawText } from "../raw_text.ts";
+import { type DocLlmPair, generateDocLlmPairs, injectSynonyms } from "../synonym_inject.ts";
 import type { ExtractedSection } from "../pdf_extract.ts";
 import { stripNulls } from "../strip_nul.ts";
 import { runChunkFilterStage } from "../chunk_filter.ts";
@@ -45,7 +48,17 @@ export interface ChunkDeps {
   env?: ReturnType<typeof readChunkEnv>;
   /** 테스트 주입 — 분할 크기. */
   chunksPerArtifact?: number;
+  /** 원시 ENV — 동의어 LLM 후보 생성이 `GEMINI_API_KEY` 를 읽는다. */
+  rawEnv?: Record<string, string | undefined>;
 }
+
+/**
+ * `factory._GEMINI_DEFAULT_MODELS["synonym"]`. 짧은 입출력이라 flash-lite 다.
+ * `JETRAG_LLM_MODEL_SYNONYM` 으로 덮을 수 있다(원본의 `_MODEL_ENV_PREFIX` 패턴).
+ */
+const DEFAULT_SYNONYM_MODEL = "gemini-2.5-flash-lite";
+/** 원본 `_LLM_INPUT_CHARS` — 문서 앞부분만 본다. */
+const SYNONYM_LLM_INPUT_CHARS = 3000;
 
 interface ExtractArtifact {
   seq: number;
@@ -140,10 +153,33 @@ export function makeChunkHandler(deps: ChunkDeps): TaskHandler {
       }
     }
 
+    const chunkEnv = deps.env ?? readChunkEnv();
+
+    // 원본 `run_chunk_stage` — LLM 후보는 **doc 당 정확히 1 회**, chunk 루프 **밖**에서
+    // 만든다. ENV 가 꺼져 있으면(기본) 부르지 않는다.
+    let docLlmPairs: DocLlmPair[] | null = null;
+    if (chunkEnv.synonymLlmEnabled) {
+      const env = deps.rawEnv ?? Deno.env.toObject();
+      // 원본은 `extraction.raw_text` 를 그대로 넘긴다. Edge 는 창으로 쪼개 저장하므로
+      // 되붙여서 넘긴다 — 어차피 앞 3000 자만 쓴다.
+      const rawText = await loadRawText(deps.client, task.job_id, SYNONYM_LLM_INPUT_CHARS);
+      docLlmPairs = await generateDocLlmPairs(rawText, (system, user) =>
+        complete(
+          [{ role: "system", content: system }, { role: "user", content: user }],
+          {
+            apiKey: env["GEMINI_API_KEY"] ?? "",
+            model: env["JETRAG_LLM_MODEL_SYNONYM"] ?? DEFAULT_SYNONYM_MODEL,
+          },
+          { temperature: 0.1, jsonMode: true },
+        ));
+    }
+
     let records = runChunkStage({
       docId: task.doc_id,
       sections,
-      env: deps.env ?? readChunkEnv(),
+      env: chunkEnv,
+      docLlmPairs,
+      injectSynonyms,
     });
 
     // 원본 파이프라인 순서: chunk → **chunk_filter → content_gate** → … → load.

@@ -28,11 +28,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { extractHwp } from "../hwp_extract.ts";
 import { isHwpmlBytes } from "../../documents/hwpml_sniff.ts";
-import {
-  extractDocxResult,
-  extractHwpmlResult,
-  extractHwpxResult,
-} from "../xml_extract.ts";
+import { extractDocxResult, extractHwpmlResult, extractHwpxResult } from "../xml_extract.ts";
 import { PDF_PAGES_PER_TASK } from "../pdf_extract.ts";
 import { extractPdfRange, type PdfRangeResult } from "../pdf_open.ts";
 import { finishJob } from "../finish.ts";

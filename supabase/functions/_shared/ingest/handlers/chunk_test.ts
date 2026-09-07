@@ -5,7 +5,9 @@
  * 검색 품질 문제로만 보여서 원인을 못 찾는다. 그래서 계약으로 고정한다.
  */
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { injectSynonyms } from "../synonym_inject.ts";
+import { toChunkRecords } from "../chunk_records.ts";
 import { makeChunkHandler } from "./chunk.ts";
 import type { TaskPayload } from "../worker.ts";
 
@@ -373,4 +375,68 @@ Deno.test("content_gate — 아무것도 없으면 false 3개만 남긴다", asy
     has_watermark: false,
     third_party: false,
   });
+});
+
+// ---------------------------------------------------------------------------
+// 동의어 주입 배선 — 모듈이 아니라 **`toChunkRecords` 경유**를 본다.
+//
+// 예전에는 여기서 `notPortedInjector` 가 던졌다(조각 c2 미이관). 이제 실제 주입기가
+// 물려 있는지, 그리고 ENV 가 꺼져 있을 때 **아무 일도 안 하는지**를 같이 고정한다.
+// ---------------------------------------------------------------------------
+Deno.test("동의어 ENV 가 켜지면 마커가 붙고 metadata 가 채워진다", () => {
+  const records = toChunkRecords({
+    docId: "d1",
+    sections: [{
+      text: "데이터센터 운영 지침",
+      page: 1,
+      section_title: null,
+      bbox: null,
+      metadata: {},
+    }],
+    env: { ...ENV, synonymInjectionEnabled: true },
+    injectSynonyms,
+  });
+  assertEquals(records.length, 1);
+  // 본문 뒤에 `\n\n[검색어: ...]` 한 줄.
+  assertStringIncludes(records[0].text, "데이터센터 운영 지침\n\n[검색어: ");
+  assertEquals(records[0].metadata["synonym_candidates"], ["DC", "전산센터", "data center"]);
+  // doc-level LLM 후보를 안 넘겼으므로 `dict` 다.
+  assertEquals(records[0].metadata["synonym_source"], "dict");
+  // `char_range` 는 **마커까지 포함한** 길이다 — 원본도 주입 후에 잰다.
+  assertEquals(records[0].char_range, [0, [...records[0].text].length]);
+});
+
+Deno.test("동의어 ENV 가 꺼져 있으면 텍스트·metadata 가 그대로다", () => {
+  const records = toChunkRecords({
+    docId: "d1",
+    sections: [{
+      text: "데이터센터 운영 지침",
+      page: 1,
+      section_title: null,
+      bbox: null,
+      metadata: {},
+    }],
+    env: { ...ENV, synonymInjectionEnabled: false },
+    injectSynonyms,
+  });
+  assertEquals(records[0].text, "데이터센터 운영 지침");
+  assertEquals("synonym_candidates" in records[0].metadata, false);
+  assertEquals("synonym_source" in records[0].metadata, false);
+});
+
+Deno.test("사전에 안 걸리는 본문은 켜져 있어도 무변경", () => {
+  const records = toChunkRecords({
+    docId: "d1",
+    sections: [{
+      text: "오늘 점심은 김치찌개였다",
+      page: 1,
+      section_title: null,
+      bbox: null,
+      metadata: {},
+    }],
+    env: { ...ENV, synonymInjectionEnabled: true },
+    injectSynonyms,
+  });
+  assertEquals(records[0].text, "오늘 점심은 김치찌개였다");
+  assertEquals("synonym_candidates" in records[0].metadata, false);
 });
