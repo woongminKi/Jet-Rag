@@ -2541,3 +2541,84 @@ logs  extract:succeeded vision:succeeded chunk:succeeded tag_summarize:succeeded
 | `POST /payments/subscribe/*` · `POST /billing/run` | ⬜ 135 + 398줄 |
 | HWPML(149) · hwpx(187) · docx(157) · pptx(331) · 단독 image(305) | ⬜ |
 | chunk 조각 c2 (`synonym_inject`) | ⬜ 200줄 |
+
+---
+
+## 41. Phase 4 — ZIP/XML 파서 4종. **지원 포맷이 2 → 5 가 됐다**
+
+지금까지 Edge 는 `pdf` · `hwp`(OLE2) 만 받고 나머지는 "아직 이식되지 않은 포맷" 으로
+던졌다. `hwpx` · `docx` · `pptx` · HWPML 이 들어왔다.
+
+추출 자체는 **Phase 0 이 이미 만들어 뒀다**(`ooxml_text.ts` · `hwp_xml_text.ts`).
+이번 작업은 그걸 인제스트에 잇고, 빠진 것을 채우고, 대조로 고정한 것이다.
+
+### 41.1 `.hwp` 는 확장자를 못 믿는다
+
+같은 `.hwp` 안에 OLE2 와 HWPML(XML) 두 형식이 있다. `law sample2.hwp` 가 실제로
+HWPML 이다. **바이트로** 가른다 — 원본 `run_extract_stage` 가 같은 자리에서 같은 판정을
+한다. `documents.doc_type` 은 `hwp` 그대로 두고 `source_type` 만 `hwpml` 이다
+(DB CHECK 제약이 `hwpml` 을 모른다).
+
+### 41.2 채운 것 — HWPML metadata
+
+Phase 0 구현이 `<DOCSUMMARY>`(TITLE/SUBJECT/AUTHOR/DATE/KEYWORDS)를 안 뽑고 있었다.
+원본은 그걸 `ExtractionResult.metadata` 에 싣는다. 안 채우면 `documents` 에 남는 값이
+달라진다.
+
+### 41.3 `fflate` 를 메인 import map 으로 옮겼다
+
+DOCX/PPTX/HWPX 는 전부 ZIP 이라 ZIP 리더가 필요하다. `fflate@0.8.3` 은 **이미 이
+저장소의 spike 함수가 쓰는(배포까지 된) 의존성**이라 새 패키지를 들인 게 아니라
+같은 버전을 옮긴 것이다.
+
+### 41.4 실측 — 실제 파일 6개, 686건 0 불일치
+
+| 파일 | 종류 | 섹션 |
+|---|---|---|
+| spike_sample.docx | docx | 12 |
+| spike_sample.pptx | pptx | 4 |
+| spike_sample.hwpx | hwpx | 12 |
+| spike_sample_hwpml.hwp | hwpml | 7 |
+| 직제_규정(2024.4.30.개정).hwpx | hwpx | **497** |
+| 한마음생활체육관_운영_내규.hwpx | hwpx | 118 |
+
+`section_title` 은 sticky propagate 라 한 곳이 밀리면 뒤가 전부 밀린다. 텍스트만 보지
+않고 섹션별 `text`/`page`/`section_title`/`bbox`/`metadata` 를 전부 비교했다.
+음성 대조 검출 확인.
+
+### 41.5 라이브 E2E — 네 포맷 전부 완주
+
+```
+docx   청크 4  태그 7개  요약·함의 있음  logs 7행 전부 succeeded  filtered={table_noise:1}
+pptx   청크 4  태그 8개  …                                        filtered={table_noise:1}
+hwpx   청크 3  태그 6개  …                                        filtered={extreme_short:1}
+hwp    청크 1  태그 5개  …  ← 바이트로 HWPML 판별, doc_type 은 hwp
+```
+
+### 41.6 **알려진 미이식 — PPTX Vision 보강**
+
+원본 `PptxParser` 는 텍스트가 50 자 미만인 슬라이드에서 **가장 큰 그림**을 뽑아 Vision
+OCR 을 돌린다(텍스트 0 이면 `pptx_rerouting`, 1~49 자면 `pptx_augment`). 슬라이드 상한
+· quota fast-fail 도 있다.
+
+슬라이드의 이미지 관계(`_rels`)를 풀어 미디어를 꺼내야 해서 별도 작업이고 아직 안
+옮겼다. **지금은 텍스트 없는 슬라이드가 섹션 없이 지나간다** — 원본은 OCR 텍스트로
+섹션을 만든다. 대조는 `image_parser=None` 파서와 해서 **텍스트 경로만** 같은지 본 것이다.
+
+### 41.7 테스트 하네스 결함 1건
+
+미이식 포맷 예시로 `hwpx` 를 쓰고 있었는데, 그게 이식되면서 테스트가 조용히 무의미해질
+뻔했다(프록시 라우트에서 두 번, 여기서 한 번 — **같은 패턴 세 번째**다).
+`image` 로 바꾸고 `SUPPORTED_DOC_TYPES` 목록 자체를 계약으로 고정했다 — 다음에 포맷을
+이식하면 그 줄이 먼저 깨진다.
+
+### 41.8 남은 것
+
+| 항목 | 규모 |
+|---|---|
+| `POST /documents/url` | 69줄 (URL 파서) |
+| `POST /ingest/email` | 136줄 |
+| `POST /payments/subscribe/*` · `POST /billing/run` | 135 + 398줄 |
+| 단독 이미지 업로드 (`ImageParser._normalize` EXIF·HEIC) | 305줄 |
+| PPTX Vision 보강 | §41.6 |
+| chunk 조각 c2 (`synonym_inject`) | 200줄 |
