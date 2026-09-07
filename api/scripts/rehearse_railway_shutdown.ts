@@ -33,9 +33,25 @@ import worker from "../../workers/api-proxy/src/index.js";
 const ROOT = new URL("../../", import.meta.url);
 const PROXY_HOST = "https://jetrag-api.woong-s.com";
 
+/**
+ * "지금" 값은 **`wrangler.toml` 에서 읽는다.**
+ *
+ * 하드코딩해 두면 실제로 끈 뒤에도 "끄면 5건이 달라진다" 를 계속 보여 준다 —
+ * 이미 지나간 예측을 현재 상태인 것처럼 읽게 된다. 2026-09-08 에 실제로 비운 뒤
+ * 그게 드러나서 고쳤다.
+ */
+function legacyOriginFromWrangler(): string {
+  const toml = Deno.readTextFileSync(new URL("workers/api-proxy/wrangler.toml", ROOT));
+  for (const line of toml.split("\n")) {
+    const m = line.match(/^\s*LEGACY_ORIGIN\s*=\s*"([^"]*)"/);
+    if (m) return m[1];
+  }
+  throw new Error("wrangler.toml 에서 LEGACY_ORIGIN 을 못 찾았다");
+}
+
 const ENV_NOW = {
   SUPABASE_FUNCTIONS_BASE: "https://mpmtydudhojpukuuadrd.supabase.co/functions/v1",
-  LEGACY_ORIGIN: "https://jet-rag-production.up.railway.app",
+  LEGACY_ORIGIN: legacyOriginFromWrangler(),
   SUPABASE_FUNCTION_REGION: "ap-northeast-2",
 };
 const ENV_AFTER = { ...ENV_NOW, LEGACY_ORIGIN: "" };
@@ -114,7 +130,10 @@ for (const { path, methods } of routes) {
 }
 
 console.log("\n══ Railway 종료 리허설 ══");
-console.log(`  라우트 ${routes.length}개 · 메서드 단위 ${broken.length + unchanged.length}건\n`);
+console.log(
+  `  라우트 ${routes.length}개 · 메서드 단위 ${broken.length + unchanged.length}건` +
+    `  ·  LEGACY_ORIGIN = ${ENV_NOW.LEGACY_ORIGIN || "(비어 있음 — 이미 껐다)"}\n`,
+);
 
 console.log(`── 그대로 도는 것 (${unchanged.length}건) ──`);
 if (verbose) {
