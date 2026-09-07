@@ -2685,6 +2685,33 @@ variables 와 Cloudflare Worker secret 에 있고 로컬에는 없다. 순서:
 
 프록시 규칙은 커밋돼 있지만 **배포는 안 했다**.
 
+### 42.6 순서를 스크립트로 고정했다 (`ff5eab3`)
+
+`api/scripts/verify_email_cutover.ts` — 사람 기억에 순서를 맡기지 않는다.
+
+**secret 값을 몰라도 판정한다.** 일부러 틀린 값을 보내서 `503`(미설정) 과 `401`(설정됨)
+을 가른다. 스크립트도 로그도 올바른 값을 보지 않는다.
+
+어느 백엔드가 받았는지는 **헤더로** 가른다 — 본문이 양쪽 다
+`{"detail":"webhook secret 불일치"}` 로 같아서 본문으로는 못 가른다.
+
+| 헤더 | 백엔드 |
+|---|---|
+| `x-railway-request-id` | Railway (컷오버 전) |
+| `x-served-by: supabase-edge-runtime` | Edge (컷오버 완료) |
+
+현재 실측:
+
+```
+Edge   POST(틀린 secret) → 503  ← secret 미설정. 배포 금지 상태
+Edge   GET → 405
+프록시 POST(틀린 secret) → 401 [railway]  ← 라이브 채널 정상
+프록시 GET → 405 · /ingest/email/extra → 404
+```
+
+만드는 중 걸린 것: HTTP 헤더 값은 ByteString 이라 틀린 secret 을 한글로 두면 `fetch` 가
+요청을 만들기도 전에 TypeError 를 낸다.
+
 ---
 
 ## 43. `.txt`/`.md` 업로드가 실패하던 이관 회귀 (`677cc89`)
