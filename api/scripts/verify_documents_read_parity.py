@@ -82,6 +82,19 @@ def main() -> None:
         "/documents/00000000-0000-0000-0000-000000000000",
         "/documents/00000000-0000-0000-0000-000000000000/status",
         "/documents/not-a-uuid",
+        # --- /active ---
+        "/documents/active",
+        "/documents/active?hours=1",
+        "/documents/active?hours=168",
+        "/documents/active?hours=0",
+        "/documents/active?hours=169",
+        "/documents/active?hours=abc",
+        # --- /batch-status ---
+        "/documents/batch-status",
+        "/documents/batch-status?ids=",
+        "/documents/batch-status?ids=00000000-0000-0000-0000-000000000000",
+        "/documents/batch-status?ids=" + ",".join(
+            f"00000000-0000-0000-0000-{i:012d}" for i in range(51)),
     ]
     if real_id:
         cases += [
@@ -91,6 +104,11 @@ def main() -> None:
             f"/documents/{real_id}/status?include_logs=false",
             f"/documents/{real_id}/status?include_logs=maybe",
             f"/documents/{real_id}/status?include_logs=1",
+            f"/documents/batch-status?ids={real_id}",
+            f"/documents/batch-status?ids={real_id},00000000-0000-0000-0000-000000000000",
+            # 입력 순서 보존 — 뒤집어 넣어도 그 순서로 나와야 한다
+            f"/documents/batch-status?ids=00000000-0000-0000-0000-000000000000,{real_id}",
+            f"/documents/batch-status?ids=%20{real_id}%20,%20",  # 공백 trim 확인
         ]
 
     fails = 0

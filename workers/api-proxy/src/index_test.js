@@ -70,6 +70,8 @@ const MIGRATED_METHOD_PATHS = new Set([
   "GET /documents",
   "GET /documents/{doc_id}",
   "GET /documents/{doc_id}/status",
+  "GET /documents/active",
+  "GET /documents/batch-status",
 ]);
 
 Deno.test("프록시가 Edge 로 보내는 원본 라우트는 전부 이관돼 있어야 한다", async () => {
@@ -121,9 +123,10 @@ Deno.test("`/documents` — 이관한 것만 Edge, 나머지는 Railway", () => 
   // 메서드를 모르면 넘기지 않는다 — 모른 채 넘겨서 405 를 받는 쪽이 더 나쁘다.
   assertEquals(resolveTarget("/documents"), null);
 
-  // **아직 Railway** — `{doc_id}` 패턴이 이걸 삼키면 안 된다.
-  assertEquals(resolveTarget("/documents/active", "GET"), null);
-  assertEquals(resolveTarget("/documents/batch-status", "GET"), null);
+  assertEquals(resolveTarget("/documents/active", "GET"), "api-documents");
+  assertEquals(resolveTarget("/documents/batch-status", "GET"), "api-documents");
+
+  // **아직 Railway** — 쓰기 3 종. GET 전용 규칙이라 자연히 안 걸린다.
   assertEquals(resolveTarget("/documents/url", "POST"), null);
   assertEquals(resolveTarget("/documents/abc/reingest", "POST"), null);
   assertEquals(resolveTarget("/documents/abc/reingest-missing", "POST"), null);
@@ -273,19 +276,20 @@ Deno.test("POST 의 본문과 메서드를 보존한다", async () => {
 // 여기서 쓰는 예시 경로는 **아직 안 옮긴 것**이어야 한다. 옮기고 나면 이 테스트가
 // 깨지므로, 깨지면 예시를 바꾸면 된다 — 실제로 `/stats` 전환 때 `/stats/overview` 를
 // 쓰고 있어서 세 건이 한꺼번에 깨졌고, `/documents` 읽기 전환 때 또 세 건이 깨졌다.
-// 지금 예시는 `/documents/active` — Railway 에 실재하고 아직 안 옮긴 라우트다.
+// 지금 예시는 `POST /documents/url` — Railway 에 실재하고 아직 안 옮긴 라우트다.
+// **메서드를 명시해야 한다.** GET 으로 두면 `GET /documents/{doc_id}` 규칙에 걸려 Edge 로 간다.
 Deno.test("미이관 경로는 기존 백엔드로, 경로·쿼리를 유지한다", async () => {
-  const { sent } = await capture(req("/documents/active?hours=7"));
+  const { sent } = await capture(req("/documents/url", { method: "POST" }));
   assertEquals(
     sent.url,
-    "https://jet-rag-production.up.railway.app/documents/active?hours=7",
+    "https://jet-rag-production.up.railway.app/documents/url",
   );
   // 기존 백엔드로 갈 때는 이 헤더를 붙이지 않는다 — 원본이 모르는 헤더다.
   assertEquals(sent.headers.get("X-Forwarded-Path"), null);
 });
 
 Deno.test("LEGACY_ORIGIN 이 비면 404 (Phase 6 의 종료 상태)", async () => {
-  const { sent, response } = await capture(req("/documents/active"), {
+  const { sent, response } = await capture(req("/documents/url", { method: "POST" }), {
     ...ENV,
     LEGACY_ORIGIN: "",
   });
@@ -296,7 +300,7 @@ Deno.test("LEGACY_ORIGIN 이 비면 404 (Phase 6 의 종료 상태)", async () =
 
 Deno.test("LEGACY_ORIGIN 이 자기 자신이면 루프 대신 500", async () => {
   // 설정 실수로 jetrag-api.woong-s.com 을 넣으면 Worker 가 자기를 부른다.
-  const { sent, response } = await capture(req("/documents/active"), {
+  const { sent, response } = await capture(req("/documents/url", { method: "POST" }), {
     ...ENV,
     LEGACY_ORIGIN: "https://jetrag-api.woong-s.com",
   });

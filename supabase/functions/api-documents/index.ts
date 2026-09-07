@@ -8,9 +8,11 @@
  * | `GET /documents/{id}` | 상세 |
  * | `GET /documents/{id}/status` | 잡 상태(+`include_logs`) |
  *
+ * | `GET /documents/active` | 진행 중·실패 문서 (프런트 폴러) |
+ * | `GET /documents/batch-status` | 여러 문서 상태 일괄 |
+ *
  * ## 아직 Railway 인 것
- * `/documents/active` · `/documents/batch-status`(둘 다 `stage_progress` 동적 컬럼과
- * 잔여 시간 추정이 얽혀 있다) · `POST /documents/url` · `reingest` 2 종.
+ * `POST /documents/url` · `reingest` 2 종 (쓰기 3 개).
  *
  * ## 읽기에는 인증 게이트를 걸지 않는다
  * 토큰이 없으면 `getCurrentUser` 가 owner 컨텍스트(`isAuthenticated: false`)를 준다 —
@@ -35,6 +37,7 @@ import {
   parseBoolParam,
   type ValidationItem,
 } from "../_shared/documents/read.ts";
+import { batchStatus, listActiveDocuments } from "../_shared/documents/active.ts";
 
 const FUNCTION_PREFIX = "/api-documents";
 
@@ -63,6 +66,16 @@ Deno.serve(async (req: Request) => {
     if (req.method === "GET") {
       if (path === "/documents" || path === "/") {
         const r = await listDocuments(client, caller.userId, url.searchParams);
+        return applyCorsHeaders(req, jsonResponse(r.body, r.status), settings);
+      }
+      // **`/active` 와 `/batch-status` 를 `{doc_id}` 보다 먼저 본다.** 순서가 반대면
+      // 상세 라우트가 이 둘을 문서 id 로 오인해 404 를 낸다.
+      if (path === "/documents/active") {
+        const r = await listActiveDocuments(client, caller.userId, url.searchParams);
+        return applyCorsHeaders(req, jsonResponse(r.body, r.status), settings);
+      }
+      if (path === "/documents/batch-status") {
+        const r = await batchStatus(client, caller.userId, url.searchParams);
         return applyCorsHeaders(req, jsonResponse(r.body, r.status), settings);
       }
       const detail = path.match(/^\/documents\/([^/]+)$/);

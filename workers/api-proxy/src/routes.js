@@ -56,10 +56,11 @@ export const ROUTES = [
   // 2026-09-07 전환 — `POST /documents`(업로드) **하나만**. 같은 경로의 GET(목록)은
   // 아직 Railway 라 **메서드로 가른다.** 경로만 보고 열면 목록이 405 로 깨진다.
   [/^\/documents\/?$/, "api-documents", new Set(["GET", "POST"])],
-  // 2026-09-07 전환 — 상세·상태. **`/active`·`/batch-status` 는 아직 Railway** 라
-  // `{doc_id}` 패턴이 그걸 삼키지 않도록 앞에서 제외한다. 접두어 규칙으로 열었다가
-  // `/search/eval-precision` 을 삼킨 사고(5a74ea6)와 같은 실수를 막는다.
-  [/^\/documents\/(?!active$|batch-status$)[^/]+$/, "api-documents", new Set(["GET"])],
+  // 2026-09-07 전환 — 상세·상태·active·batch-status. GET 하위 경로가 전부 이관됐다.
+  // 처음엔 `/active`·`/batch-status` 가 Railway 라 부정 전방탐색으로 뺐었다.
+  // **`POST /documents/url` 과 `reingest` 는 아직 Railway** 인데, 이 규칙이 GET 전용이라
+  // 자연히 안 걸린다 — 쓰기 라우트를 옮길 때 여기 규칙을 다시 봐야 한다.
+  [/^\/documents\/[^/]+$/, "api-documents", new Set(["GET"])],
   [/^\/documents\/[^/]+\/status$/, "api-documents", new Set(["GET"])],
   // Phase 4 에서 해제: [/^\/payments/, "api-payments"], [/^\/billing/, "billing-run"],
   // Phase 5 에서 해제: [/^\/email/, "email-webhook"],
