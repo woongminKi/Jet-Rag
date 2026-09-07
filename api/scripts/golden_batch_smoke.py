@@ -19,6 +19,7 @@ W21 Day 1 — mode 인자 + threshold 검증 + exit code (회귀 보호 강화).
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import statistics
@@ -49,34 +50,66 @@ def _open(url: str, timeout: int):
     return urllib.request.urlopen(req, timeout=timeout)
 
 
-# golden v0.1 의 20건 — query / expected_doc_id (단축) / meta_filters
-GOLDEN: list[dict] = [
-    {"id": "G-001", "type": "자연어", "q": "체육관 휴관일이 언제예요", "expect": "b758eec4", "filters": {}},
-    {"id": "G-002", "type": "자연어", "q": "체육관 이용료 정책 정리해줘", "expect": "b758eec4", "filters": {}},
-    {"id": "G-003", "type": "자연어", "q": "회원카드 발급 절차 어떻게 되더라", "expect": "b758eec4", "filters": {}},
-    {"id": "G-004", "type": "자연어", "q": "이사장 책임 범위 어디까지", "expect": "dd8c1fb0", "filters": {}},
-    {"id": "G-005", "type": "자연어", "q": "경영본부랑 기술본부 차이가 뭐예요", "expect": "dd8c1fb0", "filters": {}},
-    {"id": "G-006", "type": "자연어", "q": "민법상 변제충당 순서 어떻게 되나", "expect": "49ef8d01", "filters": {}},
-    {"id": "G-007", "type": "자연어", "q": "소멸시효 지난 채무 어떻게 처리해야 해", "expect": "49ef8d01", "filters": {}},
-    {"id": "G-008", "type": "자연어", "q": "이 보고서 핵심 3줄로 요약하면", "expect": "3970feab", "filters": {}},
-    {"id": "G-009", "type": "자연어", "q": "내년 반도체 시장 전망 어떻게 봐", "expect": "3970feab", "filters": {}},
-    {"id": "G-010", "type": "자연어", "q": "쏘나타 신규 옵션 핵심만", "expect": "6004fd65", "filters": {}},
-    {"id": "G-011", "type": "키워드", "q": "휴관일", "expect": "b758eec4", "filters": {}},
-    {"id": "G-012", "type": "키워드", "q": "이사장", "expect": "dd8c1fb0", "filters": {}},
-    {"id": "G-013", "type": "키워드", "q": "대법원 판결", "expect": "49ef8d01", "filters": {}},
-    {"id": "G-014", "type": "키워드", "q": "쏘나타", "expect": "6004fd65", "filters": {}},
-    {"id": "G-015", "type": "키워드", "q": "2.2%", "expect": "3970feab", "filters": {}},
-    {"id": "G-016", "type": "메타혼합", "q": "체육관 운영", "expect": "b758eec4", "filters": {"doc_type": "hwpx"}},
-    {"id": "G-017", "type": "메타혼합", "q": "직제", "expect": "dd8c1fb0", "filters": {"doc_type": "hwpx"}},
-    {"id": "G-018", "type": "메타혼합", "q": "변제충당", "expect": "49ef8d01", "filters": {"doc_type": "pdf"}},
-    {"id": "G-019", "type": "메타혼합", "q": "AI 투자", "expect": "3970feab", "filters": {"doc_type": "pdf"}},
-    # G-020 — v0.2 → v0.3 추가 정정: 4d0ea2c4 (jet_rag_day4_sample) 의 chunks 가
-    # 손상 추출 ("···" dot 만) → 의미 있는 텍스트 매칭 불가. expected 를 sample-report 로
-    # 변경 + query 를 회귀 안전망 의도 유지하면서 자연어로.
-    {"id": "G-020", "type": "메타혼합", "q": "샘플 보고서", "expect": "3970feab", "filters": {"doc_type": "pdf"}},
-    # G-021 ~ G-025 (DOCX) — 사용자 DOCX 자료 업로드 후 expect 채워서 활성. 현재 placeholder.
-    # (golden 평가셋 v0.2 §3.2 참조)
-]
+# ---------------------------------------------------------------------------
+# 골든셋은 **CSV 에서 읽는다** — 예전에는 여기 v0.1 20 건이 인라인으로 박혀 있었다.
+#
+# 2026-09-07 실측: 그 20 건이 기대하던 문서 **5 개가 하나도 존재하지 않았다**(문서
+# 재업로드로 id 변경, 쏘나타 문서는 아예 없음). 그래서 `top-1 hit 0/20` 이 나오는데
+# 그건 검색 품질이 아니라 **기대값이 죽은 것**이다 — 이 상태로는 회귀를 못 잡는다.
+#
+# `evals/golden_v2.csv` 는 132 행 전부 살아 있다(실측). 그걸 기본으로 쓴다.
+# 다른 세트를 보려면 `--goldenset evals/golden_v1.csv`.
+#
+# **죽은 문서를 참조하는 행은 조용히 버리지 않고 센다.** golden_v1 은 157 행 중 40 행이
+# 사라진 문서 4 개를 가리키는데, 러너가 조용히 걸러 왔다 — 그래서 아무도 몰랐다.
+# ---------------------------------------------------------------------------
+_DEFAULT_GOLDEN = Path(__file__).resolve().parents[2] / "evals" / "golden_v2.csv"
+
+
+def _load_golden(path: Path, live_doc_ids: set[str] | None) -> tuple[list[dict], list[str]]:
+    """CSV → 이 스크립트가 쓰는 dict. 죽은 문서 행은 빼고 **목록으로 돌려준다.**"""
+    rows: list[dict] = []
+    dropped: list[str] = []
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        for r in csv.DictReader(f):
+            doc_id = (r.get("doc_id") or "").strip()
+            rid = (r.get("id") or "").strip()
+            if not doc_id or not (r.get("query") or "").strip():
+                continue
+            if live_doc_ids is not None and doc_id not in live_doc_ids:
+                dropped.append(f"{rid}({doc_id[:8]})")
+                continue
+            rows.append({
+                "id": rid,
+                "type": (r.get("query_type") or "-").strip(),
+                "q": r["query"].strip(),
+                # 응답의 doc_id 는 전체 UUID 라 앞 8 자로 맞춘다(원래 방식과 동일).
+                "expect": doc_id[:8],
+                "filters": {},
+            })
+    return rows, dropped
+
+
+def _live_doc_ids() -> set[str] | None:
+    """현재 DB 의 문서 id. 자격증명이 없으면 `None` — 그때는 거르지 않는다."""
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not key:
+        return None
+    try:
+        from supabase import create_client
+
+        client = create_client(url, key)
+        return {
+            r["id"] for r in client.table("documents").select("id").execute().data
+        }
+    except Exception as exc:  # noqa: BLE001 — 못 읽으면 거르지 않고 그대로 돈다
+        print(f"[warn] 현재 문서 목록을 못 읽었다 ({exc}) — 죽은 행을 거르지 않는다",
+              file=sys.stderr)
+        return None
+
+
+GOLDEN: list[dict] = []  # main() 에서 채운다.
 
 
 def _fetch_search(q: str, filters: dict, limit: int = 10, mode: str = "hybrid") -> dict:
@@ -135,12 +168,31 @@ def main() -> int:
         help="검색 mode (all 시 hybrid/dense/sparse 3 mode ablation)",
     )
     parser.add_argument(
+        "--goldenset",
+        default=str(_DEFAULT_GOLDEN),
+        help="골든셋 CSV 경로 (기본: evals/golden_v2.csv)",
+    )
+    parser.add_argument(
         "--require-top1-min",
         type=float,
         default=None,
         help="top-1 hit 비율 최소 임계값 (0.0~1.0). 미달 시 exit 1 (CI gate).",
     )
     args = parser.parse_args()
+
+    global GOLDEN
+    GOLDEN, dropped = _load_golden(Path(args.goldenset), _live_doc_ids())
+    print(f"골든셋 {Path(args.goldenset).name} — {len(GOLDEN)}행", file=sys.stderr)
+    if dropped:
+        # **조용히 버리지 않는다.** 기대 문서가 사라진 행은 회귀를 못 잡는다.
+        print(
+            f"[warn] 사라진 문서를 가리켜 뺀 행 {len(dropped)}건: "
+            f"{', '.join(dropped[:8])}{' …' if len(dropped) > 8 else ''}",
+            file=sys.stderr,
+        )
+    if not GOLDEN:
+        print("[ERROR] 돌릴 행이 없다 — 골든셋이 통째로 낡았다.", file=sys.stderr)
+        return 1
 
     if args.mode == "all":
         modes = ["hybrid", "dense", "sparse"]

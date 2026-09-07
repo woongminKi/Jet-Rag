@@ -124,6 +124,20 @@ def diff(a, b, path="") -> list[str]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# 원본 버그를 **일부러 안 따라간** 자리. 여기 없는 불일치는 전부 회귀다.
+#
+# `/search` 가 100% Edge 가 되어 두 백엔드가 갈릴 구간이 없어진 뒤에만 이렇게 한다.
+# ---------------------------------------------------------------------------
+INTENTIONAL_DIVERGENCE: dict[str, str] = {
+    "G-A-053":
+        "MMR 부활(2026-09-07). 원본은 `doc_id` 변수 가림(search.py:1286)으로 rerank 가 "
+        "0회다. multi-doc 모드에서 이 행만 2위 이하 순서가 바뀐다 — 123행 중 1행, "
+        "R@10·MRR·nDCG@10 은 **소수점 4자리까지 동일**(실측). "
+        "끄려면 JETRAG_MMR_DISABLE=1. work-log §51.",
+}
+
+
 def main() -> int:
     from dotenv import load_dotenv
 
@@ -177,6 +191,7 @@ def main() -> int:
     env["JET_RAG_METRICS_PERSIST_ENABLED"] = "0"
 
     total_diff = 0
+    seen_diverged: set[str] = set()
     for mode, limit in (("doc-scope", 50), ("multi-doc", 10)):
         print()
         print(f"=== {mode} (limit={limit}) ===")
@@ -211,7 +226,16 @@ def main() -> int:
                 {k: v for k, v in pv.items() if k != "took_ms"},
                 {k: v for k, v in tv.items() if k != "took_ms"},
             )
-            if d:
+            if d and rec["id"] in INTENTIONAL_DIVERGENCE:
+                # 원본 버그를 **일부러** 안 따라간 자리. 조용히 넘기지 않고 매번 찍는다.
+                seen_diverged.add(rec["id"])
+                print(
+                    f"  [{rec['id']}] 의도된 차이 ({len(d)}건) {rec['query'][:30]!r}"
+                    f" — {INTENTIONAL_DIVERGENCE[rec['id']]}"
+                )
+                for line in d[:2]:
+                    print(f"      {line}")
+            elif d:
                 mismatched += 1
                 print(f"  [{rec['id']}] MISMATCH ({len(d)}건) {rec['query'][:30]!r}")
                 for line in d[:4]:
@@ -262,6 +286,11 @@ def main() -> int:
             print("  → 지표가 다르다.")
 
     print()
+    # 적어 놓고 실제로는 일치하면 목록에서 빼야 한다 — 죽은 예외가 진짜 회귀를 덮는다.
+    unused = set(INTENTIONAL_DIVERGENCE) - seen_diverged
+    if unused:
+        total_diff += len(unused)
+        print(f"  **의도된 차이로 적어 뒀는데 실제로는 일치한다: {sorted(unused)}**")
     print("FAIL 0" if total_diff == 0 else f"FAIL {total_diff}")
     return 1 if total_diff else 0
 
