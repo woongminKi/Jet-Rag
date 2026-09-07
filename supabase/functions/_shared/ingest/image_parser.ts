@@ -11,16 +11,21 @@
  * 매칭되지 않는다. 같은 페이지의 모든 섹션이 같은 caption metadata 를 공유하도록 바꿔
  * 매칭 효과가 4~5 배 됐다는 게 원본 주석의 기록이다.
  *
- * ## 이미지 정규화는 여기 없다
- * PDF 경로에서는 `pdf_raster.renderPageForVision` 이 렌더·축소·인코딩을 한 번에 한다.
- * 원본이 PNG 를 만들어 Pillow 에 넘기는 왕복은 무손실이라 관찰되지 않는다.
- * 단독 이미지 업로드(사용자 파일) 경로를 옮길 때는 EXIF transpose 와 HEIC 분기가
- * 추가로 필요하다 — 지금은 PDF 페이지만 다룬다.
+ * ## 정규화 경로가 둘이다
+ * - **PDF 페이지**: `pdf_raster.renderPageForVision` 이 렌더·축소·인코딩을 한 번에 한다.
+ * - **사용자가 올린 이미지 파일**: `image_decode.normalizeImage` 가 디코드·EXIF 회전·
+ *   축소·재인코딩을 한다. HEIC/HEIF 는 **디코드하지 않고 raw bytes 를 그대로** 넘긴다
+ *   (원본 `image_parser.py:101` — "pillow-heif 등 추가 의존성 회피").
  */
 
+import type { SupabaseClient } from "@supabase/supabase-js";
+
 import type { ExtractedSection, ExtractionResult } from "./hwp_extract.ts";
+import { normalizeImage } from "./image_decode.ts";
 import type { VisionCaption } from "./vision_caption.ts";
 import { pyStr } from "./vision_caption.ts";
+import { captionImage, type VisionClientDeps } from "./vision_client.ts";
+import { recordCall } from "./vision_metrics.ts";
 import { pyStrip } from "../search/pystr.ts";
 
 /**
@@ -118,4 +123,94 @@ export function composeResult(
     warnings: opts.warnings,
     metadata: { vision_type: caption.type }, // content_gate 의 메신저대화 감지용
   };
+}
+
+/** 원본 `_EXT_TO_MIME` — `UploadFile.content_type` 이 없을 때의 fallback. */
+export const EXT_TO_MIME: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".heic": "image/heic",
+  ".heif": "image/heif",
+  ".webp": "image/webp",
+};
+
+/** 디코드 없이 그대로 Gemini 에 넘기는 확장자. 원본과 같은 집합이다. */
+const PASSTHROUGH_EXTS = new Set([".heic", ".heif"]);
+
+export interface ImageParseDeps {
+  client: SupabaseClient;
+  env: Record<string, string | undefined>;
+  geminiApiKey: string;
+  nowMs: number;
+  /** 테스트 주입 — Gemini 를 부르지 않는다. */
+  caption?: (bytes: Uint8Array, mimeType: string) => Promise<VisionCaption>;
+}
+
+export interface ImageParseResult {
+  result: ExtractionResult;
+  /** `vision_usage_log` 적재 실패 메시지. 비어 있지 않으면 비용 한도가 안 걸린다. */
+  metricErrors: string[];
+}
+
+/**
+ * 원본 `ImageParser.parse` — 단독 이미지 1 장을 `ExtractionResult` 로.
+ *
+ * ## 캐시를 타지 않는다
+ * 원본은 `sha256` 과 `page` 가 **둘 다** 있을 때만 `vision_page_cache` 를 본다.
+ * 단독 이미지 호출은 둘 다 `None` 이라 조회도 저장도 하지 않는다 — 그대로 옮겼다.
+ *
+ * ## 실패하면 던진다
+ * 캡션 호출이 실패하면 원본은 `record_call(success=False)` 를 남기고 **다시 던진다**.
+ * 조용히 빈 결과를 만들지 않는다 — 그러면 빈 문서가 완료로 남는다.
+ */
+export async function parseImage(
+  deps: ImageParseDeps,
+  opts: { data: Uint8Array; fileName: string; docId?: string | null },
+): Promise<ImageParseResult> {
+  const dot = opts.fileName.lastIndexOf(".");
+  const ext = dot >= 0 ? opts.fileName.slice(dot).toLowerCase() : "";
+  const guessedMime = EXT_TO_MIME[ext] ?? "image/jpeg";
+
+  let bytes = opts.data;
+  let mimeType = guessedMime;
+  const warnings: string[] = [];
+  if (!PASSTHROUGH_EXTS.has(ext)) {
+    const n = await normalizeImage(opts.data, guessedMime);
+    bytes = n.bytes;
+    mimeType = n.mimeType;
+    warnings.push(...n.warnings);
+  }
+
+  const clientDeps: VisionClientDeps = { env: deps.env, apiKey: deps.geminiApiKey };
+  const metricErrors: string[] = [];
+  let caption: VisionCaption;
+  try {
+    caption = deps.caption
+      ? await deps.caption(bytes, mimeType)
+      : await captionImage(clientDeps, bytes, mimeType);
+  } catch (e) {
+    const me = await recordCall(deps.client, deps.env, deps.nowMs, {
+      success: false,
+      errorMsg: String(e),
+      sourceType: "image",
+      docId: opts.docId ?? null,
+      page: null,
+      retryAttempt: (e as { retryAttempt?: number })?.retryAttempt ?? null,
+    });
+    if (me) metricErrors.push(me);
+    throw e; // 원본도 기록 후 재-raise 한다
+  }
+
+  const me = await recordCall(deps.client, deps.env, deps.nowMs, {
+    success: true,
+    sourceType: "image",
+    usage: caption.usage as unknown as Record<string, unknown> | null,
+    docId: opts.docId ?? null,
+    page: null,
+    retryAttempt: caption.usage?.retry_attempt ?? null,
+  });
+  if (me) metricErrors.push(me);
+
+  return { result: composeResult(caption, { warnings }), metricErrors };
 }

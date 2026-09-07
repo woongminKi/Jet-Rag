@@ -99,7 +99,12 @@ function clip8(v: number): number {
   return s < 0 ? 0 : s > 255 ? 255 : s;
 }
 
-/** RGB(3채널) 8비트 이미지 축소. Pillow 와 같은 2패스 + 8비트 중간값. */
+/**
+ * RGB(3채널) 8비트 이미지 축소. Pillow 와 같은 2패스 + 8비트 중간값.
+ *
+ * PDF 래스터 경로가 쓴다. 채널 수가 다른 입력(그레이 1채널·RGBA 4채널)은
+ * `resizeLanczosN` 을 쓴다 — **같은 구현**이라 두 경로가 갈리지 않는다.
+ */
 export function resizeRgbLanczos(
   src: Uint8Array | Uint8ClampedArray,
   srcW: number,
@@ -108,7 +113,25 @@ export function resizeRgbLanczos(
   dstW: number,
   dstH: number,
 ): Uint8Array {
-  const C = 3;
+  return resizeLanczosN(src, srcW, srcH, srcStride, dstW, dstH, 3);
+}
+
+/**
+ * 채널 수를 받는 판. Pillow 는 `L`·`RGB`·`RGBA` 를 **그 모드 그대로** 축소하므로
+ * (RGBA 를 RGB 로 바꾼 뒤 줄이지 않는다) 채널 수가 결과를 바꾼다.
+ *
+ * 알파 채널도 같은 필터로 지나간다 — Pillow 가 그렇게 한다.
+ */
+export function resizeLanczosN(
+  src: Uint8Array | Uint8ClampedArray,
+  srcW: number,
+  srcH: number,
+  srcStride: number,
+  dstW: number,
+  dstH: number,
+  channels: number,
+): Uint8Array {
+  const C = channels;
   // --- 가로 패스: (srcW, srcH) → (dstW, srcH) ---
   const hc = precomputeCoeffs(srcW, dstW);
   const mid = new Uint8Array(dstW * srcH * C);
@@ -119,20 +142,14 @@ export function resizeRgbLanczos(
       const xmin = hc.bounds[xx * 2];
       const xmax = hc.bounds[xx * 2 + 1];
       const kbase = xx * hc.ksize;
-      let s0 = 1 << (PRECISION_BITS - 1);
-      let s1 = s0;
-      let s2 = s0;
-      for (let x = 0; x < xmax; x++) {
-        const w = hc.kk[kbase + x];
-        const p = rowIn + (x + xmin) * C;
-        s0 += src[p] * w;
-        s1 += src[p + 1] * w;
-        s2 += src[p + 2] * w;
-      }
       const o = rowOut + xx * C;
-      mid[o] = clip8(s0);
-      mid[o + 1] = clip8(s1);
-      mid[o + 2] = clip8(s2);
+      for (let ch = 0; ch < C; ch++) {
+        let s = 1 << (PRECISION_BITS - 1);
+        for (let x = 0; x < xmax; x++) {
+          s += src[rowIn + (x + xmin) * C + ch] * hc.kk[kbase + x];
+        }
+        mid[o + ch] = clip8(s);
+      }
     }
   }
 
@@ -146,21 +163,15 @@ export function resizeRgbLanczos(
     const kbase = yy * vc.ksize;
     const rowOut = yy * midStride;
     for (let xx = 0; xx < dstW; xx++) {
-      let s0 = 1 << (PRECISION_BITS - 1);
-      let s1 = s0;
-      let s2 = s0;
       const col = xx * C;
-      for (let y = 0; y < ymax; y++) {
-        const w = vc.kk[kbase + y];
-        const p = (y + ymin) * midStride + col;
-        s0 += mid[p] * w;
-        s1 += mid[p + 1] * w;
-        s2 += mid[p + 2] * w;
-      }
       const o = rowOut + col;
-      out[o] = clip8(s0);
-      out[o + 1] = clip8(s1);
-      out[o + 2] = clip8(s2);
+      for (let ch = 0; ch < C; ch++) {
+        let s = 1 << (PRECISION_BITS - 1);
+        for (let y = 0; y < ymax; y++) {
+          s += mid[(y + ymin) * midStride + col + ch] * vc.kk[kbase + y];
+        }
+        out[o + ch] = clip8(s);
+      }
     }
   }
   return out;

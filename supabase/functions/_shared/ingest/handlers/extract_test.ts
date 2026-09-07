@@ -154,22 +154,36 @@ Deno.test("문서가 없으면 던진다", async () => {
   await assertRejects(() => h(TASK, {} as never), Error, "문서를 찾을 수 없다");
 });
 
+/**
+ * 아직 이식 안 된 doc_type 하나. **하드코딩하지 않는다** — 예시로 쓴 포맷이 이식되면
+ * 테스트가 조용히 무의미해지는 일이 이 파일에서만 네 번 반복됐다(hwpx → image → …).
+ * 집합에서 유도하면 마지막 하나까지 이식된 순간 `undefined` 가 되어 즉시 드러난다.
+ */
+const UNPORTED = ["url", "image", "txt", "md", "xlsx"]
+  .find((t) => !SUPPORTED_DOC_TYPES.has(t) && !GRACEFUL_SKIP_DOC_TYPES.has(t));
+
 Deno.test("이식 안 된 포맷은 **조용히 넘기지 않고** 던진다", async () => {
-  // `hwpx` 는 이제 이식됐다 — 아직 안 된 것으로 골라야 이 테스트가 살아 있다.
-  // (예시로 쓴 포맷이 이식되면 여기가 조용히 무의미해진다. 실제로 한 번 그랬다.)
-  const { client } = fakeClient({ id: "d1", doc_type: "image", storage_path: "user/u/x.png" });
+  if (UNPORTED === undefined) {
+    throw new Error("이식 안 된 포맷이 없다 — 이 테스트를 지우거나 예시를 바꿔야 한다");
+  }
+  const { client } = fakeClient({ id: "d1", doc_type: UNPORTED, storage_path: "user/u/x.bin" });
   // deno-lint-ignore no-explicit-any
   const h = makeExtractHandler({ client: client as any, bucket: "documents" });
-  await assertRejects(() => h(TASK, {} as never), Error, "아직 이식되지 않은 포맷: image");
+  await assertRejects(
+    () => h(TASK, {} as never),
+    Error,
+    `아직 이식되지 않은 포맷: ${UNPORTED}`,
+  );
 });
 
-Deno.test("SUPPORTED_DOC_TYPES — ZIP/XML 4종이 들어왔다", () => {
+Deno.test("SUPPORTED_DOC_TYPES — 단독 이미지가 들어왔다", () => {
   // 목록이 곧 계약이다. 빠지면 업로드는 되는데 인제스트가 던진다.
-  assertEquals([...SUPPORTED_DOC_TYPES].sort(), ["docx", "hwp", "hwpx", "pdf", "pptx"]);
-  // 아직 안 된 것들 — 이식하면 이 줄이 먼저 깨진다.
-  for (const t of ["image", "url"]) {
-    assertEquals(SUPPORTED_DOC_TYPES.has(t), false, t);
-  }
+  assertEquals(
+    [...SUPPORTED_DOC_TYPES].sort(),
+    ["docx", "hwp", "hwpx", "image", "pdf", "pptx"],
+  );
+  // `url` 은 `trafilatura` 가 막고 있어 아직이다. 이식하면 이 줄이 먼저 깨진다.
+  assertEquals(SUPPORTED_DOC_TYPES.has("url"), false);
 });
 
 Deno.test("업로드가 받는 doc_type 은 **전부** 여기서 분류돼 있어야 한다", () => {
@@ -184,8 +198,11 @@ Deno.test("업로드가 받는 doc_type 은 **전부** 여기서 분류돼 있�
   // 남는 건 **원본이 실제로 파싱하는데 아직 못 옮긴 것**뿐이어야 한다.
   // 여기에 새 값이 나타나면 그건 조용한 회귀다 — 목록에 넣거나 이식해야 한다.
   // (`url` 은 확장자가 아니라 `POST /documents/url` 이 만드는 doc_type 이라 여기 없다.)
-  assertEquals(던지는것.sort(), ["image"]);
+  // 이제 업로드 가능한 doc_type 은 **전부** 처리되거나 graceful skip 된다.
+  assertEquals(던지는것.sort(), []);
+  // `url` 은 확장자가 아니라 `POST /documents/url` 이 만드는 doc_type 이라 여기 없다.
   assertEquals(uploadable.has("url"), false);
+  assertEquals(SUPPORTED_DOC_TYPES.has("url"), false);
   // 원본에도 파서가 없는 것들 — 원본과 같이 정상 완료시킨다.
   assertEquals([...GRACEFUL_SKIP_DOC_TYPES].sort(), ["md", "txt"]);
 });

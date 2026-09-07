@@ -38,6 +38,7 @@ import { PDF_PAGES_PER_TASK } from "../pdf_extract.ts";
 import { extractPdfRange, type PdfRangeResult } from "../pdf_open.ts";
 import { finishJob } from "../finish.ts";
 import { stripNulls } from "../strip_nul.ts";
+import { parseImage } from "../image_parser.ts";
 import { readVisionEnv } from "../vision_enrich.ts";
 import { isScanPdf } from "../vision_scan.ts";
 import { pyIsSpace } from "../../pychar.ts";
@@ -45,7 +46,7 @@ import type { TaskHandler, TaskPayload } from "../worker.ts";
 
 /** 지금 처리할 수 있는 `documents.doc_type`. */
 export const SUPPORTED_DOC_TYPES = new Set([
-  "hwp", "pdf", "hwpx", "docx", "pptx",
+  "hwp", "pdf", "hwpx", "docx", "pptx", "image",
 ]);
 
 /**
@@ -129,7 +130,8 @@ export function makeExtractHandler(deps: ExtractDeps): TaskHandler {
   // PDF 이고 vision 이 켜져 있으면 chunk 앞에 vision 단계가 하나 더 붙는다.
   // 스캔 PDF 여부는 vision 핸들러가 판단해 스스로 chunk 로 넘긴다 — 여기서 flags 까지
   // 보면 extract 가 vision 정책을 알아야 해서 책임이 번진다.
-  const visionEnabled = readVisionEnv(deps.env ?? Deno.env.toObject()).enabled;
+  const env = deps.env ?? Deno.env.toObject();
+  const visionEnabled = readVisionEnv(env).enabled;
   const now = deps.nowMs ?? (() => Date.now());
 
   return async (task: TaskPayload) => {
@@ -183,6 +185,9 @@ export function makeExtractHandler(deps: ExtractDeps): TaskHandler {
     const bytes = deps.download
       ? await deps.download(path)
       : await defaultDownload(deps.client, deps.bucket, path);
+    // 원본은 `os.path.basename(storage_path)` 를 파서에 넘긴다 — 확장자로 mime 을
+    // 추정하는 데 쓰이므로 경로가 아니라 파일명이어야 한다.
+    const fileName = path.split("/").pop() ?? path;
 
     const from = task.from ?? 0;
     let payload: Record<string, unknown>;
@@ -220,7 +225,30 @@ export function makeExtractHandler(deps: ExtractDeps): TaskHandler {
       if (done < r.totalPages && r.processed > 0) nextFrom = done;
     } else {
       // PDF 말고는 전부 문서 하나를 한 번에 읽는다 — 페이지 범위 개념이 없다.
-      const result = docType === "hwp"
+      const result = docType === "image"
+        // 단독 이미지는 **여기서 Gemini 를 부른다**. PDF 처럼 vision 스테이지를 따로
+        // 두지 않은 건 원본과 같다 — 이미지 1 장은 호출도 1 회라 나눌 창이 없다.
+        // 실패하면 던진다(잡 failed). 조용히 빈 문서를 만들지 않는다.
+        ? await (async () => {
+          const ve = readVisionEnv(env);
+          if (!ve.geminiApiKey) {
+            throw new Error("GEMINI_API_KEY 가 없다 — 이미지 문서를 읽을 수 없다");
+          }
+          const r = await parseImage({
+            client: deps.client,
+            env,
+            geminiApiKey: ve.geminiApiKey,
+            nowMs: now(),
+          }, { data: bytes, fileName, docId: task.doc_id });
+          if (r.metricErrors.length > 0) {
+            console.error(
+              `vision_usage_log 적재 실패 ${r.metricErrors.length}건 — 비용 한도가 ` +
+                `안 걸린다. doc=${task.doc_id} ${r.metricErrors.join(" / ")}`,
+            );
+          }
+          return r.result;
+        })()
+        : docType === "hwp"
         // 확장자가 `.hwp` 여도 내용이 HWPML(XML) 인 파일이 있다 — **바이트로** 가른다.
         // 원본 `run_extract_stage` 가 같은 자리에서 같은 판정을 한다.
         ? (isHwpmlBytes(bytes.subarray(0, 4096))
