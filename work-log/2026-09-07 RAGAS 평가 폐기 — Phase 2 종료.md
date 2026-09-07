@@ -3046,3 +3046,113 @@ GET  /billing/run                      → 405
 | **B** | `POST /documents/url` 처리 — 사용 0건 · 웹 UI 호출 0건이라 폐기가 RAGAS 패턴과 같다 |
 | **C** | billing cron 마이그 029 (pg_cron + Vault, 마이그 028 패턴) |
 | **D** | PPTX Vision 보강 · `synonym_inject` 등 잔여 이식 |
+
+---
+
+## 47. `POST /documents/url` 폐기 (`9361661`). **앱 라우트 이관 완료**
+
+본문 추출이 `trafilatura`(Python 전용)에 묶여 Edge 로 옮길 수 없었다. RAGAS 때와 같은
+판단으로 닫았다 — 다만 이번엔 **근거를 전부 실측한 뒤** 사용자 확인을 받고 진행했다.
+
+### 47.1 폐기 근거 (전부 측정)
+
+| 항목 | 값 |
+|---|---|
+| url 채널로 만들어진 문서 | **0건** (`documents` 전수 조회) |
+| 웹 UI 호출 | **0건** (`web/` 전체 검색) |
+| iOS Shortcuts 가이드 | `/documents`(파일 업로드)를 쓴다 — `/documents/url` 아님 |
+| Web Share Target | manifest 가 **files 전용** |
+| `trafilatura` 사용처 | `upload_url` 제목 추정 + `url_parser.py` 본문 추출 — **둘뿐** |
+
+마지막 항목이 결정적이었다. 라우트를 닫으면 **의존성이 통째로 빠진다.**
+
+"iOS Shortcuts 호환성" 이 신설 근거였다는 기록(2026-04-24 명세)이 있어 외부 소비자를
+의심했지만, 실제 가이드 문서는 `/documents` 를 쓰고 있었다. 근거 문장만 보고
+"외부 사용자가 있다" 고 단정하지 않은 게 맞았다.
+
+### 47.2 지운 것
+
+```
+upload_url (204줄) · UrlUploadRequest · _URL_FETCH_* 상수
+url_parser.py (69줄) · _url_gate.py (189줄, SSRF) · test_url_gate.py (234줄, 12건)
+extract.py 의 url 디스패처 · pyproject 의 trafilatura
+총 763 줄 삭제 / 53 줄 추가
+```
+
+**SSRF 게이트도 같이 지웠다.** 호출자가 없어지면 죽은 코드인데, 살아 있는 것처럼 보이는
+죽은 코드가 더 나쁘다. 필요해지면 이 커밋 이전에서 꺼내면 된다.
+
+### 47.3 검증 — 기준선 대비
+
+| 시점 | 결과 |
+|---|---|
+| 삭제 전 | 1465 tests / **4 failures** / 12 skipped |
+| 삭제 후 (1차) | 1449 tests / **5 failures** ← 늘었다 |
+| 원인 수정 후 | 1449 tests / **4 failures** / 12 skipped |
+
+4 건은 전부 알려진 `test_embed_cache` 선재 실패다(단독 실행 시 통과). **회귀 0.**
+
+늘어난 1 건의 원인: `test_nfc_normalize` 가 `documents.py` 에 NFC 정규화 호출이
+**2 곳**(파일 + URL) 있어야 한다고 검사하고 있었다. URL 경로가 사라져 1 곳이 된 것이라
+기대값을 고쳤다 — 남은 파일 업로드 경로가 실제로 정규화하는지 먼저 확인했다.
+
+`fastapi_routes.json` 을 **실제 앱에서 다시 뽑았다**: 34 → 33, 사라진 것은
+`POST /documents/url` 하나뿐.
+
+### 47.4 프록시 테스트의 "미이관 예시" 를 데이터에서 유도하게 바꿨다
+
+"Railway 로 가는 미이관 경로" 예시를 `/documents/url` 로 **하드코딩**하고 있었다.
+그게 사라지면서 테스트가 뜻을 잃었다. 같은 패턴이 `/stats/overview`(전환),
+`/documents` 읽기(전환)에 이어 **세 번째**다.
+
+이제 라우트 전수에서 유도한다 — 마지막 하나까지 넘어가면 `undefined` 가 되어 즉시
+드러난다. (`extract_test.ts` 의 미이식 포맷 예시도 §45.5 에서 같은 이유로 바꿨다.)
+
+### 47.5 라이브 확인
+
+```
+POST /documents/url  →  401 → (Railway 재배포) → 405
+```
+
+405 인 이유는 `GET /documents/{doc_id}` 가 같은 경로를 잡기 때문이다 — FastAPI 의
+정상 동작이고, 라우트가 사라졌다는 뜻이다.
+
+### 47.6 덤으로 드러난 **원본 버그** (고치지 않음)
+
+확인하다가 `GET /documents/url` 이 **500** 인 걸 발견했다. 비-UUID doc_id 전부
+그렇다(`not-a-uuid`, `12345`, `abc-def`).
+
+**원본 Railway 도 똑같이 500 이다.** 즉 이식 결함이 아니라 원본 버그를 그대로 옮긴
+것이다. 유효하지만 없는 UUID 는 양쪽 다 `404 {"detail":"문서를 찾을 수 없습니다."}` 로
+일치한다.
+
+이관 중에는 고치지 않는다 — 고치면 그게 곧 원본과의 차이가 된다.
+기존 이월 목록(MMR 도달 불가 `search.py:1286`, `9999-12-31` 질의 → 500)에 추가한다.
+
+### 47.7 이관 현황 — **앱 라우트가 0 개 남았다**
+
+```
+총 33  ·  Edge 28  ·  Railway 5
+```
+
+Railway 에 남은 5 개는 **전부 FastAPI 자체 문서 페이지**다:
+`GET /` · `/docs` · `/docs/oauth2-redirect` · `/openapi.json` · `/redoc`.
+Railway 를 끄면 함께 사라진다 — 옮길 대상이 아니다.
+
+### 47.8 Railway 를 끄기 전에 남은 것
+
+| # | 항목 | 성격 |
+|---|---|---|
+| 1 | **이메일 + 결제 컷오버** | secret 4 개(§42.5 · §46.6). 사용자 실행 필요 |
+| 2 | **billing cron** | 마이그 029 (pg_cron + Vault). 신규 마이그레이션 = 사용자 확인 필요 |
+| 3 | 프런트의 API base URL | 프록시를 보고 있으므로 변경 불요 (확인 필요) |
+| 4 | PPTX Vision 보강 · `synonym_inject` | 기능 잔여 — Railway 제거의 차단 요인은 아님 |
+
+### 47.9 다음 후보
+
+| 후보 | 내용 |
+|---|---|
+| **A** | secret 설정 → 이메일 + 결제 컷오버 (`verify_cutover.ts` 가 순서를 지킨다) |
+| **B** | billing cron 마이그 029 |
+| **C** | Railway 종료 리허설 — `LEGACY_ORIGIN=""` 로 두고 무엇이 깨지는지 실측 |
+| **D** | PPTX Vision 보강 · `synonym_inject` 등 잔여 이식 |
