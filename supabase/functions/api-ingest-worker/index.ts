@@ -28,6 +28,7 @@ import { makeChunkHandler } from "../_shared/ingest/handlers/chunk.ts";
 import { makeEmbedHandler } from "../_shared/ingest/handlers/embed.ts";
 import { makeExtractHandler } from "../_shared/ingest/handlers/extract.ts";
 import { makeLoadHandler } from "../_shared/ingest/handlers/load.ts";
+import { makeScanHandler } from "../_shared/ingest/handlers/scan.ts";
 import { makeVisionHandler } from "../_shared/ingest/handlers/vision.ts";
 import { makeVisionMissingHandler } from "../_shared/ingest/handlers/vision_missing.ts";
 
@@ -46,6 +47,7 @@ function buildHandlers(
 ): Record<string, TaskHandler> {
   return {
     extract: makeExtractHandler({ client, bucket: settings.supabaseStorageBucket }),
+    scan: makeScanHandler({ client, bucket: settings.supabaseStorageBucket }),
     vision: makeVisionHandler({ client, bucket: settings.supabaseStorageBucket }),
     vision_missing: makeVisionMissingHandler({
       client, bucket: settings.supabaseStorageBucket,

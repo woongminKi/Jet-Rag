@@ -57,9 +57,24 @@ function fakeClient(doc: Record<string, unknown> | null, opts: FakeOpts = {}) {
           return q;
         },
         limit() {
-          const rows = artifacts.filter((a) => a.seq < q._lt)
-            .sort((a, b) => (q._desc ? b.seq - a.seq : a.seq - b.seq));
-          return Promise.resolve({ data: rows.slice(0, 1), error: null });
+          return Promise.resolve({ data: q._rows().slice(0, 1), error: null });
+        },
+        // `limit` 없이 그대로 await 하는 호출도 있다(스캔 판정). thenable 이 아니면
+        // `{data}` 구조분해가 undefined 가 되어 **조용히 빈 결과**로 읽힌다.
+        then(res: (v: unknown) => void) {
+          res({ data: q._rows(), error: null });
+        },
+        _rows() {
+          return artifacts.filter((a) => a.seq < q._lt)
+            .sort((a, b) => (q._desc ? b.seq - a.seq : a.seq - b.seq))
+            .map((a) => ({
+              seq: a.seq,
+              payload: a.payload,
+              // PostgREST 의 `payload->key` 선택을 흉내낸다.
+              raw_text: (a.payload as Record<string, unknown>)?.raw_text,
+              raw_part_count: (a.payload as Record<string, unknown>)?.raw_part_count,
+              raw_nonspace_len: (a.payload as Record<string, unknown>)?.raw_nonspace_len,
+            }));
         },
       };
       return {
@@ -67,6 +82,12 @@ function fakeClient(doc: Record<string, unknown> | null, opts: FakeOpts = {}) {
         upsert(row: Record<string, unknown>, o: unknown) {
           calls.push("upsert");
           upserts.push({ row, opts: o });
+          // 실제 DB 처럼 같은 seq 는 덮어쓴다 — 스캔 판정이 방금 쓴 행을 봐야 한다.
+          const seq = row.seq as number;
+          const at = artifacts.findIndex((a) => a.seq === seq);
+          const rec = { seq, payload: row.payload as Record<string, unknown> };
+          if (at >= 0) artifacts[at] = rec;
+          else artifacts.push(rec);
           return Promise.resolve({ data: null, error: null });
         },
       };
@@ -101,7 +122,12 @@ function fakePdf(total: number) {
         bbox: null,
         metadata: {},
       })),
-      rawParts: Array.from({ length: processed }, (_, k) => `p${o.from + k + 1}`),
+      // **길이가 의미를 갖는다.** 문서 전체 raw_text 가 50 자 이하면 스캔 PDF 로
+      // 판정되므로(§37), 일반 PDF 테스트는 그보다 긴 본문을 내야 의도대로 돈다.
+      rawParts: Array.from(
+        { length: processed },
+        (_, k) => `${o.from + k + 1}페이지 본문입니다. 판정에 걸리지 않을 만큼 충분히 길게 씁니다.`,
+      ),
       nextTitle: processed > 0 ? `제목-${end}` : o.carryTitle,
       totalPages: total,
       processed,
@@ -173,8 +199,7 @@ Deno.test("PDF — 페이지 범위를 순차로 이어가고 마지막에 chunk
   for (let guard = 0; task && guard < 10; guard++) {
     if (task.stage !== "extract") break;
     await h(task, {} as never);
-    const row = upserts[upserts.length - 1].row;
-    artifacts.push({ seq: row.seq as number, payload: row.payload as Record<string, unknown> });
+    // 가짜 client 가 upsert 를 artifacts 에 반영한다 — carryTitle·스캔 판정 양쪽이 본다.
     task = sends[sends.length - 1] as unknown as TaskPayload;
     stages.push(task.stage);
   }
@@ -251,4 +276,68 @@ Deno.test("upsert 는 onConflict 로 멱등성을 보장한다", async () => {
   });
   await h(TASK, {} as never);
   assertEquals(upserts[0].opts, { onConflict: "job_id,stage,seq" });
+});
+
+Deno.test("스캔 PDF — 문서 전체 텍스트가 50자 이하면 chunk 대신 scan 으로 간다", async () => {
+  // 원본 `_is_scan_pdf` 는 파서가 문서를 통째로 읽은 raw_text 를 본다. 창으로 나뉜
+  // Edge 에서는 마지막 창에서 전체를 되붙여 판정한다.
+  const empty = (
+    _b: Uint8Array,
+    o: { from: number; count: number; carryTitle: string | null },
+  ): Promise<PdfRangeResult> => {
+    const end = Math.min(3, o.from + o.count);
+    const processed = Math.max(0, end - o.from);
+    return Promise.resolve({
+      sections: [], rawParts: [], nextTitle: null, totalPages: 3, processed,
+    });
+  };
+  const { client, sends } = fakeClient(PDF_DOC);
+  const h = makeExtractHandler({
+    // deno-lint-ignore no-explicit-any
+    client: client as any,
+    bucket: "documents",
+    download: () => Promise.resolve(new Uint8Array([1])),
+    extractPdf: empty,
+    pagesPerTask: 10,
+    env: { JETRAG_PDF_VISION_ENRICH: "true" }, // vision 이 켜져 있어도 scan 이 이긴다
+  });
+  await h(TASK, {} as never);
+  assertEquals(sends.length, 1);
+  assertEquals(sends[0].stage, "scan");
+  assertEquals(sends[0].from, 0);
+});
+
+Deno.test("본문이 있으면 스캔이 아니다 — vision 이 켜져 있으면 vision 으로", async () => {
+  const { fn } = fakePdf(3);
+  const { client, sends } = fakeClient(PDF_DOC);
+  const h = makeExtractHandler({
+    // deno-lint-ignore no-explicit-any
+    client: client as any,
+    bucket: "documents",
+    download: () => Promise.resolve(new Uint8Array([1])),
+    extractPdf: fn,
+    pagesPerTask: 10,
+    env: { JETRAG_PDF_VISION_ENRICH: "true" },
+  });
+  await h(TASK, {} as never);
+  assertEquals(sends[0].stage, "vision");
+});
+
+Deno.test("스캔 판정용 값이 산출물에 남는다", async () => {
+  const { fn } = fakePdf(2);
+  const { client, upserts } = fakeClient(PDF_DOC);
+  const h = makeExtractHandler({
+    // deno-lint-ignore no-explicit-any
+    client: client as any,
+    bucket: "documents",
+    download: () => Promise.resolve(new Uint8Array([1])),
+    extractPdf: fn,
+    pagesPerTask: 10,
+  });
+  await h(TASK, {} as never);
+  const payload = upserts[0].row.payload as Record<string, number>;
+  // 빈 창이 join 에서 빠지려면 개수를 알아야 한다.
+  assertEquals(payload.raw_part_count, 2);
+  // 공백 아닌 글자 수 — 이것만으로 50 초과가 확정되면 본문을 다시 안 읽는다.
+  assertEquals(payload.raw_nonspace_len > 50, true);
 });

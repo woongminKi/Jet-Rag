@@ -31,6 +31,8 @@ import { PDF_PAGES_PER_TASK } from "../pdf_extract.ts";
 import { extractPdfRange, type PdfRangeResult } from "../pdf_open.ts";
 import { stripNulls } from "../strip_nul.ts";
 import { readVisionEnv } from "../vision_enrich.ts";
+import { isScanPdf } from "../vision_scan.ts";
+import { pyIsSpace } from "../../pychar.ts";
 import type { TaskHandler, TaskPayload } from "../worker.ts";
 
 /** 지금 처리할 수 있는 `documents.doc_type`. */
@@ -153,6 +155,14 @@ export function makeExtractHandler(deps: ExtractDeps): TaskHandler {
         page_from: from,
         page_count: r.processed,
         total_pages: r.totalPages,
+        // 스캔 PDF 판정은 **문서 전체** raw_text 를 봐야 한다(§37). 창 단위로 나뉜 걸
+        // 정확히 되붙이려면 두 값이 필요하다:
+        // - `raw_part_count` — 0 이면 그 창은 join 에서 빠져야 한다. 안 그러면
+        //   구분자 `\n\n` 가 하나 더 끼어 길이가 어긋난다.
+        // - `raw_nonspace_len` — 이것만 합쳐도 50 을 넘으면 스캔이 아님이 **확정**된다
+        //   (strip 은 공백 아닌 글자를 못 지운다). 큰 문서에서 본문을 다시 안 읽어도 된다.
+        raw_part_count: r.rawParts.length,
+        raw_nonspace_len: nonSpaceLen(r.rawParts.join("\n\n")),
       };
       const done = from + r.processed;
       if (done < r.totalPages && r.processed > 0) nextFrom = done;
@@ -181,13 +191,67 @@ export function makeExtractHandler(deps: ExtractDeps): TaskHandler {
 
     // **저장이 끝난 뒤에** 다음 작업을 넣는다. 순서가 반대면 다음 태스크가 아직 없는
     // 아티팩트에서 carryTitle 을 찾다가 던진다.
-    const afterExtract = visionEnabled && docType === "pdf" ? "vision" : "chunk";
+    // 마지막 창이면 문서 전체가 스캔 PDF 인지 판정한다. 원본은 파서가 문서를 통째로
+    // 읽은 직후에 보므로 여기가 같은 자리다 — **vision enrich 보다 먼저**다(원본 elif).
+    let afterExtract: "scan" | "vision" | "chunk" = "chunk";
+    if (nextFrom === null && docType === "pdf") {
+      if (await isScanDocument(deps.client, task.job_id)) afterExtract = "scan";
+      else if (visionEnabled) afterExtract = "vision";
+    }
     const next: TaskPayload = nextFrom !== null
       ? { job_id: task.job_id, doc_id: task.doc_id, stage: "extract", from: nextFrom, count: pagesPerTask }
+      : afterExtract === "scan"
+      ? { job_id: task.job_id, doc_id: task.doc_id, stage: "scan", from: 0 }
       : afterExtract === "vision"
       ? { job_id: task.job_id, doc_id: task.doc_id, stage: "vision", from: 0 }
       : { job_id: task.job_id, doc_id: task.doc_id, stage: "chunk" };
     const { error: sendErr } = await deps.client.rpc("ingest_queue_send", { payload: next });
     if (sendErr) throw new Error(`다음 작업 enqueue 실패: ${sendErr.message}`);
   };
+}
+
+/** 공백이 아닌 코드포인트 수. `strip()` 이 절대 못 지우는 글자들이다. */
+function nonSpaceLen(s: string): number {
+  let n = 0;
+  for (const ch of s) if (!pyIsSpace(ch)) n++;
+  return n;
+}
+
+/**
+ * 문서 전체 `raw_text` 로 스캔 PDF 판정 — 원본 `_is_scan_pdf`.
+ *
+ * 두 단계로 본다. 대부분의 문서는 1 단계에서 끝나 본문을 다시 안 읽는다.
+ * 1. 창별 `raw_nonspace_len` 합이 50 초과 → 스캔 아님 **확정**(strip 은 공백만 지운다)
+ * 2. 아니면 창별 `raw_text` 를 원본과 같은 순서로 이어 붙여 정확히 판정
+ */
+async function isScanDocument(
+  client: SupabaseClient,
+  jobId: string,
+): Promise<boolean> {
+  const { data, error } = await client
+    .from("ingest_artifacts")
+    .select("seq, payload->raw_part_count, payload->raw_nonspace_len")
+    .eq("job_id", jobId)
+    .eq("stage", "extract")
+    .order("seq", { ascending: true });
+  if (error) throw new Error(`스캔 판정용 산출물 조회 실패: ${error.message}`);
+  const rows = (data ?? []) as { seq: number; raw_part_count?: number; raw_nonspace_len?: number }[];
+
+  let nonSpace = 0;
+  for (const r of rows) nonSpace += Number(r.raw_nonspace_len ?? 0);
+  if (nonSpace > 50) return false;
+
+  const { data: full, error: fErr } = await client
+    .from("ingest_artifacts")
+    .select("seq, payload->>raw_text, payload->raw_part_count")
+    .eq("job_id", jobId)
+    .eq("stage", "extract")
+    .order("seq", { ascending: true });
+  if (fErr) throw new Error(`스캔 판정용 본문 조회 실패: ${fErr.message}`);
+  const parts: string[] = [];
+  for (const r of (full ?? []) as { raw_text?: string | null; raw_part_count?: number }[]) {
+    // 원본 `raw_parts` 가 비어 있던 창은 join 대상이 아니다.
+    if (Number(r.raw_part_count ?? 0) > 0) parts.push(r.raw_text ?? "");
+  }
+  return isScanPdf(parts.join("\n\n"));
 }

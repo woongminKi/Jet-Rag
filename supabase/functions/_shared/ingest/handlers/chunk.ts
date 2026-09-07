@@ -77,10 +77,29 @@ export function makeChunkHandler(deps: ChunkDeps): TaskHandler {
       throw new Error(`extract 산출물 seq 가 중복됐다: ${[...new Set(dup)].join(", ")}`);
     }
 
+    // 스캔 PDF 는 `scan` 산출물이 extract 를 **대체**한다. 원본이
+    // `result = _reroute_pdf_to_image(...)` 로 결과를 통째로 갈아끼우기 때문이다 —
+    // 텍스트가 거의 없는 extract 결과를 함께 넣으면 원본에 없는 청크가 생긴다.
+    const { data: sData, error: sErr } = await deps.client
+      .from("ingest_artifacts")
+      .select("seq, payload")
+      .eq("job_id", task.job_id)
+      .eq("stage", "scan")
+      .order("seq", { ascending: true });
+    if (sErr) throw new Error(`scan 산출물 조회 실패: ${sErr.message}`);
+    const scanRows = (sData ?? []) as ExtractArtifact[];
+
     const sections: ExtractedSection[] = [];
-    for (const r of rows) {
-      const part = r.payload?.sections;
-      if (Array.isArray(part)) sections.push(...part);
+    if (scanRows.length > 0) {
+      for (const r of scanRows) {
+        const part = r.payload?.sections;
+        if (Array.isArray(part)) sections.push(...part);
+      }
+    } else {
+      for (const r of rows) {
+        const part = r.payload?.sections;
+        if (Array.isArray(part)) sections.push(...part);
+      }
     }
 
     // vision 섹션은 **텍스트 섹션 전부 뒤에** 온다. 원본 `_enrich_pdf_with_vision` 이
@@ -94,9 +113,13 @@ export function makeChunkHandler(deps: ChunkDeps): TaskHandler {
       .order("seq", { ascending: true });
     if (vErr) throw new Error(`vision 산출물 조회 실패: ${vErr.message}`);
     const vRows = (vData ?? []) as ExtractArtifact[];
-    for (const r of vRows) {
-      const part = r.payload?.sections;
-      if (Array.isArray(part)) sections.push(...part);
+    // 스캔 문서는 vision enrich 를 안 돈다(원본이 elif 라 배타적이다). 산출물이 있을
+    // 리 없지만, 있어도 안 섞는다.
+    if (scanRows.length === 0) {
+      for (const r of vRows) {
+        const part = r.payload?.sections;
+        if (Array.isArray(part)) sections.push(...part);
+      }
     }
 
     const records = runChunkStage({
@@ -118,6 +141,7 @@ export function makeChunkHandler(deps: ChunkDeps): TaskHandler {
         section_count: sections.length,
         extract_parts: rows.length,
         vision_parts: vRows.length,
+        scan_parts: scanRows.length,
         records: slice,
       } as Record<string, unknown>);
       if (cleaned.removed > 0) cleaned.value["nul_removed"] = cleaned.removed;

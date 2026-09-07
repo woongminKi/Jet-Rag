@@ -27,6 +27,7 @@ function sec(text: string, page: number) {
 function fakeClient(
   rows: { seq: number; payload: unknown }[],
   visionRows: { seq: number; payload: unknown }[] = [],
+  scanRows: { seq: number; payload: unknown }[] = [],
 ) {
   const upserts: { row: Record<string, unknown>; opts: unknown }[] = [];
   const sends: Record<string, unknown>[] = [];
@@ -49,7 +50,11 @@ function fakeClient(
         },
         order(_c: string, o?: { ascending?: boolean }) {
           ordered = o?.ascending !== false;
-          const src = stage === "vision" ? visionRows : rows;
+          const src = stage === "vision"
+            ? visionRows
+            : stage === "scan"
+            ? scanRows
+            : rows;
           return Promise.resolve({
             data: [...src].sort((a, b) => a.seq - b.seq),
             error: null,
@@ -259,4 +264,25 @@ Deno.test("vision 산출물이 없어도 extract 만으로 돈다", async () => 
   const payload = upserts[0].row.payload as Record<string, unknown>;
   assertEquals(payload.vision_parts, 0);
   assertEquals(payload.section_count, 1);
+});
+
+Deno.test("스캔 PDF — scan 산출물이 extract 를 **대체**한다", async () => {
+  // 원본은 `result = _reroute_pdf_to_image(...)` 로 결과를 통째로 갈아끼운다.
+  // 둘을 합치면 원본에 없는(거의 빈) extract 청크가 섞인다.
+  const { client, upserts } = fakeClient(
+    [{ seq: 0, payload: { sections: [sec("텍스트 레이어 찌꺼기입니다.", 1)] } }],
+    [{ seq: 0, payload: { sections: [sec("비전 섹션입니다.", 1)] } }],
+    [{ seq: 0, payload: { sections: [sec("스캔 OCR 본문입니다.", 1)] } }],
+  );
+  // deno-lint-ignore no-explicit-any
+  const h = makeChunkHandler({ client: client as any, env: ENV });
+  await h(TASK, {} as never);
+  const payload = upserts[0].row.payload as Record<string, unknown>;
+  assertEquals(payload.scan_parts, 1);
+  assertEquals(payload.section_count, 1);
+  const text = (payload.records as { text: string }[]).map((r) => r.text).join("\n");
+  assertEquals(text.includes("스캔 OCR"), true, text);
+  // 대체다 — extract·vision 은 안 들어간다.
+  assertEquals(text.includes("찌꺼기"), false, text);
+  assertEquals(text.includes("비전 섹션"), false, text);
 });
