@@ -2,8 +2,8 @@
 
 > **범위**: Edge 로 옮길 수 없던 4 라우트(`ragas` 의존)를 **폐기**해 Phase 6 의 차단 요인을
 > 없애고, Phase 2 를 닫기까지.
-> **다음 세션 재진입**: **`extract` 핸들러 구현** — HWP 1종부터(기준선 있음, vision 0,
-> CPU 72ms). 큐·워커 골격·중간 산출물 자리는 다 놓였다(§13~§15).
+> **다음 세션 재진입**: HWP extract 를 **워커 핸들러로 결선**(Storage 다운로드 →
+> `extractHwp` → `ingest_artifacts` 저장). 추출 로직 이식·대조는 끝났다(§16).
 
 ## 0. 한눈에 보기
 
@@ -20,6 +20,7 @@
 | Phase 3 — 마이그 026 (pgmq 큐 + public 래퍼) | ✅ **운영 적용** (13ed304) |
 | Phase 3 — `ingest-worker` 드레인 골격 | ✅ 배포 (d3c74a6) — 핸들러는 아직 없음 |
 | Phase 3 — 마이그 027 (중간 산출물 테이블) | ✅ **운영 적용** (86c7eaa) |
+| Phase 3 — HWP extract 이식 + 대조 | ✅ (5815c4d) — 핸들러 결선은 남음 |
 
 ## 1. 왜 폐기했나
 
@@ -469,3 +470,59 @@ pg_cron 드레인 + pg_net Edge 호출, Vault 키, 고아 잡 sweep.
 음성 대조: 수집 제거 2건 발화. 검증 무력화는 0 건인데, artifacts 는 `job_id`·`doc_id`
 **두 경로 모두 CASCADE** 라 둘 중 하나만 살아 있어도 지워진다 — DB 직접 조회로 실제 행이
 0 임을 확인했다. 검사기 약점이 아니라 이중 보호다.
+
+
+## 16. Phase 3 — HWP extract 이식
+
+대조는 **섹션 단위**로 했다. 기준선(청크)은 extract→chunk→chunk_filter 를 거친 결과라
+extract 만으로는 판정할 수 없다.
+
+### 🔴 Phase 0 이 놓친 것 — 출력이 JSON 인코딩 문자열이다
+
+`@rhwp/core` 의 `getTextFileText()` 는 평문이 아니라 `"\r\n문서번호\r\n…"` 처럼
+**따옴표로 감싸이고 개행이 `\r` `\n` 두 글자로 이스케이프된** 문자열을 준다.
+그대로 쓰면 단락 분할이 통째로 어긋난다 — 실측 **섹션 py 36 개 vs ts 1 개**.
+
+**왜 Phase 0 이 못 잡았나**: 채점(`spike_hwp_similarity.py`)이 `strip_ws()` 로
+**공백을 전부 지우고** 비교했다. work-log 의 "유사도 1.0000" 은 그 조건 아래 값이고,
+"필수 후처리 1건(엔티티 디코딩)" 만 적혀 있어 그걸 믿고 갔다가 잡혔다.
+
+> 교훈: **"유사도 1.0" 은 무엇을 무시하고 잰 값인지까지 적어야 한다.**
+
+### 이식한 규칙 (원본 `hwp_parser.py:57`)
+
+1. `getTextFileText()` → **JSON 언랩** → 숫자 엔티티 디코딩(`&#65378;` = `｢`)
+2. 빈 텍스트면 sections=[] + warning 1
+3. `\n\n` 분할 → `pyStrip` → 빈 것 제거. **1 개 이하면 `\n` 로 재분할**
+4. `page`·`section_title`·`bbox` 는 HWP 경로에서 전부 null
+
+명명 엔티티(`&amp;`)는 **건드리지 않았다** — 실측된 건 숫자 엔티티뿐이고, 넓히면 원문에
+진짜 `&amp;` 가 있을 때 갈린다.
+
+### 검증 — FAIL 0
+
+| 항목 | 결과 |
+|---|---|
+| 숫자 엔티티 8 · 단락 분할 7 · JSON 언랩 8 | OK |
+| `buildHwpResult` 8건 (Python 파서에 텍스트 주입) | OK |
+| law_sample1.hwp **섹션 36 개 내용·메타 완전일치** | OK |
+| raw_text 공백 제외 **722자 완전일치** | OK |
+
+음성 대조 7종 발화. **처음 2종이 0 건이었다**(pyStrip→trim, 빈 텍스트 분기) — 실제 파일
+하나로는 안 태워지는 분기라 `buildHwpResult` 직접 대조를 추가했다(U+001C·U+FEFF·NBSP·빈 값).
+
+### 의도적으로 남긴 차이 1건
+
+`raw_text` 가 **공백만 +8자** 다르다(빈 문단 처리: `\r\n` py 35 vs ts 39).
+임의로 개행을 축약해 맞추면 다른 문서에서 오히려 갈리므로 안 했다.
+
+소비처를 확인했다 — `tag_summarize`(LLM 입력) · `doc_embed`(요약 NULL 시 fallback) ·
+`chunk`(ENV OFF 면 미사용) 뿐이고 `extract.py:308` 스캔 판정은 PDF 전용이다.
+**결정적 산출물인 chunks 는 sections 에서 나오므로 영향이 없다.**
+검사기는 "공백 제외 완전일치 + 공백 차이 50자 임계" 로 고정했다.
+
+### 미검증 1건
+
+로컬 Python 이 `hwp5txt CLI 실패 → olefile fallback` 을 탔다(경고 확인).
+**운영 Railway 에서 CLI 가 성공하면 텍스트가 다를 수 있다.** 기준선도 같은 로컬 경로로
+떴으므로 기준선↔Edge 일관성은 유지되지만, 운영 CLI 경로와의 대조는 아직 못 했다.
