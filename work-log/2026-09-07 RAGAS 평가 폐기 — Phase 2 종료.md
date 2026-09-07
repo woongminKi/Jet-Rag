@@ -1241,3 +1241,117 @@ NULL 이라 검색은 아직 안 된다** — `embed` 가 없다. 그래서 잡�
 | chunk 조각 c2 (`synonym_inject`) | ⬜ |
 | chunk_filter / content_gate / tag_summarize / doc_embed / dedup | ⬜ |
 | `api-documents` HTTP 경로 | ⬜ |
+
+
+## 26. Phase 3 — Edge 배포 + pg_cron 자동 드레인. **사슬이 스스로 돈다**
+
+§25 까지 만든 4 개 핸들러는 **한 번도 Edge 에서 안 돌았다.** Phase 0 이 남긴 교훈이
+"로컬 Deno 통과는 Edge 통과의 근거가 아니다" 였고(그때 `@ohah/hwpjs` 가 로컬은 되고
+Edge 에서 죽었다), 그 관문을 여기서 통과했다. 그리고 pg_cron 을 붙여 자동화했다.
+
+### 26.1 mupdf WASM 이 Edge 에서 돈다
+
+E2E 스크립트에 `--edge` 를 넣어 **드레인만** 배포된 함수에 HTTP 로 시켰다. 준비·검증·
+정리는 그대로 로컬이다.
+
+| 문서 | 페이지 | 요청 | 청크 | 적재 | 시간 |
+|---|---|---|---|---|---|
+| law sample3 | 4 | 3 | 26 | 26/26 | 4.3s |
+| sample-report (9MB, 이미지 다수) | 93 | 12 → **6** | 899 | 899/899 | 19.9s |
+
+CPU 초과 없음. 콜드 스타트 4.3s.
+
+### 26.2 예산 기반 반복 드레인 — 12 요청이 6 요청이 됐다
+
+작업이 **순차 의존**이라 `batch` 를 키워도 소용이 없다(다음 작업은 직전 작업이 끝나야
+큐에 들어간다). 그래서 한 요청에서 예산이 남는 동안 여러 판을 돈다.
+
+예산은 **wall clock 1,500ms** 다. Supabase 가 재는 건 CPU 시간(I/O 제외)인데 Edge 에
+CPU 시계 API 가 없다 — Phase 0 스파이크도 `performance.now()` 근사를 썼다. wall clock 은
+DB 왕복을 포함해 실제 CPU 보다 **크므로** 예산 초과 판정이 보수적이다.
+
+**판 도중에는 끊지 않는다.** 핸들러를 중간에 자르면 산출물이 반만 남는다. 테스트로
+고정했다(예산 0 이어도 첫 판은 끝까지).
+
+### 26.3 STEP 0 이 또 가정을 잡았다
+
+026 에서 `pgmq.send` 가 `SETOF bigint` 인 걸 STEP 0 이 잡아냈다. 이번에도 하나 틀렸다.
+
+| 항목 | 내 가정 | 실제 |
+|---|---|---|
+| Edge 안의 `SUPABASE_SERVICE_ROLE_KEY` | 로컬과 같은 219 자 legacy JWT | **41 자 `sb_secret_…`** |
+
+cron 은 **Edge 안의 키**를 쓰게 된다. 내가 로컬에서 통과시킨 건 legacy JWT 였으므로
+`verify_jwt=true` 게이트웨이가 새 형식을 받는지는 **따로 확인해야 했다** — 일회용
+함수가 자기 키로 `/drain` 을 직접 불러 **HTTP 200** 을 확인했다.
+
+`pg_cron 1.6.4` 의 `'10 seconds'` 문법도 시그니처로는 알 수 없어 더미 잡으로 실측했다
+(`ok: true`). `net.http_post` 인자 · `vault.create_secret` 시그니처 ·
+`vault.decrypted_secrets` 컬럼도 조회로 확정했다.
+
+### 26.4 설계 — 큐가 비면 부르지 않는다
+
+10 초마다 무조건 부르면 하루 8,640 번 Edge 인보케이션을 태운다. 대부분은 빈 큐다.
+`ingest_drain_tick()` 이 먼저 `pgmq.q_ingest_tasks` 를 세고 **0 이면 `NULL` 로 끝낸다.**
+
+키 취급:
+
+- service_role 키를 마이그 파일에 적지 않는다. `supabase_vault`(0.3.1)에 이름으로 둔다.
+- **저장도 사람이 붙여넣지 않았다.** 일회용 함수가 자기 `Deno.env` 값을 그대로 넣어서
+  키가 대화·로그·커밋 어디에도 남지 않는다. 응답에는 **길이만** 실었다(41 자 / 77 자).
+- `ingest_drain_tick()` 은 `postgres`·`service_role` 만 EXECUTE. `anon`/`authenticated`
+  회수 — 026 의 교훈(`REVOKE FROM PUBLIC` 만으로는 안 막힌다)을 따랐다.
+
+### 26.5 적용 경로 — 일회용 함수, 쓰고 버린다
+
+026·027 과 같다. 로컬에 SQL 실행 경로가 없어(PostgREST DDL 불가 · PAT 없음 · psycopg
+미설치) `SUPABASE_DB_URL` 직결 함수를 잠깐 띄워 STEP 0 → 0.5 → 1 → 2 → 3 을 돌리고
+**삭제했다**(HTTP 404 확인, 함수 목록에서도 사라짐). 그 함수는 service_role key 보다
+강한 권한이라 오래 두면 안 된다.
+
+### 26.6 검증 — cron 이 실제로 처리한다
+
+`--cron` 모드를 넣어 스크립트가 **큐에만 넣고 기다리게** 했다.
+
+```
+보건의료(26p)  →  18.4초  extract 3 + chunk + load  →  chunks 149/149 적재
+```
+
+`net._http_response` 증거:
+
+```
+200 {"read":3,"ok":3,…,"rounds":3,"elapsedMs":2124}
+200 {"read":2,"ok":2,…,"rounds":2,"elapsedMs":1936}
+```
+
+예산 반복이 cron 경로에서도 동작한다 — **5 태스크를 2 요청으로** 처리했다.
+`elapsedMs` 가 예산 1,500ms 를 넘긴 것은 "판 도중에는 끊지 않는다" 규칙대로다.
+
+`cron.job_run_details` 5 건 전부 `succeeded`(2ms), 빈 큐에서는 http 호출 **0**.
+
+### 26.7 지금부터 달라지는 것
+
+**큐에 작업이 들어가면 자동으로 처리된다.** 앞으로 E2E 를 로컬/`--edge` 모드로 돌리면
+cron 과 경합할 수 있다(pgmq visibility timeout 이 중복 처리는 막지만, 어느 쪽이 처리했는지
+헷갈릴 수 있다). `--cron` 모드가 기본 확인 경로다.
+
+아직 **`chunks.dense_vec` 이 NULL 이라 검색은 안 된다** — `embed` 가 없다. 그래서 잡을
+`completed` 로 만들지 않고 running 에 둔다.
+
+### 26.8 커밋
+
+| 해시 | 내용 |
+|---|---|
+| `6492599` | 마이그 028 운영 적용 (pg_cron 자동 드레인) |
+| `4a21ddf` | Edge 배포 + 예산 기반 반복 드레인 |
+
+### 26.9 남은 것
+
+| 항목 | 상태 |
+|---|---|
+| `embed` — BGE-M3 임베딩 (**검색이 되려면 필수**) | ⬜ |
+| HWPML / hwpx / docx / pptx extract | ⬜ |
+| chunk 조각 c2 (`synonym_inject`) | ⬜ |
+| chunk_filter / content_gate / tag_summarize / doc_embed / dedup | ⬜ |
+| `api-documents` HTTP 경로 (업로드 → 큐 투입) | ⬜ |
+| `/payments` · `/billing` · `/email` (Phase 4~5) | ⬜ |
