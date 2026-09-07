@@ -71,14 +71,20 @@ export interface PdfPageDict {
  * 텍스트가 491 자 길어지고, 800 자 분할 경계가 밀려 **청크가 749 → 803 개(+7.2%)** 로
  * 어긋났다. 옵션을 맞추자 blocks 10 / lines 25 / chars 1,682 / 리거처 4 로 완전 일치.
  *
- * `mediabox-clip` · `use-cid-for-unknown-unicode` 는 켜도 결과가 안 바뀌었지만
- * (MuPDF 기본이 이미 그렇게 동작하는 것으로 보인다) 계약을 눈에 보이게 두려고 남긴다.
+ * `clip`(=`MEDIABOX_CLIP`, 둘 다 64) · `use-cid-for-unknown-unicode` 는 켜도 결과가
+ * 안 바뀌었지만(MuPDF 기본이 이미 그렇게 동작하는 것으로 보인다) 계약을 눈에 보이게
+ * 두려고 남긴다.
+ *
+ * 처음엔 PyMuPDF 상수 이름 그대로 `mediabox-clip` 을 썼는데 mupdf 가 실행 중에
+ * `The 'mediabox-clip' option has been deprecated. Use 'clip' instead.` 를 찍었다.
+ * 하위호환으로 동작은 했지만(양쪽 결과 동일 확인) 경고를 남겨 두면 다음 사람이
+ * "무시되는 옵션" 으로 오해한다 — 새 이름으로 바꿨다.
  *
  * `preserve-spans` 는 쓰지 않는다 — 위 §asJSON 참조. span 은 walk 의 font·size run 으로
  * 만든다. (실측: 켜면 line 수가 30 → 515 로 폭증해 PyMuPDF 와 더 멀어진다.)
  */
 export const STEXT_OPTS =
-  "preserve-ligatures,preserve-whitespace,preserve-images,mediabox-clip," +
+  "preserve-ligatures,preserve-whitespace,preserve-images,clip," +
   "use-cid-for-unknown-unicode";
 
 /** mupdf 의 Rect/Quad 는 배열로 온다. */

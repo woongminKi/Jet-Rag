@@ -5,7 +5,8 @@
     "jsr:@std/internal@^1.0.12": "1.0.14",
     "npm:@rhwp/core@0.8.4": "0.8.4",
     "npm:@supabase/supabase-js@^2.115.0": "2.115.0",
-    "npm:jose@^6.2.10": "6.2.10"
+    "npm:jose@^6.2.10": "6.2.10",
+    "npm:mupdf@1.27.0": "1.27.0"
   },
   "jsr": {
     "@std/assert@1.0.19": {
@@ -73,6 +74,9 @@
     "jose@6.2.10": {
       "integrity": "sha512-iiW7J9qRFlGxvCOIBDBDxFePQSn7ZMAnrYGhrrOo6siO/MIqwfyilLR27pkfDgUk+raLuzADS8A3S/KLBisc0g=="
     },
+    "mupdf@1.27.0": {
+      "integrity": "sha512-vEPUYwZeu5NgiFLz4e20R7Vp2pNY7szirGEvTxHyQQpQs6ab4DeGdonwT6sH1JZG5EhyHSrojZrZn2/0ee6qZQ=="
+    },
     "tslib@2.8.1": {
       "integrity": "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w=="
     }
@@ -82,7 +86,8 @@
       "jsr:@std/assert@1",
       "npm:@rhwp/core@0.8.4",
       "npm:@supabase/supabase-js@^2.115.0",
-      "npm:jose@^6.2.10"
+      "npm:jose@^6.2.10",
+      "npm:mupdf@1.27.0"
     ]
   }
 }

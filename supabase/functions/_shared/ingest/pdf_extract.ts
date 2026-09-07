@@ -181,6 +181,18 @@ export interface PageExtractResult {
   nextTitle: string | null;
 }
 
+/**
+ * 한 태스크가 맡는 페이지 수.
+ *
+ * Phase 0 Edge 실측 페이지당 **최대 100.8ms**(평균 3.5ms). 최악을 기준으로 10 페이지면
+ * 약 1s 로, CPU 2s 예산의 절반이다. 평균 문서라면 훨씬 여유롭지만 **최악에 맞춰 둔다** —
+ * 초과하면 그 태스크가 통째로 죽고 재시도해도 같은 자리에서 또 죽는다.
+ *
+ * 문서 열기는 태스크마다 다시 하지만 0.7~2.0ms 라 분할 비용은 무시할 수준이다
+ * (mupdf lazy loading, 2026-09-07 실측: 삼성 573p 0.7ms / SK 1,513p 2.0ms).
+ */
+export const PDF_PAGES_PER_TASK = 10;
+
 /** dict 모드 블록 순회 + heading sticky propagate. 원본 `_extract_dict_blocks`. */
 export function extractDictBlocks(
   pageDict: PdfPageDict,

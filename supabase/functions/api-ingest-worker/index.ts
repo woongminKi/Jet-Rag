@@ -8,10 +8,12 @@
  * 큐를 고갈시킬 수 있다. `ingest_queue_*` 래퍼도 service_role 에게만 EXECUTE 를 줬으므로
  * DB 층에서도 막히지만, **함수 층에서 먼저 끊는다**.
  *
- * ## 지금은 `extract`(HWP) 하나만 처리한다
- * 중간 산출물 자리는 마이그 027 로 생겼다(`ingest_artifacts`). extract 는 거기에
- * 산출물을 upsert 하고 끝난다 — **다음 단계를 큐에 넣지 않는다.** `chunk` 핸들러가
- * 없어서 넣는 순간 archive + 잡 failed 가 되기 때문이다.
+ * ## 지금은 `extract` → `chunk` 까지다
+ * extract 는 HWP(통째로)와 PDF(페이지 단위)를 처리하고 다음 작업을 큐에 넣는다.
+ * PDF 는 `current_title` 이 문서 전체 sticky 라 **순차**여야 해서, 범위를 한꺼번에
+ * 넣지 않고 직전 범위가 끝날 때 다음 하나만 넣는다.
+ * chunk 는 extract 산출물을 전부 모아 청크 레코드를 만들고 거기서 멈춘다 —
+ * `chunk_filter` 이후 핸들러가 없어서 넣는 순간 archive + 잡 failed 가 된다.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -20,6 +22,7 @@ import { loadSettings } from "../_shared/config.ts";
 import { createServiceClient } from "../_shared/db.ts";
 import { jsonResponse, methodNotAllowed, notFound, toResponse } from "../_shared/errors.ts";
 import { drainOnce, type TaskHandler } from "../_shared/ingest/worker.ts";
+import { makeChunkHandler } from "../_shared/ingest/handlers/chunk.ts";
 import { makeExtractHandler } from "../_shared/ingest/handlers/extract.ts";
 
 const FUNCTION_PREFIX = "/api-ingest-worker";
@@ -27,9 +30,9 @@ const FUNCTION_PREFIX = "/api-ingest-worker";
 /**
  * stage → 핸들러.
  *
- * `extract` 만 있다. `chunk` 이후는 아직 안 옮겼고, **없는 stage 를 큐에 넣으면 즉시
- * archive + 잡 failed** 가 되므로(`worker.ts` 계약) extract 핸들러도 다음 단계를
- * enqueue 하지 않는다.
+ * `extract` 와 `chunk` 둘이다. 그 뒤(`chunk_filter` …)는 아직 안 옮겼고, **없는 stage 를
+ * 큐에 넣으면 즉시 archive + 잡 failed** 가 되므로(`worker.ts` 계약) chunk 핸들러는
+ * 다음 단계를 enqueue 하지 않는다.
  */
 function buildHandlers(
   settings: { supabaseStorageBucket: string },
@@ -37,6 +40,7 @@ function buildHandlers(
 ): Record<string, TaskHandler> {
   return {
     extract: makeExtractHandler({ client, bucket: settings.supabaseStorageBucket }),
+    chunk: makeChunkHandler({ client }),
   };
 }
 

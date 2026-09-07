@@ -4,7 +4,8 @@
     "@std/assert": "jsr:@std/assert@^1",
     "jose": "npm:jose@^6.2.10",
     "@supabase/supabase-js": "npm:@supabase/supabase-js@^2.115.0",
-    "@rhwp/core": "npm:@rhwp/core@0.8.4"
+    "@rhwp/core": "npm:@rhwp/core@0.8.4",
+    "mupdf": "npm:mupdf@1.27.0"
   },
   "fmt": {
     "lineWidth": 110
