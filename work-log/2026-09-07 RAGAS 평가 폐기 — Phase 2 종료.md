@@ -2326,3 +2326,111 @@ vision_usage_log.source_type = pdf_scan · vision_page_cache 0행
 | 단독 이미지 업로드의 `_normalize` (EXIF·HEIC) | ⬜ — PDF 경로는 필요 없어 안 옮겼다 |
 | chunk 조각 c2 (`synonym_inject`) | ⬜ |
 | `/payments` · `/billing` · `/email` (Phase 4~5) | ⬜ |
+
+---
+
+## 38. 이관 현황 실측 (2026-09-07 기준)
+
+추측 대신 실제로 셌다. `fastapi_routes.json` 이 실제 앱과 **정확히 일치**함을 먼저 확인
+(34개 = 34개, 양쪽 차집합 0)한 뒤 프록시 규칙에 태웠다.
+
+### 38.1 라우트 — 34개 중 23개 Edge
+
+남은 11개 중 **5개는 FastAPI 자체 문서 페이지**(`/`, `/docs`, `/redoc`,
+`/openapi.json`, `/docs/oauth2-redirect`)로 Railway 와 함께 사라진다. 실제로 옮길 건 **6개**.
+
+| 라우트 | 원본 규모 |
+|---|---|
+| `POST /documents/url` | 라우트 + url_parser 69줄 |
+| `POST /ingest/email` | 136줄 |
+| `POST /payments/subscribe/ready` · `approve` · `cancel` | payments.py 135줄 |
+| `POST /billing/run` | + billing.py 365줄 · billing_crypto.py 33줄 |
+
+### 38.2 인제스트 단계 — 9개 중 4개 + 신규 3개
+
+원본: extract → chunk → **chunk_filter → content_gate → tag_summarize** → load →
+embed → **doc_embed → dedup**
+
+Edge: extract → (scan | vision | vision_missing) → chunk(+chunk_filter+content_gate) →
+load → embed
+
+| 남은 단계 | 줄 수 |
+|---|---|
+| `tag_summarize` | 213 |
+| `doc_embed` | 80 |
+| `dedup` | 172 |
+
+### 38.3 파서 — 7종 중 2종
+
+`pdf` ✅ · `hwp`(OLE2) ✅ · `hwpx` 187 · `docx` 157 · `pptx` 331 · `image`(단독) 305 ·
+`url` 69 · HWPML 149. Phase 0 에서 만든 `ooxml_text.ts` · `hwp_xml_text.ts` ·
+`xml_scan.ts` 가 있어 줄 수만큼 걸리지는 않는다.
+
+### 38.4 합계
+
+**남은 Python 약 2,100줄 / 14개 단위.** 지금까지 옮긴 게 대략 그 3배다.
+
+---
+
+## 39. Phase 4 — `chunk_filter` · `content_gate`. **빈 5단계 중 2개**
+
+원본 순서 그대로 `chunk → chunk_filter → content_gate → …` 자리에 끼웠다.
+둘 다 청크를 **지우지 않는다** — 표시만 남기고 검색 쿼리가 그걸 보고 거른다.
+
+### 39.1 chunk_filter — 무엇을 왜 거르나
+
+| 사유 | 규칙 |
+|---|---|
+| `empty` | strip 이 빈 문자열 |
+| `extreme_short` | 20자 미만 + **한글·영문이 하나도 없음** (표 셀 "2,800") |
+| `header_footer` | 100자 미만 텍스트가 같은 문서에서 3회 이상 |
+| `table_noise` | 50자 이상 + 짧은 줄 0.90 + 숫자·기호 0.70 |
+
+**판정 순서가 규칙의 일부다.** `header_footer` 가 `table_noise` 보다 먼저다 — 짧고
+반복되는 텍스트는 표보다 머리말 의도가 강하다는 게 원본의 판단이다. 임계값도 같은
+휴리스틱의 진단용(0.70/0.50)보다 높다(0.90/0.70) — 자동 마킹은 검색에서 빠지므로
+오탐 비용이 크다.
+
+### 39.2 정규식을 그대로 옮기면 **조용히** 틀린다
+
+`re.compile(r"[\d\W_]", re.UNICODE)` 를 JS 에 그대로 쓰면 ASCII 만 잡는다.
+Python 에서 이건 **"글자가 아닌 것"** 이다(`\d`=Nd, `\w`=글자·숫자·밑줄이라
+`\W ∪ \d ∪ _` = 글자의 여집합). 한글·한자·아랍숫자·전각숫자·이모지가 전부 갈린다.
+
+content_gate 는 더 많다.
+- `\b`·`\d`·`\s` 셋 다 유니코드 — `entity_extract` 와 같은 방식으로 풀어 썼다
+- `m.start()`/`m.end()` 가 **코드포인트** 오프셋인데 JS 정규식은 UTF-16 이다.
+  `pii_ranges` 는 화면에서 가리는 데 쓰이므로 밀리면 **엉뚱한 자리를 가린다**
+- `int(yymmdd[2:4])` 는 아랍-인도 숫자를 읽는데 `parseInt` 는 못 읽는다
+
+### 39.3 대조가 잡은 것 2건
+
+- **`v` 플래그에서 `-` 는 문자 클래스 예약 문자다.** `[-\s]` 를 그대로 옮겼더니
+  정규식 생성 자체가 SyntaxError 로 죽었다.
+- `_is_valid_yymmdd` 의 `isdigit()` 검사를 "정규식이 이미 보장하니 불필요" 라고 판단해
+  뺐는데, `"90 101"` 에서 갈렸다. **정규식 경로에서는 결과가 같아도 함수 자체가
+  달라지면 안 된다** — 다음 사람이 다른 데서 부른다.
+
+### 39.4 실측
+
+| 검사 | 결과 |
+|---|---|
+| `verify_chunk_filter_parity` | 123건 0 불일치 (음성 대조 검출) |
+| `verify_content_gate_parity` | 108건 0 불일치 (음성 대조 검출) |
+| `deno test _shared/` | **216 passed** (신규 5건) |
+| 회귀 — chunk_row · HWP digest · PDF baseline | 전부 동일 |
+
+### 39.5 라이브 E2E — 검출 경로까지
+
+일반 문서는 단계가 돌아도 **전부 0** 이라 배선만 확인된다. 그래서 PII·워터마크·표 셀을
+넣은 문서를 만들어 한 번 더 돌렸다.
+
+```
+gate  filtered={"extreme_short":2}  pii청크 1  워터마크청크 1
+      has_pii=true has_watermark=true third_party=false
+```
+
+### 39.6 남은 것
+
+`§38` 참조. 인제스트 단계는 `tag_summarize` · `doc_embed` · `dedup` 3개가 남았고,
+**셋을 옮기면 잡 마감 지점을 embed 에서 그쪽 끝으로 옮겨야 한다**(§36.7).

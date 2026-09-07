@@ -146,6 +146,38 @@ try {
     exitCode = 1;
   }
 
+  // ---- chunk_filter · content_gate ----
+  const { data: allChunks } = await client
+    .from("chunks").select("flags, metadata").eq("doc_id", docId);
+  const cr = (allChunks ?? []) as {
+    flags?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+  }[];
+  const reasons: Record<string, number> = {};
+  let withPii = 0;
+  let withWm = 0;
+  for (const c of cr) {
+    const r = c.flags?.["filtered_reason"];
+    if (typeof r === "string") reasons[r] = (reasons[r] ?? 0) + 1;
+    if (c.metadata?.["pii_ranges"]) withPii++;
+    if (c.metadata?.["watermark_hits"]) withWm++;
+  }
+  const { data: docFlags } = await client
+    .from("documents").select("flags").eq("id", docId).single();
+  const df = (docFlags as { flags?: Record<string, unknown> })?.flags ?? {};
+  console.log(
+    `  gate    filtered=${JSON.stringify(reasons)}  pii청크 ${withPii}  ` +
+      `워터마크청크 ${withWm}  has_pii=${df["has_pii"]} has_watermark=${df["has_watermark"]} ` +
+      `third_party=${df["third_party"]}`,
+  );
+  // content_gate 는 **항상** 이 세 키를 남긴다 — 없으면 단계가 안 돈 것이다.
+  for (const k of ["has_pii", "has_watermark", "third_party"]) {
+    if (!(k in df)) {
+      console.log(`  **documents.flags 에 ${k} 가 없다 — content_gate 가 안 돌았다**`);
+      exitCode = 1;
+    }
+  }
+
   // ---- 스캔 PDF 경로 ----
   const { data: sArt } = await client
     .from("ingest_artifacts").select("seq, payload")
