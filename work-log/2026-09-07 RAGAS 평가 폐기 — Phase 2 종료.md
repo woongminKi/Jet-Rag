@@ -2,8 +2,8 @@
 
 > **범위**: Edge 로 옮길 수 없던 4 라우트(`ragas` 의존)를 **폐기**해 Phase 6 의 차단 요인을
 > 없애고, Phase 2 를 닫기까지.
-> **다음 세션 재진입**: **`chunk` 단계 이식** — extract 산출물을 모아 청킹.
-> 큐→워커→산출물 경로는 E2E 로 성립했다(§17). 그 다음이 chunk_filter·content_gate.
+> **다음 세션 재진입**: `chunk` 이식의 남은 조각 — **문장 분할·법령 날짜 마스킹·overlap**
+> → 짧은 섹션 병합 → 레코드 변환. 기반(Python 문자 판정 3종)은 끝났다(§18).
 
 ## 0. 한눈에 보기
 
@@ -22,6 +22,7 @@
 | Phase 3 — 마이그 027 (중간 산출물 테이블) | ✅ **운영 적용** (86c7eaa) |
 | Phase 3 — HWP extract 이식 + 대조 | ✅ (5815c4d) |
 | Phase 3 — extract 핸들러 결선 (큐→워커→산출물) | ✅ **E2E 성립** (afe0d82) |
+| Phase 3 — Python 문자 판정 3종 (chunk 기반) | ✅ (2689641) — chunk 본체는 진행 중 |
 
 ## 1. 왜 폐기했나
 
@@ -575,3 +576,52 @@ ingest_artifacts 1행 · 섹션 36개 Python 과 완전일치 · raw_text 내용
 | chunk · chunk_filter · content_gate · tag_summarize · load · embed · doc_embed · dedup | ⬜ |
 | `api-documents` HTTP 경로(큐에 넣는 쪽) | ⬜ |
 | pg_cron 드레인 | ⬜ |
+
+
+## 18. Phase 3 — Python 문자 판정 3종 (chunk 이식의 기반)
+
+`chunk` 착수 중 발견: `_looks_like_table_cell` 이 Python 문자 메서드 **3종**을 쓴다.
+
+```python
+non_ws      = sum(1 for c in stripped if not c.isspace())
+digit_punct = sum(1 for c in stripped
+                  if c.isdigit() or (not c.isalnum() and not c.isspace()))
+```
+
+셋 중 하나만 어긋나면 표 셀 판정이 뒤집히고 → 섹션 병합이 달라지고 →
+**청크 경계가 통째로 바뀐다.** JS 기본 문자 클래스로는 못 맞춘다.
+
+### 전수 대조 (0x0~0x10FFFF)
+
+| Python | JS 후보 | 차이 |
+|---|---|---|
+| `isspace` | `/\s/u` | Python 만 `\x1C-\x1F`·`\x85` 5 자 / JS 만 `U+FEFF` 1 자 |
+| `isdigit` | `/\p{Nd}/u` | Python 만 128 자(`²³¹` 등) / JS 만 80 자 |
+| `isalnum` | `/[\p{L}\p{N}]/u` | **JS 만 5,004 자** (Python 이 부분집합) |
+
+`isalnum` 은 Python 집합을 통째로 박으면 747 범위인데 `[\p{L}\p{N}]` 에서 **27 범위만
+빼면** 같아진다 — 그쪽을 골랐다. `isspace` 는 `PY_SP` 와 정확히 같아 재사용.
+
+### 이 차이는 유니코드 버전에서 온다
+
+Deno 가 Python 보다 새 유니코드를 쓴다. **런타임이 올라가면 집합이 달라질 수 있다.**
+테스트가 전 코드포인트를 fixture 와 대조하므로 조용히 갈리면 먼저 깨진다.
+
+`isalnum` fixture 에는 예외 목록이 아니라 **Python 집합 747 범위를 통째로** 넣었다 —
+예외 목록으로 검증하면 구현과 같은 경로를 두 번 도는 **자기 대조**가 된다.
+
+### 검증
+
+전수 3종 + 함정 값 + 빈 문자열 = 5건. 음성 대조 4종 발화
+(예외 제거 2 · `\p{Nd}` 교체 2 · JS `\s` 교체 2 · 이진탐색 경계 3).
+`deno test` 127건 통과.
+
+### chunk 이식 — 남은 조각
+
+`chunk.py` 543 줄 + 의존 모듈 2 개(`entity_extract`, `synonym_inject`). 한 번에 못 옮긴다.
+
+| 조각 | 내용 | 함정 |
+|---|---|---|
+| a | 문장 분할 · 법령 날짜 마스킹 · overlap | lookbehind 정규식, `\d`·`\s` 차이, 코드포인트 길이 |
+| b | 짧은 섹션 병합 (`_looks_like_table_cell` 포함) | **§18 이 그 기반** |
+| c | 레코드 변환 (`_to_chunk_records`) | NFC 정규화, `entity_extract` 의존 |
