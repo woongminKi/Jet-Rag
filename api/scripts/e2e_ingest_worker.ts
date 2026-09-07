@@ -52,6 +52,11 @@ const keep = Deno.args.includes("--keep");
  * 준비·검증·정리는 그대로 로컬에서 하고 **드레인만** 바꾼다.
  */
 const useEdge = Deno.args.includes("--edge");
+/**
+ * `--cron`: 드레인을 **직접 하지 않는다.** 작업만 큐에 넣고 pg_cron 이 처리하기를
+ * 기다린다(마이그 028). 자동화가 실제로 도는지는 이렇게만 확인된다.
+ */
+const useCron = Deno.args.includes("--cron");
 
 // --- .env 에서 자격증명 (셸 환경변수가 있으면 그쪽 우선) ---
 const env: Record<string, string> = {};
@@ -146,10 +151,21 @@ try {
     if (!res.ok) throw new Error(`Edge drain ${res.status}: ${body.slice(0, 400)}`);
     return JSON.parse(body) as Awaited<ReturnType<typeof drainOnce>>;
   }
-  const drain = useEdge
+  /** cron 모드 — 아무것도 하지 않고 큐가 줄기를 기다린다. */
+  async function waitForCron() {
+    await new Promise((r) => setTimeout(r, 3000));
+    const { data } = await client.rpc("ingest_queue_depth");
+    const n = Number((data ?? [{}])[0]?.queue_length ?? 0);
+    return { read: n, ok: 0, retried: 0, archived: 0, errors: [] as never[] };
+  }
+  const drain = useCron ? waitForCron : useEdge
     ? drainViaEdge
     : () => drainOnce({ client, handlers, batch: 1, vtSeconds: 120 });
-  console.log(`  드레인 경로: ${useEdge ? "**배포된 Edge 함수**" : "로컬 Deno"}`);
+  console.log(
+    `  드레인 경로: ${
+      useCron ? "**pg_cron 자동** (이 스크립트는 기다리기만 한다)" : useEdge ? "**배포된 Edge 함수**" : "로컬 Deno"
+    }`,
+  );
 
   const t0 = performance.now();
   let rounds = 0;
