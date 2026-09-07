@@ -67,6 +67,9 @@ const MIGRATED_PATHS = new Set([
  */
 const MIGRATED_METHOD_PATHS = new Set([
   "POST /documents",
+  "GET /documents",
+  "GET /documents/{doc_id}",
+  "GET /documents/{doc_id}/status",
 ]);
 
 Deno.test("프록시가 Edge 로 보내는 원본 라우트는 전부 이관돼 있어야 한다", async () => {
@@ -108,18 +111,27 @@ Deno.test("이관 선언 경로는 프록시가 실제로 Edge 로 보내야 한
   assertEquals([...orphans, ...orphans2], [], `이관했다고 적었는데 프록시가 안 보내는 경로`);
 });
 
-Deno.test("`POST /documents` 만 Edge 로, 같은 경로의 GET 은 Railway 로", () => {
-  // 경로만 보고 열면 목록(GET)이 405 로 깨진다. 그래서 메서드로 가른다.
+Deno.test("`/documents` — 이관한 것만 Edge, 나머지는 Railway", () => {
+  // 업로드·목록·상세·상태
   assertEquals(resolveTarget("/documents", "POST"), "api-documents");
   assertEquals(resolveTarget("/documents/", "POST"), "api-documents");
-  assertEquals(resolveTarget("/documents", "GET"), null);
-  // 메서드를 모르면 넘기지 않는다 — 모른 채 넘겨서 GET 이 405 를 받는 쪽이 더 나쁘다.
+  assertEquals(resolveTarget("/documents", "GET"), "api-documents");
+  assertEquals(resolveTarget("/documents/abc", "GET"), "api-documents");
+  assertEquals(resolveTarget("/documents/abc/status", "GET"), "api-documents");
+  // 메서드를 모르면 넘기지 않는다 — 모른 채 넘겨서 405 를 받는 쪽이 더 나쁘다.
   assertEquals(resolveTarget("/documents"), null);
-  // 하위 경로는 전부 Railway 다. 접두어로 열었다면 여기서 터진다.
-  assertEquals(resolveTarget("/documents/url", "POST"), null);
+
+  // **아직 Railway** — `{doc_id}` 패턴이 이걸 삼키면 안 된다.
   assertEquals(resolveTarget("/documents/active", "GET"), null);
+  assertEquals(resolveTarget("/documents/batch-status", "GET"), null);
+  assertEquals(resolveTarget("/documents/url", "POST"), null);
   assertEquals(resolveTarget("/documents/abc/reingest", "POST"), null);
+  assertEquals(resolveTarget("/documents/abc/reingest-missing", "POST"), null);
+  // 쓰기 메서드는 상세 경로라도 안 넘긴다(삭제 등이 생기면 Railway 로).
+  assertEquals(resolveTarget("/documents/abc", "DELETE"), null);
   assertEquals(resolveTarget("/documentsfoo", "POST"), null);
+  // 더 깊은 경로도 안 삼킨다.
+  assertEquals(resolveTarget("/documents/abc/status/extra", "GET"), null);
 });
 
 /* ------------------------------------------------------------------ 경로 매핑 */
@@ -260,16 +272,23 @@ Deno.test("POST 의 본문과 메서드를 보존한다", async () => {
 
 // 여기서 쓰는 예시 경로는 **아직 안 옮긴 것**이어야 한다. 옮기고 나면 이 테스트가
 // 깨지므로, 깨지면 예시를 바꾸면 된다 — 실제로 `/stats` 전환 때 `/stats/overview` 를
-// 쓰고 있어서 세 건이 한꺼번에 깨졌다(그 경로는 원본에도 없어서 회귀는 아니었다).
+// 쓰고 있어서 세 건이 한꺼번에 깨졌고, `/documents` 읽기 전환 때 또 세 건이 깨졌다.
+// 지금 예시는 `/documents/active` — Railway 에 실재하고 아직 안 옮긴 라우트다.
 Deno.test("미이관 경로는 기존 백엔드로, 경로·쿼리를 유지한다", async () => {
-  const { sent } = await capture(req("/documents?limit=7"));
-  assertEquals(sent.url, "https://jet-rag-production.up.railway.app/documents?limit=7");
+  const { sent } = await capture(req("/documents/active?hours=7"));
+  assertEquals(
+    sent.url,
+    "https://jet-rag-production.up.railway.app/documents/active?hours=7",
+  );
   // 기존 백엔드로 갈 때는 이 헤더를 붙이지 않는다 — 원본이 모르는 헤더다.
   assertEquals(sent.headers.get("X-Forwarded-Path"), null);
 });
 
 Deno.test("LEGACY_ORIGIN 이 비면 404 (Phase 6 의 종료 상태)", async () => {
-  const { sent, response } = await capture(req("/documents"), { ...ENV, LEGACY_ORIGIN: "" });
+  const { sent, response } = await capture(req("/documents/active"), {
+    ...ENV,
+    LEGACY_ORIGIN: "",
+  });
   assertEquals(sent, null, "네트워크 호출이 없어야 한다");
   assertEquals(response.status, 404);
   assertEquals(await response.json(), { detail: "Not Found" });
@@ -277,7 +296,7 @@ Deno.test("LEGACY_ORIGIN 이 비면 404 (Phase 6 의 종료 상태)", async () =
 
 Deno.test("LEGACY_ORIGIN 이 자기 자신이면 루프 대신 500", async () => {
   // 설정 실수로 jetrag-api.woong-s.com 을 넣으면 Worker 가 자기를 부른다.
-  const { sent, response } = await capture(req("/documents"), {
+  const { sent, response } = await capture(req("/documents/active"), {
     ...ENV,
     LEGACY_ORIGIN: "https://jetrag-api.woong-s.com",
   });
