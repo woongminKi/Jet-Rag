@@ -83,6 +83,22 @@ export function makeChunkHandler(deps: ChunkDeps): TaskHandler {
       if (Array.isArray(part)) sections.push(...part);
     }
 
+    // vision 섹션은 **텍스트 섹션 전부 뒤에** 온다. 원본 `_enrich_pdf_with_vision` 이
+    // `sections = list(base_result.sections)` 로 시작해 페이지 루프에서 append 하기
+    // 때문이다. 창 단위로 번갈아 섞으면 순서가 깨진다 — 그래서 stage 를 나눠 뒀다.
+    const { data: vData, error: vErr } = await deps.client
+      .from("ingest_artifacts")
+      .select("seq, payload")
+      .eq("job_id", task.job_id)
+      .eq("stage", "vision")
+      .order("seq", { ascending: true });
+    if (vErr) throw new Error(`vision 산출물 조회 실패: ${vErr.message}`);
+    const vRows = (vData ?? []) as ExtractArtifact[];
+    for (const r of vRows) {
+      const part = r.payload?.sections;
+      if (Array.isArray(part)) sections.push(...part);
+    }
+
     const records = runChunkStage({
       docId: task.doc_id,
       sections,
@@ -101,6 +117,7 @@ export function makeChunkHandler(deps: ChunkDeps): TaskHandler {
         chunk_count: records.length,
         section_count: sections.length,
         extract_parts: rows.length,
+        vision_parts: vRows.length,
         records: slice,
       } as Record<string, unknown>);
       if (cleaned.removed > 0) cleaned.value["nul_removed"] = cleaned.removed;

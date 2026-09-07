@@ -24,7 +24,10 @@ function sec(text: string, page: number) {
  * `ingest_artifacts` 조회/upsert 흉내.
  * `rows` 는 **일부러 뒤섞어** 둔다 — 핸들러가 `order` 를 걸어야만 통과한다.
  */
-function fakeClient(rows: { seq: number; payload: unknown }[]) {
+function fakeClient(
+  rows: { seq: number; payload: unknown }[],
+  visionRows: { seq: number; payload: unknown }[] = [],
+) {
   const upserts: { row: Record<string, unknown>; opts: unknown }[] = [];
   const sends: Record<string, unknown>[] = [];
   const calls: string[] = [];
@@ -36,12 +39,19 @@ function fakeClient(rows: { seq: number; payload: unknown }[]) {
       return Promise.resolve({ data: 1, error: null });
     },
     from(_t: string) {
+      // **stage 를 봐야 한다** — 핸들러가 extract 와 vision 을 따로 긁는다.
+      // 구분 없이 같은 행을 돌려주면 섹션이 두 번 들어가 테스트가 조용히 통과한다.
+      let stage = "extract";
       const q = {
-        eq: () => q,
+        eq(col: string, val: unknown) {
+          if (col === "stage") stage = String(val);
+          return q;
+        },
         order(_c: string, o?: { ascending?: boolean }) {
           ordered = o?.ascending !== false;
+          const src = stage === "vision" ? visionRows : rows;
           return Promise.resolve({
-            data: [...rows].sort((a, b) => a.seq - b.seq),
+            data: [...src].sort((a, b) => a.seq - b.seq),
             error: null,
           });
         },
@@ -210,4 +220,43 @@ Deno.test("저장이 **다 끝난 뒤에** load 를 넣는다", async () => {
   await h(TASK, {} as never);
   // upsert 3 회(2/2/1) 뒤에 enqueue 1 회.
   assertEquals(calls, ["upsert", "upsert", "upsert", "rpc:ingest_queue_send"]);
+});
+
+Deno.test("vision 섹션은 extract 섹션 **전부 뒤에** 붙는다", async () => {
+  // 원본 `_enrich_pdf_with_vision` 이 `sections = list(base.sections)` 로 시작해
+  // 페이지 루프에서 append 하기 때문이다. seq 를 섞어 둬 순서 규칙만으로 통과하게 한다.
+  const { client, upserts } = fakeClient(
+    [
+      { seq: 5, payload: { sections: [sec("텍스트 둘째 문장입니다.", 6)] } },
+      { seq: 0, payload: { sections: [sec("텍스트 첫째 문장입니다.", 1)] } },
+    ],
+    [
+      { seq: 4, payload: { sections: [sec("비전 둘째 문장입니다.", 5)] } },
+      { seq: 0, payload: { sections: [sec("비전 첫째 문장입니다.", 1)] } },
+    ],
+  );
+  // deno-lint-ignore no-explicit-any
+  const h = makeChunkHandler({ client: client as any, env: ENV });
+  await h(TASK, {} as never);
+
+  const payload = upserts[0].row.payload as Record<string, unknown>;
+  assertEquals(payload.section_count, 4);
+  assertEquals(payload.extract_parts, 2);
+  assertEquals(payload.vision_parts, 2);
+  const text = (payload.records as { text: string }[]).map((r) => r.text).join("\n");
+  const order = ["텍스트 첫째", "텍스트 둘째", "비전 첫째", "비전 둘째"]
+    .map((k) => text.indexOf(k));
+  assertEquals(order.every((v, i) => v >= 0 && (i === 0 || v > order[i - 1])), true, text);
+});
+
+Deno.test("vision 산출물이 없어도 extract 만으로 돈다", async () => {
+  const { client, upserts } = fakeClient([
+    { seq: 0, payload: { sections: [sec("본문 문장입니다.", 1)] } },
+  ]);
+  // deno-lint-ignore no-explicit-any
+  const h = makeChunkHandler({ client: client as any, env: ENV });
+  await h(TASK, {} as never);
+  const payload = upserts[0].row.payload as Record<string, unknown>;
+  assertEquals(payload.vision_parts, 0);
+  assertEquals(payload.section_count, 1);
 });

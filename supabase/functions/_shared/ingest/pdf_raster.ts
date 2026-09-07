@@ -158,6 +158,18 @@ export function renderPageForVision(
   }
 }
 
+/** 페이지 수만 센다. 문서 열기는 0.7~2.0ms 라 이것만 위해 열어도 된다(§23 실측). */
+export async function countPdfPages(bytes: Uint8Array): Promise<number> {
+  // deno-lint-ignore no-explicit-any
+  const mupdf = await import("mupdf") as any;
+  const doc = mupdf.Document.openDocument(bytes, "application/pdf") as MupdfDoc;
+  try {
+    return doc.countPages();
+  } finally {
+    doc.destroy?.();
+  }
+}
+
 /**
  * 바이트에서 문서를 열어 페이지 범위를 굽는다.
  *

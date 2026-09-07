@@ -30,6 +30,7 @@ import { extractHwp } from "../hwp_extract.ts";
 import { PDF_PAGES_PER_TASK } from "../pdf_extract.ts";
 import { extractPdfRange, type PdfRangeResult } from "../pdf_open.ts";
 import { stripNulls } from "../strip_nul.ts";
+import { readVisionEnv } from "../vision_enrich.ts";
 import type { TaskHandler, TaskPayload } from "../worker.ts";
 
 /** 지금 처리할 수 있는 `documents.doc_type`. */
@@ -47,6 +48,8 @@ export interface ExtractDeps {
   ) => Promise<PdfRangeResult>;
   /** 한 태스크가 맡을 페이지 수. */
   pagesPerTask?: number;
+  /** 테스트 주입 — ENV 를 직접 준다. */
+  env?: Record<string, string | undefined>;
 }
 
 async function defaultDownload(
@@ -96,6 +99,10 @@ async function loadCarryTitle(
 /** `extract` 작업 1건. 산출물을 `ingest_artifacts` 에 upsert 한다. */
 export function makeExtractHandler(deps: ExtractDeps): TaskHandler {
   const pagesPerTask = deps.pagesPerTask ?? PDF_PAGES_PER_TASK;
+  // PDF 이고 vision 이 켜져 있으면 chunk 앞에 vision 단계가 하나 더 붙는다.
+  // 스캔 PDF 여부는 vision 핸들러가 판단해 스스로 chunk 로 넘긴다 — 여기서 flags 까지
+  // 보면 extract 가 vision 정책을 알아야 해서 책임이 번진다.
+  const visionEnabled = readVisionEnv(deps.env ?? Deno.env.toObject()).enabled;
 
   return async (task: TaskPayload) => {
     const { data: docs, error: docErr } = await deps.client
@@ -174,8 +181,11 @@ export function makeExtractHandler(deps: ExtractDeps): TaskHandler {
 
     // **저장이 끝난 뒤에** 다음 작업을 넣는다. 순서가 반대면 다음 태스크가 아직 없는
     // 아티팩트에서 carryTitle 을 찾다가 던진다.
+    const afterExtract = visionEnabled && docType === "pdf" ? "vision" : "chunk";
     const next: TaskPayload = nextFrom !== null
       ? { job_id: task.job_id, doc_id: task.doc_id, stage: "extract", from: nextFrom, count: pagesPerTask }
+      : afterExtract === "vision"
+      ? { job_id: task.job_id, doc_id: task.doc_id, stage: "vision", from: 0 }
       : { job_id: task.job_id, doc_id: task.doc_id, stage: "chunk" };
     const { error: sendErr } = await deps.client.rpc("ingest_queue_send", { payload: next });
     if (sendErr) throw new Error(`다음 작업 enqueue 실패: ${sendErr.message}`);
