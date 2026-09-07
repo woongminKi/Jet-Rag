@@ -1437,3 +1437,94 @@ py↔ts 편차가 **기준선과 같은 수준**이다. 같은 경로를 탄다.
 | HWPML / hwpx / docx / pptx extract | ⬜ |
 | chunk 조각 c2 (`synonym_inject`) | ⬜ |
 | `/payments` · `/billing` · `/email` (Phase 4~5) | ⬜ |
+
+
+## 28. Phase 4 — `POST /documents` 업로드. **사슬의 입구를 열었다**
+
+§27 까지 만든 사슬은 **입구가 막혀 있었다** — 큐에 작업을 사람이 넣어야 시작됐다.
+이제 파일을 올리면 `업로드 → extract → chunk → load → embed` 가 끝까지 자동으로 돈다.
+
+### 28.1 Railway 와 흐름이 다르다 — BackgroundTasks 가 없다
+
+| | 원본(Railway) | Edge |
+|---|---|---|
+| `documents.storage_path` | `pending/<uuid><ext>` placeholder | **처음부터 final path** |
+| Storage 업로드 | 응답 후 BG task | **응답 전에 끝낸다** |
+| 파이프라인 | BG task 가 8 단계 직접 | 큐에 `extract` 투입 → pg_cron |
+
+`pending/` 을 안 쓰는 게 오히려 낫다. extract 핸들러가 "storage_path 가 아직 pending"
+이면 던지고 재시도하는데(§24), **그 경합 자체가 사라진다.**
+
+응답 시간은 실측 **1,293ms**(0.26MB)로 원본 SLO(수신 ≤2초) 안에 들어온다.
+
+### 28.2 프록시가 메서드를 보게 했다
+
+`/documents` 는 **같은 경로에 GET(목록)과 POST(업로드)** 가 있다. 경로만 보고 열면
+아직 Railway 인 목록이 405 로 깨진다. `/admin/subscriptions` 때 미뤄 둔 문제다.
+
+`ROUTES` 항목에 선택적 메서드 집합을 더하고 `resolveTarget(pathname, method)` 로 확장했다:
+
+```js
+[/^\/documents\/?$/, "api-documents", new Set(["POST"])],
+```
+
+**메서드를 모르면 넘기지 않는다.** 모른 채 넘겨서 GET 이 405 를 받는 쪽이 더 나쁘다.
+기존 규칙(메서드 제한 없음)은 그대로 동작하고, 이관 선언 가드도 메서드까지 보도록 넓혔다.
+
+### 28.3 입력 게이트 — 대조가 결함 1건을 잡았다
+
+목적은 **"exe 가 .docx 로 위장" 차단**이다. `filetype` 라이브러리 전체를 옮기지 않았다 —
+판정이 "허용 목록에 드는가" 뿐이라 **허용되는 것만 정확히 인식하고 나머지는 `null` 로
+두면 결과가 같다.** 실측으로 확인했다(exe as .pdf: py `application/x-msdownload` /
+ts `null` — **둘 다 거절**).
+
+그런데 `mif1`/`msf1` 이면 `image/heif` 라는 분기를 **추론으로** 넣었다가 대조가 잡았다:
+
+```
+HEIC major=mif1 brand 없음   py={"ok": false, "status": 400}  ts={"ok": true}
+```
+
+`filetype` 1.2.0 에는 **`image/heif` 타입이 아예 없다.** `Heic` 매처 하나뿐이고
+`mif1`/`msf1` 은 compatible_brands 에 `heic` 가 있을 때만 매치한다.
+`_EXT_TO_MIMES[".heic"]` 의 `"image/heif"` 는 **도달 불가 값**이었다.
+짐작으로 넓혔으면 위장 파일이 통과했다.
+
+### 28.4 검증
+
+| 항목 | 결과 |
+|---|---|
+| Deno `_shared/` 전체 | **202 passed / 0 failed** (upload 13 신규) |
+| `validateMagic` 대조 | 40 건 (통과 21 / 거절 19) — 실자산 + 위장 + 교차 + HWPML + HEIC 경계 |
+| 프록시 | 20 passed — `POST /documents` 만 Edge, GET·하위경로는 Railway |
+| HTTP 층 | 인증없음 **401** · GET **405** · 없는경로 **404** · service_role **401**(사용자가 아니다) |
+| **사슬 E2E** | 업로드 202 **1,293ms** → Storage 264,473B 크기 일치 → pg_cron 자동 → 청크 26 · **dense_vec 26/26** |
+| 운영 무손상 | documents 13 · chunks 37,080 · 큐 0 · artifacts 0 |
+
+### 28.5 한계 — 못 잰 것
+
+- **완전한 HTTP E2E(로그인 → 업로드)는 못 했다.** 사용자 자격증명이 필요하다. HTTP 층은
+  curl 로, 그 아래는 `handleUpload` 직접 호출로 나눠 검증했다. 즉 **실제 브라우저 토큰
+  경로와 rate limit 발화는 미검증**이다(코드는 `/answer` 와 같은 `_shared` 를 쓴다).
+- 업로드 SLO 는 **0.26MB 에서만** 쟀다. 큰 파일은 임베딩 비용 때문에 안 했다.
+
+### 28.6 커밋
+
+| 해시 | 내용 |
+|---|---|
+| `ee94432` | `POST /documents` 업로드 + 프록시 메서드 인지 |
+| `21fd38a` | 입력 게이트(확장자·매직바이트) |
+
+### 28.7 남은 것
+
+**프록시는 아직 배포하지 않았다.** 규칙과 테스트는 준비됐고, 배포하는 순간 실제 사용자
+업로드가 Edge 로 간다. 되돌리기는 규칙 한 줄을 지우고 재배포하면 된다.
+
+| 항목 | 상태 |
+|---|---|
+| **프록시 배포** (업로드를 실제로 전환) | ⬜ — 사용자 확인 대기 |
+| `/documents` 나머지 8 라우트 (목록·상세·삭제·재인제스트·URL) | ⬜ |
+| `tag_summarize` · `doc_embed` | ⬜ |
+| `chunk_filter` · `content_gate` · `dedup` | ⬜ |
+| HWPML / hwpx / docx / pptx extract | ⬜ |
+| chunk 조각 c2 (`synonym_inject`) | ⬜ |
+| `/payments` · `/billing` · `/email` (Phase 4~5) | ⬜ |
