@@ -24,6 +24,10 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  flagsWithIngestMode,
+  validateIngestMode,
+} from "../ingest/ingest_mode.ts";
 
 import {
   ALLOWED_EXTENSIONS,
@@ -98,6 +102,18 @@ export async function handleUpload(
   const titleField = form.get("title");
   const fileName = file.name || "untitled";
 
+  // ---- 운영 모드 (S2 D3) — 원본이 **확장자 검증 직전**에 본다 ----
+  // 이 값은 `documents.flags.ingest_mode` 로 남아 vision page cap 을 정한다.
+  // 안 쓰면 재인제스트가 모드를 못 이어받고 항상 default 로 떨어진다.
+  const modeField = form.get("mode");
+  const modeResult = validateIngestMode(
+    typeof modeField === "string" ? modeField : null,
+  );
+  if ("detail" in modeResult) {
+    return { status: 400, body: { detail: modeResult.detail } };
+  }
+  const ingestMode = modeResult.mode;
+
   // ---- 게이트 ①: 확장자 화이트리스트 ----
   const ext = extOf(fileName);
   const docType = ALLOWED_EXTENSIONS[ext];
@@ -164,7 +180,12 @@ export async function handleUpload(
     docId = dup.id;
     const { error } = await deps.client
       .from("documents")
-      .update({ storage_path: path, flags: {}, deleted_at: null })
+      .update({
+        storage_path: path,
+        // 원본도 재시도 때 flags 를 비우고 새 모드만 남긴다.
+        flags: flagsWithIngestMode({}, ingestMode),
+        deleted_at: null,
+      })
       .eq("id", docId);
     if (error) throw new Error(`documents 갱신 실패: ${error.message}`);
   } else {
@@ -182,6 +203,7 @@ export async function handleUpload(
         sha256,
         size_bytes: bytes.length,
         content_type: contentType,
+        flags: flagsWithIngestMode({}, ingestMode),
       })
       .select("id")
       .single();

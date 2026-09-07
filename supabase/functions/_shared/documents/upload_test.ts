@@ -176,8 +176,8 @@ Deno.test("실패 흔적이 있으면 재시도로 본다 — 같은 행에 잡�
   assertEquals(r.body.duplicated, false);
   // 새 documents 행은 안 만든다.
   assertEquals(f.inserts.some((i) => i.table === "documents"), false);
-  // flags 를 비우고 경로를 갱신한다.
-  assertEquals(f.updates[0].flags, {});
+  // flags 를 비우고 **새 모드만** 남긴다(원본 `_flags_with_ingest_mode({}, mode)`).
+  assertEquals(f.updates[0].flags, { ingest_mode: "default" });
   assertEquals(f.uploads.length, 1);
   assertEquals(f.sends.length, 1);
 });
@@ -188,4 +188,31 @@ Deno.test("같은 내용이면 같은 경로 — sha256 기반", async () => {
   await handleUpload(formOf("x.pdf", PDF), a.deps);
   await handleUpload(formOf("전혀다른이름.pdf", PDF), b.deps);
   assertEquals(a.uploads[0].path, b.uploads[0].path);
+});
+
+Deno.test("mode 를 flags.ingest_mode 로 남긴다 — 재인제스트가 이걸 이어받는다", async () => {
+  const f = fakeClient();
+  const r = await handleUpload(formOf("a.pdf", PDF, { mode: "fast" }), f.deps);
+  assertEquals(r.status, 202);
+  const doc = f.inserts.find((i) => i.table === "documents");
+  assertEquals(doc?.row.flags, { ingest_mode: "fast" });
+});
+
+Deno.test("mode 미지정이면 default", async () => {
+  const f = fakeClient();
+  await handleUpload(formOf("a.pdf", PDF), f.deps);
+  const doc = f.inserts.find((i) => i.table === "documents");
+  assertEquals(doc?.row.flags, { ingest_mode: "default" });
+});
+
+Deno.test("무효 mode 는 400 — 확장자 검증보다 먼저다", async () => {
+  const f = fakeClient();
+  // 확장자가 무효여도 mode 오류가 먼저 나와야 원본과 같다.
+  const r = await handleUpload(formOf("a.zip", PDF, { mode: "turbo" }), f.deps);
+  assertEquals(r.status, 400);
+  assertEquals(
+    r.body.detail,
+    "지원되지 않는 모드입니다: 'turbo' (허용: fast, default, precise)",
+  );
+  assertEquals(f.uploads.length, 0);
 });
