@@ -1698,3 +1698,93 @@ Railway 에 남은 `/documents` 라우트는 **5 개**다(9 개 중 4 개 이관
 | HWPML / hwpx / docx / pptx extract | ⬜ |
 | chunk 조각 c2 (`synonym_inject`) | ⬜ |
 | `/payments` · `/billing` · `/email` (Phase 4~5) | ⬜ |
+
+
+## 30. Phase 4 — `/documents/active` · `batch-status`. **`/documents` 의 GET 이 전부 넘어갔다**
+
+프런트 폴러가 주기적으로 부르는 두 라우트다. `/ingest` 페이지의 진행 카드와 문서 목록
+상태 갱신이 여기에 달려 있다. 이걸로 `/documents` 의 **GET 5 개가 전부** Edge 다.
+
+### 30.1 ETA 를 통째로 옮겼다 (`eta.py` 325 줄)
+
+`estimated_remaining_ms` 를 `null` 로 고정하면 프런트의 "약 N분 N초 남음" 이 죽는다 —
+**기능 손실**이라 넘길 수 없었다. `null` 자체도 의미 있는 값이다(cold start 시 web 이
+"처음에는 시간 추정이 부정확합니다" 카피로 분기한다).
+
+Python 함정 3 개를 맞췄다:
+
+| 함정 | 대응 |
+|---|---|
+| `statistics.median` — 짝수면 두 중간값 평균, `sort()` 는 문자열 정렬 | 직접 구현 + 비교 함수 (§23 에서 겪은 것과 같다) |
+| `int()` 는 truncate, **`round()` 는 은행가 반올림** | `Math.trunc` / `bankersRound` (percentile 랭크) |
+| `isinstance(duration, int)` | `Number.isInteger` — 실수 duration 은 표본에서 빠진다 |
+
+캐시는 Edge 인스턴스 수명만큼만 산다. 원본은 프로세스 전역 90 초 TTL 이라 적중률이
+낮아지지만 **결과는 같고 DB 조회가 잦을 뿐**이다.
+
+### 30.2 옮기지 않은 것 — `stage_progress` fallback
+
+원본에는 그 컬럼이 없는 환경(마이그 010 미적용)을 위한 1 회 재시도 fallback 이 있다.
+**운영 DB 에 컬럼이 있는 것을 실측했다.** 죽은 경로를 옮기면 그게 도는지 아무도 확인
+못 한다 — 컬럼이 사라지면 조용히 넘기지 말고 500 으로 드러나는 편이 낫다. 근거를 코드
+주석에 남겼다.
+
+### 30.3 `status` 를 SQL 에서 거르지 않는다
+
+원본 주석 그대로다. 거르면 같은 doc 에 "어제 failed + 오늘 completed" 가 있을 때
+`failed` 만 뽑혀 **완료된 문서가 계속 진행 중으로 보인다.** 전부 가져와 `doc_id` 별
+latest 만 남기고, 그 status 가 active 인 것만 응답한다.
+
+### 30.4 응답 대조로는 ETA 를 검증할 수 없었다
+
+응답 대조 39 건이 전부 통과했는데, **`/active` 가 `{"items":[]}` 였다.** 진행 중인
+잡이 없어서다. 즉 방금 옮긴 325 줄이 **한 번도 안 돌았다.** 그 상태로 "이식 완료" 라고
+하면 안 된다.
+
+그래서 같은 DB·같은 입력으로 `compute_remaining_ms` 를 직접 대조했다:
+
+| 대상 | 케이스 | 결과 |
+|---|---|---|
+| `median` | 8 | 일치 |
+| `percentile` | 8 (은행가 반올림 경계 포함) | 일치 |
+| `computeRemainingMs` | 30 | 일치 |
+
+결과 분포가 **None 3 / 값 27, 서로 다른 값 10 가지** — 분기가 실제로 태워졌다는 증거다
+(전부 `None` 이거나 값이 다 같으면 케이스 무효로 처리하도록 검사도 넣었다).
+
+케이스는 queued/running/completed, 각 stage, vision 분해(`unit='pages'`), 일반
+sub-progress 비율, 경계(`total<=0` · `current>total` · 문자열 값 · 모르는 stage)를 태운다.
+
+### 30.5 검증
+
+| 항목 | 결과 |
+|---|---|
+| 응답 대조 | **39 건 전부 일치** (200 ×20 · 400 ×2 · 404 ×2 · 422 ×14 · 500 ×1) |
+| ETA 대조 | median 8 · percentile 8 · `computeRemainingMs` 30 |
+| Deno `_shared/` | 202 passed / 0 failed |
+| 프록시 | 20 passed / 0 failed |
+| 배포 후 실측 | `active`·`batch-status` **Edge**, `url`·`reingest` **Railway** |
+
+> 프록시 "미이관 예시" 테스트가 또 깨졌다(§29 에 이어 두 번째). `/documents/url` 로
+> 바꿨는데 `req()` 기본이 GET 이라 새 `GET /documents/{doc_id}` 규칙에 걸렸다 —
+> **메서드를 명시**해야 했다. 예시 경로를 고를 때 메서드까지 봐야 한다.
+
+### 30.6 커밋
+
+| 해시 | 내용 |
+|---|---|
+| `ccdde7f` | `/documents/active` + `batch-status` + ETA 이식 |
+
+### 30.7 남은 것
+
+`/documents` 9 개 중 **6 개 이관**. 남은 3 개는 전부 쓰기다.
+
+| 항목 | 상태 |
+|---|---|
+| `POST /documents/url` | ⬜ — URL 파서 이식 필요 |
+| `POST /documents/{id}/reingest` · `reingest-missing` | ⬜ |
+| `tag_summarize` · `doc_embed` | ⬜ |
+| `chunk_filter` · `content_gate` · `dedup` | ⬜ |
+| HWPML / hwpx / docx / pptx extract | ⬜ |
+| chunk 조각 c2 (`synonym_inject`) | ⬜ |
+| `/payments` · `/billing` · `/email` (Phase 4~5) | ⬜ |
