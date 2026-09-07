@@ -1555,15 +1555,45 @@ $ curl -s "https://jetrag-api.woong-s.com/documents?limit=3"   # 토큰 없음
 - `list_documents` 에는 `require_authenticated_user` 가 걸려 있지 않다
   (`POST` 에는 걸려 있다 — "쓰기 = 로그인 필수(수익화 W1)").
 
-**미검증**: 인증이 없을 때 왜 그 사용자로 떨어지는지(기본 사용자 fallback 으로 보이나
-`get_current_user` 를 읽고 확인하지 않았다), 그리고 이게 의도된 설계인지.
-판단이 필요한 사안이라 고치지 않고 남긴다.
+**확인 결과 — 의도된 설계다(수익화 W1 "데모 병행").** 위 미검증 항목을 `get_current_user`
+를 읽어 확정했다.
+
+```python
+# app/auth/dependencies.py — get_current_user
+"""호출자 식별 — 데모 병행 3-way 분기 (수익화 W1).
+- auth_enabled=false: 로컬 dev / single-user
+- 토큰 없음: **익명 데모 — owner 문서 read-only** (쓰기는 require_authenticated_user 가 차단)
+- 토큰 있음: JWT 검증 → 본인 격리 컨텍스트
+"""
+if token is None:
+    return CurrentUser(
+        user_id=settings.owner_user_id or settings.default_user_id,
+        is_authenticated=False,          # ← 쓰기 게이트가 이 값을 본다
+    )
+```
+
+즉 로그인 없이 서비스를 체험하도록 **owner 문서를 읽기 전용으로 열어 둔 기능**이다.
+확인한 것:
+
+| 항목 | 결과 |
+|---|---|
+| 목록이 사용자별로 격리되는가 | `list_documents` 가 `.eq("user_id", current_user.user_id)` — **격리된다** |
+| 익명이 보는 것 | owner 문서 **뿐**. 다른 사용자 문서는 안 보인다 |
+| 익명 쓰기 | `POST /documents` **401** (실측) |
+| Edge 이식본도 같은가 | `_shared/current_user.ts` 가 동일 — `ownerUserId || defaultUserId`, `isAuthenticated: false`, `requireAuthenticatedUser` 가 쓰기 차단 |
+
+**보안 결함이 아니다.** §28.8 을 처음 적을 때 "판단이 필요하다" 고 한 것은 코드를 안 읽고
+현상만 봤기 때문이다 — 설계 의도가 docstring 에 적혀 있었다. 이슈로 올리기 전에 그걸
+먼저 읽었어야 했다.
+
+이 확인의 실질 소득: **`/documents` 나머지 라우트를 이식할 때 인증을 그대로 옮기면 된다.**
+바꿀 이유가 없다.
 
 ### 28.9 남은 것
 
 | 항목 | 상태 |
 |---|---|
-| **`GET /documents` 무인증 노출 판단** | ⬜ — 위 28.8 |
+| ~~`GET /documents` 무인증 노출 판단~~ | ✅ 의도된 데모 병행 설계 — 28.8 |
 | `/documents` 나머지 8 라우트 (목록·상세·삭제·재인제스트·URL) | ⬜ |
 | `tag_summarize` · `doc_embed` | ⬜ |
 | `chunk_filter` · `content_gate` · `dedup` | ⬜ |
