@@ -2218,3 +2218,111 @@ reingest 대조는 **DB 만 스텁으로 갈고 라우트 함수를 그대로 �
 | HWPML / hwpx / docx / pptx extract | ⬜ |
 | chunk 조각 c2 (`synonym_inject`) | ⬜ |
 | `/payments` · `/billing` · `/email` (Phase 4~5) | ⬜ |
+
+---
+
+## 37. Phase 4 — 스캔 PDF 경로. **텍스트 없는 PDF 가 드디어 읽힌다**
+
+`extract` 가 문서 전체 `raw_text` 를 보고 50 자 이하면 스캔으로 판정해 `scan` 단계로
+보낸다. 지금까지 Edge 는 스캔 PDF 를 빈 텍스트인 채로 통과시키고 있었다.
+
+```
+업로드 → extract → [scan | vision | chunk] → … → embed
+                     ↑ 셋은 배타적이다 (원본 if/elif)
+```
+
+### 37.1 enrich 와 같은 기계, 다른 정책 — 재사용하지 않았다
+
+| | enrich | scan |
+|---|---|---|
+| 페이지 상한 | 50 | **5** |
+| sweep 재시도 | 2 회 | **없다** |
+| `needs_vision` | 판정함 | **전 페이지 호출** |
+| 비용·페이지 cap | 검사함 | **안 함** |
+| `vision_page_cache` | 씀 | **안 씀**(원본이 `sha256` 미전달) |
+| 섹션 제목 | `(vision) p.N` | `p.N` |
+| `metadata` | 승계 | **버림**(원본이 `ExtractedSection` 에 안 넘긴다) |
+| `source_type` | `pdf_vision_enrich` | `pdf_scan` |
+
+인자로 끄고 켤 수는 있었지만 경고 문구까지 갈려서, 껍데기만 같고 속이 다른 함수가
+된다. 60 줄짜리 별도 루프가 낫다.
+
+캐시를 안 쓰는 건 손해다(같은 스캔 PDF 를 다시 올리면 5 페이지를 다시 부른다).
+그래도 원본을 따랐다 — 캐시 키가 `(sha256, page, prompt_version)` 이라 스캔이 끼어들면
+**같은 키에 다른 정책의 결과**가 섞인다. 바꾸려면 원본부터 바꿔야 한다.
+
+### 37.2 창으로 나뉜 extract 에서 "문서 전체" 판정을 정확히 재구성했다
+
+원본은 파서가 문서를 통째로 읽은 `raw_text` 를 본다. Edge 는 10 페이지씩 나뉘어 있어
+그 값을 그대로 못 만든다. 창별 `raw_text` 를 `\n\n` 로 이어 붙이면 **빈 창이 구분자를
+하나 더 끼워 넣어** 길이가 어긋난다 — 49~51 자 경계에서 판정이 뒤집힐 수 있다.
+
+산출물에 두 값을 추가해 정확히 맞췄다.
+
+| 필드 | 쓰임 |
+|---|---|
+| `raw_part_count` | 0 인 창은 join 에서 뺀다 → 구분자 개수가 원본과 같아진다 |
+| `raw_nonspace_len` | 합이 50 초과면 **스캔 아님 확정**(strip 은 공백을 못 지운다) |
+
+두 번째 값 덕에 큰 문서는 본문을 다시 안 읽는다 — 1,513 페이지 문서에서 13MB 를
+다시 긁을 뻔했다.
+
+### 37.3 `scan` 산출물은 extract 를 **대체**한다
+
+원본이 `result = _reroute_pdf_to_image(...)` 로 결과를 통째로 갈아끼운다. 보강이 아니다.
+그래서 `chunk` 가 `stage='scan'` 이 있으면 extract·vision 을 **무시하고** 그쪽만 쓴다.
+합치면 원본에 없는(거의 빈) extract 청크가 섞인다.
+
+### 37.4 실측 — 29 건 0 불일치 (음성 대조 검출)
+
+저장소에 텍스트 레이어 없는 PDF 가 없어서 `law_sample2.pdf` 를 150 DPI 로 렌더해
+**이미지만** 넣은 7 페이지 PDF 를 만들어 썼다. **추출 텍스트가 0 자인지 먼저 확인**하고
+대조했다 — 안 그러면 스캔 경로를 안 타서 대조가 무의미하다(검출기의 입력을 먼저 본다).
+
+섹션 9 건(제목·본문·page·bbox·metadata) · `raw_text` · 경고 · 5 페이지 상한 ·
+**창 분할 동일성** · `_is_scan_pdf` 임계 14 케이스(50 자 경계, 유니코드 공백,
+코드포인트 — `"😀"*50` 은 UTF-16 으로 100 이라 `.length` 로 재면 틀린다).
+
+### 37.5 라이브 스모크 — 2 페이지 스캔 PDF, $0.0097
+
+```
+업로드 → extract(0자) → scan → chunk → load → embed → done/completed
+청크 2  dense_vec 2/2  flags.scan=true  호출 2
+p.1 OCR 텍스트 → [문서] 국세법령정보시스템의 상속증여세 관련 판례 문서 …
+p.2 OCR 텍스트 → [문서] 비상장주식 시가평가 관련 상고 기각 판결문 …
+vision 아티팩트 없음 — elif 배타 동작이 실제로 성립
+vision_usage_log.source_type = pdf_scan · vision_page_cache 0행
+```
+
+### 37.6 테스트 하네스 결함 2 건도 고쳤다
+
+- `extract_test` 의 가짜 client 가 `order()` 를 await 가능하게 안 만들어, 스캔 판정이
+  **조용히 빈 결과**를 읽고 모든 문서를 스캔으로 판정했다. thenable 을 붙였다.
+- `chunk_test` 의 가짜 client 가 `scan` stage 를 구분하지 않아 extract 행을 그대로
+  돌려줬다.
+
+가짜 client 는 **테이블과 stage 를 구분해야 한다** — 안 하면 새로 추가한 조회가
+엉뚱한 데이터를 받고도 통과한다. 이번 세션에서만 이 패턴으로 3 번 걸렸다(embed 의
+잡 마감, chunk 의 vision, extract 의 스캔 판정).
+
+### 37.7 검증 종합
+
+| 검사 | 결과 |
+|---|---|
+| `verify_scan_reroute_parity` | 29건 0 불일치 (음성 대조 검출) |
+| `deno test _shared/` | **213 passed** (스캔 분기 5건 추가) |
+| `verify_pdf_extract_parity` | FAIL 0 |
+| `verify_pdf_pipeline_baseline` | 8건 전부 기준값 동일 |
+| `verify_pdf_dict_parity` | 기준값 이내 |
+| 라이브 E2E | 스캔 PDF 완주 |
+
+### 37.8 남은 것
+
+| 항목 | 상태 |
+|---|---|
+| `POST /documents/url` | ⬜ — URL 파서 이식 필요 (`/documents` 의 마지막 1개) |
+| `tag_summarize` · `doc_embed` · `chunk_filter` · `content_gate` · `dedup` | ⬜ — **옮기면 잡 마감 지점도 옮겨야 한다** |
+| HWPML / hwpx / docx / pptx extract | ⬜ |
+| 단독 이미지 업로드의 `_normalize` (EXIF·HEIC) | ⬜ — PDF 경로는 필요 없어 안 옮겼다 |
+| chunk 조각 c2 (`synonym_inject`) | ⬜ |
+| `/payments` · `/billing` · `/email` (Phase 4~5) | ⬜ |
