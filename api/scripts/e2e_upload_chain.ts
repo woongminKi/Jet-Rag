@@ -146,6 +146,38 @@ try {
     exitCode = 1;
   }
 
+  // ---- 스캔 PDF 경로 ----
+  const { data: sArt } = await client
+    .from("ingest_artifacts").select("seq, payload")
+    .eq("job_id", jobId).eq("stage", "scan").order("seq", { ascending: true });
+  const sRows = (sArt ?? []) as { seq: number; payload: Record<string, unknown> }[];
+  if (sRows.length > 0) {
+    const { data: docRow } = await client
+      .from("documents").select("flags").eq("id", docId).single();
+    const flags = (docRow as { flags?: Record<string, unknown> })?.flags ?? {};
+    const called = sRows.reduce((n, r) => n + Number(r.payload?.["called"] ?? 0), 0);
+    const warn = sRows.flatMap((r) => (r.payload?.["warnings"] as string[]) ?? []);
+    console.log(
+      `  scan    창 ${sRows.length}개  호출 ${called}  ` +
+        `flags.scan=${flags["scan"]}  total=${sRows[0].payload?.["total_pages"]}`,
+    );
+    for (const w of warn) console.log(`    경고: ${w}`);
+    const { data: sc } = await client
+      .from("chunks").select("section_title, text")
+      .eq("doc_id", docId).like("section_title", "p.%").limit(3);
+    for (const c of (sc ?? []) as { section_title: string; text: string }[]) {
+      console.log(`    ${c.section_title} → ${c.text.slice(0, 60).replace(/\n/g, " ")}`);
+    }
+    if (flags["scan"] !== true) {
+      console.log("  **flags.scan 이 안 붙었다**");
+      exitCode = 1;
+    }
+    if ((sc ?? []).length === 0) {
+      console.log("  **scan 산출물은 있는데 청크가 없다**");
+      exitCode = 1;
+    }
+  }
+
   // ---- vision 이 실제로 돌았는지 ----
   // 청크 수만 보면 vision 이 통째로 빠져도 통과한다. `(vision) p.N` 제목이 붙은
   // 청크가 곧 Gemini 를 다녀온 증거다.
