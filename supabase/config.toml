@@ -454,3 +454,10 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/deno.json"
 entrypoint = "./functions/api-search/index.ts"
+
+# Phase 4 — `POST /documents`(업로드) 하나만. 인증은 _shared/current_user.ts 가 직접 한다.
+[functions.api-documents]
+enabled = true
+verify_jwt = false
+import_map = "./functions/deno.json"
+entrypoint = "./functions/api-documents/index.ts"

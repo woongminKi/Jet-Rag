@@ -8,7 +8,15 @@
  * "배포해 봐야 아는" 구간을 줄일 수 있다.
  */
 
-/** @type {[RegExp, string][]} */
+/**
+ * 규칙 하나: `[경로 정규식, 대상, (선택) 허용 메서드 집합]`.
+ *
+ * 세 번째 칸을 주면 **그 메서드만** 넘긴다. 나머지 메서드는 기존 백엔드로 간다.
+ * 같은 경로에 메서드별로 다른 라우트가 붙어 있을 때 필요하다 — `/documents` 는
+ * GET(목록)이 아직 Railway 인데 POST(업로드)만 Edge 다.
+ *
+ * @type {[RegExp, string, Set<string>?][]}
+ */
 export const ROUTES = [
   [/^\/auth\//, "api-account"],
   [/^\/health$/, "api-account"],
@@ -45,7 +53,9 @@ export const ROUTES = [
   // GET(캐시 조회)만 옮기고 싶어도 POST 와 경로가 같아 규칙으로 가를 수 없다.
   // Phase 6(Railway 제거)의 실질적 차단 요인 — 별도 결정 필요.
   // Phase 3 에서 해제: [/^\/admin\/subscriptions/, "api-account"],
-  // Phase 3 에서 해제: [/^\/documents/, "api-documents"],
+  // 2026-09-07 전환 — `POST /documents`(업로드) **하나만**. 같은 경로의 GET(목록)은
+  // 아직 Railway 라 **메서드로 가른다.** 경로만 보고 열면 목록이 405 로 깨진다.
+  [/^\/documents\/?$/, "api-documents", new Set(["POST"])],
   // Phase 4 에서 해제: [/^\/payments/, "api-payments"], [/^\/billing/, "billing-run"],
   // Phase 5 에서 해제: [/^\/email/, "email-webhook"],
 ];
@@ -53,10 +63,21 @@ export const ROUTES = [
 /**
  * 경로를 어디로 보낼지 정한다.
  *
+ * 메서드를 주면 메서드 제한이 걸린 규칙까지 본다. 안 주면 제한 없는 규칙만 맞는다 —
+ * 기존 호출부(테스트 포함)가 그대로 동작하도록 남겨 둔 기본값이다.
+ *
  * @param {string} pathname
+ * @param {string} [method] HTTP 메서드. 대문자 여부는 여기서 맞춘다.
  * @returns {string | null} Edge Function 이름. null 이면 기존 백엔드로.
  */
-export function resolveTarget(pathname) {
-  const match = ROUTES.find(([re]) => re.test(pathname));
+export function resolveTarget(pathname, method) {
+  const upper = method ? method.toUpperCase() : undefined;
+  const match = ROUTES.find(([re, , methods]) => {
+    if (!re.test(pathname)) return false;
+    if (!methods) return true;
+    // 메서드 제한이 있는 규칙은 **메서드를 알 때만** 맞는다. 모르면 넘기지 않는다 —
+    // 모르는 채로 넘겼다가 GET 이 405 를 받는 쪽이 더 나쁘다.
+    return upper !== undefined && methods.has(upper);
+  });
   return match ? match[1] : null;
 }

@@ -32,7 +32,7 @@ export default {
    */
   async fetch(request, env) {
     const url = new URL(request.url);
-    const target = resolveTarget(url.pathname);
+    const target = resolveTarget(url.pathname, request.method);
 
     if (target === null) {
       // 아직 이관하지 않은 경로 — 기존 백엔드로 넘긴다.
