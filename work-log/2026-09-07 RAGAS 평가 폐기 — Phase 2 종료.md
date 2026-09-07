@@ -2,9 +2,9 @@
 
 > **범위**: Edge 로 옮길 수 없던 4 라우트(`ragas` 의존)를 **폐기**해 Phase 6 의 차단 요인을
 > 없애고, Phase 2 를 닫기까지.
-> **다음 세션 재진입**: `chunk` **조각 c** — 레코드 변환(`_to_chunk_records`).
-> NFC 정규화 + `entity_extract` 의존이 딸려온다. a·b 는 끝났다(§19, §20).
-> c 까지 가면 **기준선 청크 digest `942f1b2e98ae666e` 와 직접 대조**할 수 있다.
+> **다음 세션 재진입**: `chunk` **조각 c** — 먼저 **Python `\w` 전수 대조**(§21 에서
+> `\b` 차이 6건 실측). 그다음 entity 정규식 8개 재작성 → `_to_chunk_records` 조립 →
+> **기준선 digest `942f1b2e98ae666e` 직접 대조**. a·b 는 끝났다(§19, §20).
 
 ## 0. 한눈에 보기
 
@@ -25,7 +25,8 @@
 | Phase 3 — extract 핸들러 결선 (큐→워커→산출물) | ✅ **E2E 성립** (afe0d82) |
 | Phase 3 — Python 문자 판정 3종 (chunk 기반) | ✅ (2689641) |
 | Phase 3 — chunk 조각 a (분할·마스킹·overlap) | ✅ (ff61062) |
-| Phase 3 — chunk 조각 b (섹션 병합·표 셀 판정) | ✅ (743ce46) — c 남음 |
+| Phase 3 — chunk 조각 b (섹션 병합·표 셀 판정) | ✅ (743ce46) |
+| Phase 3 — chunk 조각 c | 🟡 착수 — `\b` 차이 실측·fixture 만 (05c4999) |
 
 ## 1. 왜 폐기했나
 
@@ -702,3 +703,34 @@ Deno 가 Python 보다 새 유니코드를 쓴다. **런타임이 올라가면 �
 | a | 문장 분할 · 날짜 마스킹 · overlap | ✅ |
 | b | 짧은 섹션 병합 · 표 셀 판정 | ✅ |
 | c | 레코드 변환 (NFC, `entity_extract` 의존) | ⬜ — **여기까지 가면 기준선 digest 직접 대조** |
+
+
+## 21. Phase 3 — chunk 조각 c 착수: `\b` 경계 차이 발견
+
+조각 c(`_to_chunk_records`)는 `entity_extract` 를 부른다. 그 정규식 8 개에 `\b` 가 널려
+있는데 **Python `\b` 와 JS `\b` 는 단어 문자 정의가 다르다** — Python 은 유니코드 `\w`,
+JS 는 ASCII `\w`. 한국어 문서에서 정면으로 갈린다.
+
+### 실측 — 17 입력 × 5 패턴 중 6 건 차이
+
+| 입력 | Python | JS | 원인 |
+|---|---|---|---|
+| `50,000원` | 매칭 | **안 함** | `원\b` — Python 은 `원` 이 `\w` |
+| `100만원` | 매칭 | **안 함** | 〃 |
+| `$100달러` | **안 함** | 매칭 | `\b` 뒤 — Python 은 `달` 이 `\w` |
+| `약25%` | **안 함** | 매칭 | `\b` 앞 — Python 은 `약` 이 `\w` |
+| `２５%` · `５０,０００원` | 매칭 | 안 함 | `\d` 가 유니코드 Nd |
+
+**`50,000원` 이 안 잡히면 한국어 금액 추출이 통째로 죽는다.** 그대로 옮겼으면
+`chunks.metadata.entities` 가 조용히 비었을 것이다.
+
+### 다음 세션이 할 일
+
+1. **Python `\w` 전수 대조** — `\b` 를 `(?<![\w])`/`(?![\w])` 로 풀려면 `\w` 집합이
+   정확해야 한다. §18 에서 `isalnum` 이 5,004 자 달랐던 전례가 있어 짐작 금지.
+2. 정규식 8 개 재작성 (`\b` 치환 + `\d`→`\p{Nd}` + `(?<!\d)` lookbehind)
+3. `_compose_vision_text`(HWP 는 no-op 이지만 계약) · `synonym_inject` ENV 처리
+4. `_to_chunk_records` 조립 → **기준선 digest 직접 대조**
+
+`api/scripts/fixtures/entity_regex_baseline.json` 에 Python 정답을 떠 뒀다 —
+재측정 없이 바로 대조할 수 있다.
