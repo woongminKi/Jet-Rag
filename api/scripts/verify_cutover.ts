@@ -1,5 +1,15 @@
 /**
- * `/ingest/email` 컷오버 전후 점검 — **순서를 틀리면 라이브 이메일 채널이 죽는다.**
+ * 프록시 컷오버 전후 점검 — **순서를 틀리면 라이브 기능이 죽는다.**
+ *
+ * 지금 저장소에는 **코드는 이식됐지만 프록시를 아직 안 돌린** 경로가 둘 있다.
+ * 워커를 그냥 배포하면 둘 다 503 이 된다 — 이 스크립트가 그걸 먼저 막는다.
+ *
+ * | 경로 | 필요한 Edge secret |
+ * |---|---|
+ * | `POST /ingest/email` | `JETRAG_EMAIL_WEBHOOK_SECRET` |
+ * | `POST /payments/subscribe/*` · `POST /billing/run` | `JETRAG_KAKAOPAY_SECRET_KEY` · `JETRAG_BILLING_KEY_ENCRYPTION_KEY` (+ cron 은 `JETRAG_BILLING_CRON_SECRET`) |
+ *
+ * ── 아래는 이메일 경로 설명 ──
  *
  * Cloudflare Email Worker 는 `https://jetrag-api.woong-s.com/ingest/email` 로 쏘고,
  * 그 호스트가 프록시다. 프록시 규칙을 먼저 배포했는데 Edge 에 secret 이 없으면
@@ -109,6 +119,57 @@ if (p.backend === "railway") {
   console.log("  documents 에 source_channel='email' 행이 생기는지 본다.");
 } else {
   console.log(`  **어느 백엔드인지 못 가렸다** (backend=${p.backend}). 헤더를 다시 본다.`);
+  exitCode = 1;
+}
+
+// ─────────────────────────────────────────────────────────────
+// 결제 — 같은 방식. **틀린 secret 을 보내** 503(미설정)과 401(설정됨)을 가른다.
+// ─────────────────────────────────────────────────────────────
+const EDGE_PAY = "https://mpmtydudhojpukuuadrd.supabase.co/functions/v1/api-payments";
+
+console.log("\n── 3. 결제 Edge 함수 ──");
+const payReady = await fetch(`${EDGE_PAY}/payments/subscribe/ready`, { method: "POST" });
+const payReadyText = (await payReady.text()).slice(0, 160);
+console.log(`  POST /payments/subscribe/ready (비인증) → ${payReady.status} ${payReadyText}`);
+// 비인증이면 결제 키 유무와 무관하게 401 이어야 한다(라우팅 → 인증 → 게이트 순서).
+say(payReady.status === 401, `비인증은 401 (받은 값 ${payReady.status})`);
+
+const runRes = await fetch(`${EDGE_PAY}/billing/run`, {
+  method: "POST",
+  headers: { "x-billing-cron-secret": WRONG_SECRET },
+});
+const runText = (await runRes.text()).slice(0, 200);
+console.log(`  POST /billing/run (틀린 secret) → ${runRes.status} ${runText}`);
+const cronSecretSet = runRes.status === 401;
+const payKeysSet = runRes.status !== 503 || !runText.includes("billing cron");
+if (runRes.status === 503 && runText.includes("billing cron")) {
+  console.log("  **Edge 에 JETRAG_BILLING_CRON_SECRET 이 없다.**");
+} else if (runRes.status === 503) {
+  console.log("  **결제 키가 없다** (JETRAG_KAKAOPAY_SECRET_KEY / _BILLING_KEY_ENCRYPTION_KEY).");
+}
+const payGetRes = await fetch(`${EDGE_PAY}/billing/run`, { method: "GET" });
+await payGetRes.body?.cancel();
+say(payGetRes.status === 405, `GET /billing/run → 405 (받은 값 ${payGetRes.status})`);
+
+console.log("\n── 4. 프록시가 결제를 어디로 보내나 ──");
+const pProxy = await fetch(`${PROXY}/billing/run`, {
+  method: "POST",
+  headers: { "x-billing-cron-secret": WRONG_SECRET },
+});
+const pProxyText = (await pProxy.text()).slice(0, 120);
+const payBackend = backendOf(pProxy.headers);
+console.log(`  POST /billing/run → ${pProxy.status} [${payBackend}] ${pProxyText}`);
+
+console.log("\n── 배포해도 되는가 ──");
+const emailReady = secretSet;
+const payReadyOk = cronSecretSet && payKeysSet;
+console.log(`  이메일  Edge 준비 ${emailReady ? "완료" : "**미완료**"} · 프록시 ${p.backend}`);
+console.log(`  결제    Edge 준비 ${payReadyOk ? "완료" : "**미완료**"} · 프록시 ${payBackend}`);
+if (emailReady && payReadyOk) {
+  console.log("\n  두 경로 다 준비됐다. 워커를 배포해도 된다:");
+  console.log("    cd workers/api-proxy && npx wrangler deploy");
+} else {
+  console.log("\n  **워커를 배포하면 준비 안 된 쪽이 죽는다.** 위의 secret 부터 넣어라.");
   exitCode = 1;
 }
 

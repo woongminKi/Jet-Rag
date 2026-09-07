@@ -31,6 +31,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ExtractedSection } from "./hwp_extract.ts";
 import { composeResult } from "./image_parser.ts";
 import { renderPageForVision, SCAN_RENDER_DPI } from "./pdf_raster.ts";
+import { pyStrError } from "../pyerror.ts";
 import { pyStrip } from "../search/pystr.ts";
 import type { VisionCaption } from "./vision_caption.ts";
 import { captionImage, type VisionClientDeps } from "./vision_client.ts";
@@ -123,7 +124,7 @@ export async function runScanWindow(
         } catch (e) {
           const me = await recordCall(deps.client, deps.env, deps.nowMs, {
             success: false,
-            errorMsg: String(e),
+            errorMsg: pyStrError(e),
             sourceType: "pdf_scan",
             docId: opts.docId,
             page: pageIdx + 1,

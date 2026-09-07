@@ -31,6 +31,7 @@ import { checkCombined, checkDocPageCap, type BudgetStatus } from "./budget_guar
 import type { ExtractedSection } from "./hwp_extract.ts";
 import { composeResult } from "./image_parser.ts";
 import { renderPageForVision, SCAN_RENDER_DPI } from "./pdf_raster.ts";
+import { pyStrError } from "../pyerror.ts";
 import { pageArea, STEXT_OPTS, toPageDict } from "../pdf_dict.ts";
 import { pyStrip } from "../search/pystr.ts";
 import { scorePage } from "./vision_need_score.ts";
@@ -318,7 +319,7 @@ export async function runVisionWindow(
             } catch (e) {
               const me = await recordCall(deps.client, deps.env, deps.nowMs, {
                 success: false,
-                errorMsg: String(e),
+                errorMsg: pyStrError(e),
                 sourceType: "pdf_vision_enrich",
                 docId: opts.docId,
                 page: pageNum + 1,

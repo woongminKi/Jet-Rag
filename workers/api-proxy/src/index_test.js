@@ -75,6 +75,10 @@ const MIGRATED_METHOD_PATHS = new Set([
   "POST /documents/{doc_id}/reingest",
   "POST /documents/{doc_id}/reingest-missing",
   "POST /ingest/email",
+  "POST /payments/subscribe/ready",
+  "POST /payments/subscribe/approve",
+  "POST /payments/subscribe/cancel",
+  "POST /billing/run",
 ]);
 
 Deno.test("프록시가 Edge 로 보내는 원본 라우트는 전부 이관돼 있어야 한다", async () => {
@@ -139,6 +143,17 @@ Deno.test("`/documents` — 이관한 것만 Edge, 나머지는 Railway", () => 
   assertEquals(resolveTarget("/documents/url", "POST"), null);
   // 2026-09-07 전환 — 이메일 webhook. 경로가 정확히 일치해야 한다.
   assertEquals(resolveTarget("/ingest/email", "POST"), "api-documents");
+  // 결제 — POST 만. 다른 메서드·경로는 안 걸린다.
+  assertEquals(resolveTarget("/payments/subscribe/ready", "POST"), "api-payments");
+  assertEquals(resolveTarget("/payments/subscribe/approve", "POST"), "api-payments");
+  assertEquals(resolveTarget("/payments/subscribe/cancel", "POST"), "api-payments");
+  assertEquals(resolveTarget("/payments/subscribe/ready", "GET"), null);
+  assertEquals(resolveTarget("/payments/subscribe/other", "POST"), null);
+  assertEquals(resolveTarget("/payments", "POST"), null);
+  assertEquals(resolveTarget("/billing/run", "POST"), "api-payments");
+  assertEquals(resolveTarget("/billing/run", "GET"), null);
+  assertEquals(resolveTarget("/billing", "POST"), null);
+  assertEquals(resolveTarget("/billing/run/extra", "POST"), null);
   assertEquals(resolveTarget("/ingest/email", "GET"), null);
   assertEquals(resolveTarget("/ingest/email/extra", "POST"), null);
   assertEquals(resolveTarget("/ingest", "POST"), null);

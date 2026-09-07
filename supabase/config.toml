@@ -461,3 +461,11 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/deno.json"
 entrypoint = "./functions/api-documents/index.ts"
+
+# Phase 4 — 카카오페이 정기결제. `/payments/subscribe/*` 는 JWT, `/billing/run` 은
+# 공유 secret(cron 호출자에게 JWT 가 없다). 인증은 함수 안에서 경로별로 가른다.
+[functions.api-payments]
+enabled = true
+verify_jwt = false
+import_map = "./functions/deno.json"
+entrypoint = "./functions/api-payments/index.ts"

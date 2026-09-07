@@ -26,6 +26,7 @@ import type { VisionCaption } from "./vision_caption.ts";
 import { pyStr } from "./vision_caption.ts";
 import { captionImage, type VisionClientDeps } from "./vision_client.ts";
 import { recordCall } from "./vision_metrics.ts";
+import { pyStrError } from "../pyerror.ts";
 import { pyStrip } from "../search/pystr.ts";
 
 /**
@@ -192,7 +193,7 @@ export async function parseImage(
   } catch (e) {
     const me = await recordCall(deps.client, deps.env, deps.nowMs, {
       success: false,
-      errorMsg: String(e),
+      errorMsg: pyStrError(e),
       sourceType: "image",
       docId: opts.docId ?? null,
       page: null,

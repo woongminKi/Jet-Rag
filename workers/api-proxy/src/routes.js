@@ -69,7 +69,12 @@ export const ROUTES = [
   // 2026-09-07 전환 — 이메일 인제스트 webhook. `/documents` 아래가 아니지만 문서를
   // 만드는 경로라 같은 함수(`api-documents`)가 받는다.
   [/^\/ingest\/email$/, "api-documents", new Set(["POST"])],
-  // Phase 4 에서 해제: [/^\/payments/, "api-payments"], [/^\/billing/, "billing-run"],
+  // 2026-09-07 이식 완료 — **아직 배포하지 마라.**
+  // Edge 에 `JETRAG_KAKAOPAY_SECRET_KEY` · `JETRAG_BILLING_KEY_ENCRYPTION_KEY` 가
+  // 없으면 결제 3종이 503("결제 기능이 비활성 상태입니다")으로 죽는다.
+  // 순서: secret 설정 → `verify_cutover.ts` 로 확인 → 그 다음 이 워커 배포.
+  [/^\/payments\/subscribe\/(ready|approve|cancel)$/, "api-payments", new Set(["POST"])],
+  [/^\/billing\/run$/, "api-payments", new Set(["POST"])],
   // Phase 5 에서 해제: [/^\/email/, "email-webhook"],
 ];
 

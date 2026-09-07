@@ -62,6 +62,20 @@ export interface Settings {
   ownerUserId: string | null;
   /** 이메일 인제스트 webhook 공유 secret. **빈 값이면 기능 비활성(503)** 이다. */
   emailWebhookSecret: string;
+  /** 결제 provider. `kakaopay` 외 값이면 팩토리가 던진다. */
+  paymentProvider: string;
+  kakaopaySecretKey: string;
+  /** sandbox `TCSUBSCRIP`. 운영 CID 는 심사 후 ENV 로 교체한다. */
+  kakaopayCid: string;
+  /**
+   * SID(빌링키) Fernet 키. **빈 값이면 결제 기능 전체가 503** 이다 —
+   * 평문 SID 저장을 막으려는 fail-fast 다.
+   */
+  billingKeyEncryptionKey: string;
+  /** `POST /billing/run` 게이트. 빈 값이면 503. */
+  billingCronSecret: string;
+  /** KakaoPay redirect 목적지의 기준 URL. */
+  billingRedirectBase: string;
   authEnabled: boolean;
   supabaseJwtSecret: string | null;
   supabaseJwtAlgorithm: string;
@@ -151,6 +165,12 @@ export function loadSettings(read: EnvReader = (k) => Deno.env.get(k)): Settings
     // 접두어 없음 — §플랜 초안에서 고친 것 1 참조.
     defaultUserId: read("DEFAULT_USER_ID") ?? DEFAULT_USER_ID,
     emailWebhookSecret: read("JETRAG_EMAIL_WEBHOOK_SECRET") ?? "",
+    paymentProvider: read("JETRAG_PAYMENT_PROVIDER") ?? "kakaopay",
+    kakaopaySecretKey: read("JETRAG_KAKAOPAY_SECRET_KEY") ?? "",
+    kakaopayCid: read("JETRAG_KAKAOPAY_CID") ?? "TCSUBSCRIP",
+    billingKeyEncryptionKey: read("JETRAG_BILLING_KEY_ENCRYPTION_KEY") ?? "",
+    billingCronSecret: read("JETRAG_BILLING_CRON_SECRET") ?? "",
+    billingRedirectBase: read("JETRAG_BILLING_REDIRECT_BASE") ?? "https://jetrag.woong-s.com",
     ownerUserId: optional(read, "OWNER_USER_ID"),
     authEnabled: bool(read, "JETRAG_AUTH_ENABLED", false),
     supabaseJwtSecret: aliased(read, "SUPABASE_JWT_SECRET", "JETRAG_SUPABASE_JWT_SECRET") || null,
