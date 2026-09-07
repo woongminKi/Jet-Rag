@@ -1788,3 +1788,246 @@ sub-progress 비율, 경계(`total<=0` · `current>total` · 문자열 값 · �
 | HWPML / hwpx / docx / pptx extract | ⬜ |
 | chunk 조각 c2 (`synonym_inject`) | ⬜ |
 | `/payments` · `/billing` · `/email` (Phase 4~5) | ⬜ |
+
+---
+
+## 31. Phase 4 — vision 이식 (1) 판정·캡셔너·입력 이미지
+
+`reingest` 를 열려다 막혔다. 재인제스트는 vision 유래 청크 213 개(6 문서)를 지우고
+다시 만드는데, vision 이 안 옮겨져 있으면 **그게 그냥 사라진다.** 그래서 vision 을 먼저 했다.
+
+운영 ENV 를 확인했다 — `JETRAG_PDF_VISION_ENRICH=true`. **켜져 있는 기능이다.**
+
+### 31.1 `vision_need_score` (`5f9ee89`)
+
+어느 페이지에 vision 을 태울지 정하는 OR 규칙 5 종. `entity` 는 가중치 0 으로 규칙에서
+**일부러 빠져 있다**(deprecated). 합성 53 건 + 실자산 154 페이지 전부 일치, 트리거 5 종
+모두 발화.
+
+### 31.2 `vision_caption` (`3184e70`)
+
+Gemini 응답 파싱 + 단가. 파싱 36 건 + 거부 6 건 + 단가 9 건 일치.
+
+단가를 기억으로 적었다가 `gemini-2.5-pro`(표에 없는 모델)를 지어내고 2.0 계열 3 종을
+빠뜨렸다. 그대로 뒀으면 2.0 모델에서 fallback 단가가 적용돼 `estimated_cost` 가 3~6 배
+부풀었다. **원본 `factory._GEMINI_PRICING` 을 보고 옮겼다.**
+
+### 31.3 입력 이미지 생성 (`66105d8`) — 여기가 제일 까다로웠다
+
+vision 은 150 DPI PNG 를 **그대로 보내지 않는다.** Pillow 로 단변 1024px LANCZOS
+축소 후 JPEG q85 로 다시 구운 바이트를 넘긴다. Gemini 는 비결정적이라 "이미지가 좀
+달라도 캡션이 같은가" 를 **사후에 측정할 수 없다.** 그래서 모델 입력을 원본과 같게
+만들어 질문 자체를 없앴다.
+
+후보 3 개를 실측으로 비교했다.
+
+| 후보 | 크기 | 원본 대비 | 판정 |
+|---|---|---|---|
+| `mupdf.Image#toPixmap(w,h)` | 요청 무시, 원본 크기 반환 | — | 탈락 |
+| 목표 배율로 직접 렌더 | 높이 ±1 | PSNR 26dB | 탈락 |
+| **150dpi 렌더 + Pillow LANCZOS 포팅** | 정확 일치 | **바이트 완전 일치** | 채택 |
+
+`Resample.c` 를 그대로 옮겼다 — 2 패스, **8 비트 중간값**(float 로 쭉 계산하면 갈린다),
+22 비트 고정소수점 반올림. 12/12 Pillow 와 바이트 완전 일치, 64~159ms.
+음성 대조 12/12 검출 — **440 만 바이트 중 1 바이트 변조도 잡는다.**
+
+래스터화 자체는 8 페이지 중 7 페이지 바이트 완전 일치. 나머지 1 페이지는 표 괘선
+1 줄(y=468, 그 영역 텍스트 0 자)만 델타 10/255 — MuPDF 1.27.0 vs 1.27.2 안티앨리어싱.
+
+**알려진 차이 — 크로마 서브샘플링.** Pillow 4:2:0 vs mupdf 4:4:4. `asJPEG(quality,
+invertCMYK)` 에 이걸 바꿀 인자가 없다. 다만 수치가 방향을 분명히 말한다:
+
+| | py↔ts 차이 | py↔무손실 | ts↔무손실 |
+|---|---|---|---|
+| 최소 | 42.9dB | 39.5dB | 40.5dB |
+| 최대 | ∞ | 41.9dB | 45.2dB |
+
+인코더 차이가 **양쪽이 공유하는 JPEG q85 손실보다 작고**, 모든 케이스에서 포팅 쪽이
+실제 페이지에 더 가깝다. 크기가 같으므로 Gemini 토큰 비용도 동일하다. 맞추려면 JPEG
+인코더를 직접 포팅해야 하는데 결과가 더 나쁜 이미지다 — 안 한다.
+
+---
+
+## 32. Phase 4 — vision 이식 (2) 가드·캐시·메트릭
+
+### 32.1 `budget_guard` (`3365248`)
+
+doc / daily / 24h_sliding / page_cap 4 종. DB 조회가 깨지면 통과시키는 원본의 graceful
+정책도 그대로. 337 → **343 건 대조 0 불일치**(SUM 만 스텁, 판정·분기·한국어 메시지는
+실제 코드).
+
+`pynum.ts` 에 헬퍼 2 개를 추가했다. 둘 다 JS 기본 동작이 **조용히 틀리는** 자리다.
+
+- `pyFloat` — `Number("")` 은 0, `Number("0x10")` 은 16 인데 Python 은 예외다.
+  비용 SUM 에 들어가는 값이라 한 건만 어긋나도 한도 판정이 뒤집힌다.
+- `pyFormatF` — `toFixed` 는 절반에서 올리고 Python `.4f` 는 짝수 쪽으로 간다
+  (`f"{0.00015:.4f}"` = `"0.0001"`). 한도 메시지가 `warnings[]` 로 문서에 남는다.
+
+**대조가 실제 차이 2 건을 잡았다** — `float("٣")` = 3.0(유니코드 십진 숫자),
+`float("\x851")` = 1.0(U+0085 NEL 을 JS `\s` 가 공백으로 안 본다). 둘 다 고쳤다.
+
+읽다가 `budget_guard` 의 ISO 생성이 "마이크로초 0 이면 소수부 생략" 규칙을 빠뜨린 것도
+발견해 이미 있던 `pyIsoUtc` 로 교체하고 그 분기를 대조에 추가했다.
+
+### 32.2 캐시·메트릭·결과 합성 (`a362c9e`)
+
+`vision_page_cache` 3 튜플 캐시, `vision_usage_log` 적재, `_compose_result`.
+174 건 대조 0 불일치.
+
+in-memory 카운터는 **안 옮겼다** — stats 이관 때 이미 DB 기반으로 정리됐고 Edge 는
+상주 프로세스가 아니다. fire-and-forget 도 불가(BackgroundTasks 없음)라 await 하지만,
+vision 호출 1~3 초 I/O 뒤 수십 ms 고 I/O 는 CPU 예산에 안 잡힌다.
+
+막은 함정: `raw.get("ocr_text") or ""`(빈 배열·빈 dict 가 Python 은 falsy, JS 는 truthy),
+`str(v)` vs `String(v)`(컨테이너 표기 `[1, 2]` vs `1,2`).
+
+**검증 도구 결함도 1 건 고쳤다** — 테스트 데이터의 U+0085 가 출력에 실리면 Python
+`splitlines()` 가 그걸 줄바꿈으로 쪼갠다. stdout 대신 파일로 주고받게 바꿨다.
+
+---
+
+## 33. **`toPageDict` 의 span 분할이 틀렸다** (`059d945`)
+
+결선 대조를 돌렸더니 Python 이 sample-report 12 페이지를 건너뛰는데 포팅은 안 건너뛰었다.
+`needs_vision` 이 갈렸다.
+
+원본을 열어 봤다. 같은 블록 수·줄 수인데 **span 분할이 달랐다** — `< 요약 6/8 > ` 가
+PyMuPDF 1 개 / 포팅 4 개. mupdf.js **원시 stext 는 PyMuPDF 와 똑같이 1 개를 준다.**
+쪼갠 건 내 `toPageDict` 였다.
+
+글자별로 재 보니 폰트 **포인터**가 달랐다 — `BCDLEE+MalgunGothic` 과
+`BCDEEE+MalgunGothic`, 같은 글꼴의 다른 서브셋 인스턴스다. PyMuPDF `JM_make_spanlist`
+를 읽어 규칙 전체를 옮겼다: **(정규화 폰트명, size, argb, flags)**. 정규화는
+`JM_font_name` 그대로 6 자 + `+` 접두사만 뗀다.
+
+### 33.1 실측 — 151 페이지 표본
+
+| | 수정 전 | 수정 후 |
+|---|---|---|
+| vision 판정 뒤집힘 | 7/151 | **1/151** |
+| span 불일치 | 3,625 | 2,029 |
+
+### 33.2 남은 1 건은 재현 불가다
+
+PyMuPDF 는 `char_flags` 의 **`FZ_STEXT_SYNTHETIC_LARGE`(512, MuPDF 가 넓은 간격을
+공백으로 채워 넣었다는 표시)** 와 `bidi` 로도 span 을 가른다. mupdf.js 1.27.0 walk 의
+`onChar` 인자는 `(c, origin, font, size, quad, color)` **6 개뿐**이라 그 값이 없다.
+
+문자 폭으로 대신 판정할 수 있는지 공백 18,780 개를 쟀다 — SYNTHETIC_LARGE 는 폭/size
+0.300~0.790, 일반 공백은 0.000~1.334 로 **겹친다.** 임계 0.30 에서 일반 공백
+9,305/12,444 가 오분류된다. 폭으로는 못 가른다.
+
+영향은 실측 1 페이지(보건의료 p12) 에서 캡션 1 건이 안 붙는 것이다.
+`pdf_dict_known_divergence.json` 에 기준값으로 고정해 회귀만 막는다.
+
+### 33.3 이 결함이 기존 검사기를 빠져나간 이유 — 검사기를 하나 더 만들었다
+
+- `verify_pdf_extract_parity` : PyMuPDF dict 를 **양쪽에 똑같이 먹여** 이후 로직만 비교
+- `verify_pdf_pipeline_baseline` : 최종 청크 텍스트만 비교 — span 경계는 이어 붙이면 사라진다
+
+그 사이로 빠져나갔다. `verify_pdf_dict_parity.py` 가 그 자리를 메운다 — 줄·span 경계 +
+**판정 뒤집힘 수**까지 본다. 회귀: pdf_extract FAIL 0, 파이프라인 baseline 8 건 전부
+기준값 동일, vision_need_score 154p FAIL 0.
+
+> 누락 점검 8 번("검출기의 판정 규칙은 원본을 본 뒤에 쓴다")의 변형이다. 검출기는
+> 원본을 보고 썼지만, **검출기의 입력을 만드는 단계**를 아무도 안 봤다.
+
+---
+
+## 34. Phase 4 — vision 스테이지 신설 (`4da803f`). **사슬이 끝까지 이어졌다**
+
+`업로드 → extract(10p/태스크) → vision(4p/태스크) → chunk → load → embed`
+
+### 34.1 왜 별도 스테이지인가 (사용자 승인)
+
+1. `reingest-missing` 이 **vision 전용** 경로다. 텍스트 재추출 없이 누락 페이지만
+   채워야 하는데 extract 안에 묶여 있으면 그게 안 된다.
+2. CPU 예산이 단계별로 분리된다. `renderPageForVision` 이 **282 페이지 표본에서
+   중앙 157~192ms / 최대 271ms** 라 Edge 2 초 한도에서 태스크당 4 페이지가 상한이다.
+
+`ingest_artifacts.stage` 가 자유 TEXT 라 **마이그레이션은 필요 없었다.**
+
+### 34.2 섹션 순서가 계약이다
+
+원본은 PyMuPDF 섹션을 전부 깔고 그 뒤에 vision 섹션을 붙인다(`sections =
+list(base.sections)` 로 시작). 그래서 아티팩트를 `stage='extract'` / `stage='vision'`
+으로 나누고 chunk 가 extract 전부 → vision 전부 순으로 이어 붙인다. 창 단위로 섞이면
+순서가 깨진다 — 테스트 2 건으로 고정했다.
+
+누적 카운터는 vision 아티팩트에 실어 다음 태스크가 이어받는다(기존 `next_title` carry 방식).
+
+### 34.3 실측 — 결선 전체 93 건 0 불일치
+
+Gemini 호출만 양쪽에 같은 스텁을 물리고 나머지는 실제 코드로 돌렸다. `needs_vision`
+OR 규칙, cap 판정과 한국어 메시지, 섹션 제목 합성, `raw_text` 순서까지 포함.
+page cap 3/1 케이스로 cap 도달 경로도 태웠다. 음성 대조 검출 확인.
+
+### 34.4 원본과 다른 점
+
+- **sweep 범위** — 원본은 문서 전체 1 차 → 실패분 2 차. 창 단위라 창 안에서 sweep 한다.
+  페이지당 최대 시도 횟수는 같아 결과 집합은 같고, 비용 cap 이 딱 그 사이에 걸릴 때만
+  어느 페이지가 잘리는지가 갈린다.
+- **cap 메시지의 "남은 페이지 N"** — 1 차 sweep 은 원본과 같은 값, 2 차는 창 기준.
+- **렌더 재사용** — 원본은 재시도마다 다시 굽는다. 같은 페이지는 결정적으로 같은
+  바이트가 나오므로 창 안에서 재사용한다. 관찰 결과는 같고 CPU 만 아낀다.
+- **`called_count`** — 원본은 캐시 조회 **전에** 올려서 **캐시 hit 도 page cap 을 깎는다.**
+  의도로 보이진 않지만 관찰되는 값이라 그대로 맞췄다. 렌더만 뒤로 미뤘다.
+
+### 34.5 `stage_progress` 는 vision 전용이었다
+
+원본에서 `update_stage_progress` 를 부르는 곳은 `_enrich_pdf_with_vision` 페이지
+루프**뿐**이다. `/documents/active` 의 진행 카드와 ETA 가 그 유일한 공급원이라 함께 옮겼다.
+안 옮겼으면 진행 표시가 통째로 비었을 것이다.
+
+### 34.6 커밋
+
+| 해시 | 내용 |
+|---|---|
+| `4da803f` | vision 스테이지 신설 — 결선 |
+| `059d945` | `toPageDict` span 분할 수정 |
+| `a362c9e` | 캐시·메트릭·결과 합성 |
+| `3365248` | `budget_guard` 4 종 가드 |
+| `66105d8` | 래스터화 + LANCZOS 축소 |
+| `3184e70` | Gemini Vision 캡셔너 |
+| `5f9ee89` | `vision_need_score` |
+
+### 34.7 검증 종합
+
+| 검사 | 결과 |
+|---|---|
+| `verify_vision_enrich_parity` | 93 건 0 불일치 (음성 대조 검출) |
+| `verify_pdf_dict_parity` | 기준값 이내 (뒤집힘 1/151) |
+| `verify_image_normalize_parity` | 12/12 바이트 일치 (음성 12/12) |
+| `verify_vision_input_parity` | 크기·mime 10/10, 픽셀 2 건 완전 일치 |
+| `verify_budget_guard_parity` | 343 건 0 불일치 |
+| `verify_vision_compose_parity` | 174 건 0 불일치 |
+| `verify_pdf_raster_parity` | 8 페이지 중 7 바이트 일치 |
+| `verify_pdf_extract_parity` | FAIL 0 (회귀 없음) |
+| `verify_pdf_pipeline_baseline` | 8 건 전부 기준값 동일 |
+| `deno test _shared/` | 204 passed |
+
+### 34.8 아직 안 한 것 — 배포·활성화
+
+코드는 커밋·푸시했지만 **아직 배포하지 않았다.** 그리고 Edge secret 에
+`JETRAG_PDF_VISION_ENRICH` 가 없으면 `enabled=false` 라 extract 가 chunk 로 바로
+가므로 **현재 동작은 그대로다**(안전 기본값).
+
+라이브로 켜려면 둘 다 필요하다 — **요금이 발생하므로 사용자 결정 사항이다.**
+
+| 항목 | 상태 |
+|---|---|
+| `supabase functions deploy api-ingest-worker` | ⬜ |
+| Edge secret `JETRAG_PDF_VISION_ENRICH=true` | ⬜ (켜면 페이지당 ~$0.0008) |
+| Edge secret `GEMINI_API_KEY` | ⬜ 확인 필요 |
+
+### 34.9 남은 것
+
+| 항목 | 상태 |
+|---|---|
+| `POST /documents/{id}/reingest` · `reingest-missing` | ⬜ — **차단 해소됨**, 바로 가능 |
+| `_reroute_pdf_to_image` (스캔 PDF) | ⬜ — 같은 기계 재사용, `image_parser` OCR 경로 |
+| `POST /documents/url` | ⬜ — URL 파서 필요 |
+| `tag_summarize` · `doc_embed` · `chunk_filter` · `content_gate` · `dedup` | ⬜ |
+| HWPML / hwpx / docx / pptx extract | ⬜ |
+| chunk 조각 c2 (`synonym_inject`) | ⬜ |
+| `/payments` · `/billing` · `/email` (Phase 4~5) | ⬜ |
