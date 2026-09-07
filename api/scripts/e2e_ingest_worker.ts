@@ -31,6 +31,7 @@ import { drainOnce } from "../../supabase/functions/_shared/ingest/worker.ts";
 import { makeExtractHandler } from "../../supabase/functions/_shared/ingest/handlers/extract.ts";
 import { makeChunkHandler } from "../../supabase/functions/_shared/ingest/handlers/chunk.ts";
 import { makeLoadHandler } from "../../supabase/functions/_shared/ingest/handlers/load.ts";
+import { makeEmbedHandler } from "../../supabase/functions/_shared/ingest/handlers/embed.ts";
 
 function arg(name: string, dflt?: string): string | undefined {
   const i = Deno.args.indexOf(`--${name}`);
@@ -139,6 +140,10 @@ try {
     extract: makeExtractHandler({ client, bucket, pagesPerTask }),
     chunk: makeChunkHandler({ client }),
     load: makeLoadHandler({ client }),
+    embed: makeEmbedHandler({
+      client,
+      token: Deno.env.get("DEEPINFRA_API_TOKEN") ?? env["DEEPINFRA_API_TOKEN"] ?? "",
+    }),
   };
 
   /** Edge `/drain` 1 회. 반환 모양은 `drainOnce` 와 같다. */
@@ -248,6 +253,16 @@ try {
       console.log("  **적재 수가 청크 수와 다르다**");
       exitCode = 1;
     }
+    // embed 결과 — dense_vec 이 채워져야 dense 검색이 된다.
+    const { count: embedded } = await client
+      .from("chunks").select("id", { count: "exact", head: true })
+      .eq("doc_id", cloneId).not("dense_vec", "is", null);
+    console.log(`  dense_vec 채워짐 ${embedded}/${p.chunk_count}`);
+    if (embedded !== p.chunk_count) {
+      console.log("  **임베딩이 덜 됐다**");
+      exitCode = 1;
+    }
+
     // 표본 한 행을 실제로 열어 본다 — 개수만 맞고 내용이 비면 소용없다.
     const { data: sample } = await client
       .from("chunks").select("chunk_idx, text, page, section_title, char_range, metadata")

@@ -5,7 +5,7 @@
  * - part 를 **하나만** 읽는다 (전부 읽으면 SK 최대 문서에서 13MB 를 든다)
  * - upsert 를 batch 로 쪼갠다 (Supabase statement_timeout)
  * - `on_conflict` 는 `doc_id,chunk_idx` — 원본 `upsert_chunks` 와 같아야 한다
- * - 마지막 part 에서는 아무것도 enqueue 하지 않는다 (다음 stage 미이식)
+ * - 마지막 part 에서는 `embed` 를 넣는다 (dense_vec 을 채워야 검색이 된다)
  * - 없는 part 는 **조용히 넘기지 않는다**
  */
 
@@ -116,14 +116,14 @@ Deno.test("남은 part 가 있으면 다음을 큐에 넣는다", async () => {
   assertEquals(sends, [{ job_id: "j1", doc_id: "d1", stage: "load", from: 1 }]);
 });
 
-Deno.test("마지막 part 면 아무것도 넣지 않는다 — 다음 stage 가 아직 없다", async () => {
+Deno.test("마지막 part 면 embed 를 넣는다 — dense_vec 이 NULL 이면 검색이 반만 된다", async () => {
   const { client, sends } = fakeClient({
     2: { part: 2, total_parts: 3, records: [rec(9)] },
   });
   // deno-lint-ignore no-explicit-any
   const h = makeLoadHandler({ client: client as any });
   await h({ ...TASK, from: 2 }, {} as never);
-  assertEquals(sends, []);
+  assertEquals(sends, [{ job_id: "j1", doc_id: "d1", stage: "embed" }]);
 });
 
 Deno.test("records 가 비어도 던지지 않는다 (빈 문서)", async () => {
@@ -134,13 +134,15 @@ Deno.test("records 가 비어도 던지지 않는다 (빈 문서)", async () => 
   const h = makeLoadHandler({ client: client as any });
   await h(TASK, {} as never);
   assertEquals(upserts.length, 0);
-  assertEquals(sends, []);
+  // 빈 문서라도 embed 는 넣는다. embed 핸들러가 "남은 청크 없음" 으로 즉시 끝낸다 —
+  // 여기서 안 넣으면 잡이 조용히 멈춘 것처럼 보인다.
+  assertEquals(sends, [{ job_id: "j1", doc_id: "d1", stage: "embed" }]);
 });
 
-Deno.test("total_parts 가 없으면 1 로 본다", async () => {
+Deno.test("total_parts 가 없으면 1 로 본다 — 곧장 embed 로 넘어간다", async () => {
   const { client, sends } = fakeClient({ 0: { records: [rec(0)] } });
   // deno-lint-ignore no-explicit-any
   const h = makeLoadHandler({ client: client as any });
   await h(TASK, {} as never);
-  assertEquals(sends, []);
+  assertEquals(sends, [{ job_id: "j1", doc_id: "d1", stage: "embed" }]);
 });

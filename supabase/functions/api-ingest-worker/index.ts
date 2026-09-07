@@ -13,8 +13,9 @@
  * PDF 는 `current_title` 이 문서 전체 sticky 라 **순차**여야 해서, 범위를 한꺼번에
  * 넣지 않고 직전 범위가 끝날 때 다음 하나만 넣는다.
  * chunk 는 extract 산출물을 전부 모아 청크 레코드를 만들고 `CHUNKS_PER_ARTIFACT` 개씩
- * 쪼개 저장한다. load 는 그 part 를 하나씩 `chunks` 테이블에 upsert 한다.
- * 거기서 멈춘다 — `embed` 이후 핸들러가 없어서 넣는 순간 archive + 잡 failed 가 된다.
+ * 쪼개 저장한다. load 는 그 part 를 하나씩 `chunks` 테이블에 upsert 하고, 마지막에
+ * embed 를 넣는다. embed 는 `dense_vec` 이 NULL 인 청크를 BGE-M3 로 채운다.
+ * 거기서 멈춘다 — `tag_summarize` 이후 핸들러가 없어서 넣는 순간 archive + 잡 failed 다.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -24,6 +25,7 @@ import { createServiceClient } from "../_shared/db.ts";
 import { jsonResponse, methodNotAllowed, notFound, toResponse } from "../_shared/errors.ts";
 import { drainLoop, type TaskHandler } from "../_shared/ingest/worker.ts";
 import { makeChunkHandler } from "../_shared/ingest/handlers/chunk.ts";
+import { makeEmbedHandler } from "../_shared/ingest/handlers/embed.ts";
 import { makeExtractHandler } from "../_shared/ingest/handlers/extract.ts";
 import { makeLoadHandler } from "../_shared/ingest/handlers/load.ts";
 
@@ -32,9 +34,9 @@ const FUNCTION_PREFIX = "/api-ingest-worker";
 /**
  * stage → 핸들러.
  *
- * `extract` · `chunk` · `load` 셋이다. 그 뒤(`chunk_filter` · `embed` …)는 아직 안 옮겼고,
- * **없는 stage 를 큐에 넣으면 즉시 archive + 잡 failed** 가 되므로(`worker.ts` 계약)
- * load 핸들러는 마지막 part 에서 아무것도 enqueue 하지 않는다.
+ * `extract` · `chunk` · `load` · `embed` 넷이다. 그 뒤(`chunk_filter` · `tag_summarize` …)는
+ * 아직 안 옮겼고, **없는 stage 를 큐에 넣으면 즉시 archive + 잡 failed** 가 되므로
+ * (`worker.ts` 계약) embed 핸들러는 남은 청크가 없으면 아무것도 enqueue 하지 않는다.
  */
 function buildHandlers(
   settings: { supabaseStorageBucket: string },
@@ -44,6 +46,7 @@ function buildHandlers(
     extract: makeExtractHandler({ client, bucket: settings.supabaseStorageBucket }),
     chunk: makeChunkHandler({ client }),
     load: makeLoadHandler({ client }),
+    embed: makeEmbedHandler({ client, token: Deno.env.get("DEEPINFRA_API_TOKEN") ?? "" }),
   };
 }
 

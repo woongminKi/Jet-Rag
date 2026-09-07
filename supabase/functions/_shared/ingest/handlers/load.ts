@@ -13,9 +13,12 @@
  * Supabase `statement_timeout`(약 30~60s) 안에 들어가야 한다. part 당 1,000 개면
  * 한 번에 보내기엔 크다.
  *
- * ## 마지막 part 에서 잡을 completed 로 만들지 않는다
- * `embed` · `doc_embed` · `tag_summarize` 가 아직 없다. `chunks.dense_vec` 이 NULL 인
- * 상태라 검색이 안 된다 — 완료가 아니다. 사실대로 running 에 둔다.
+ * ## 마지막 part 에서 `embed` 를 넣는다
+ * `chunks` 행은 들어갔지만 `dense_vec` 이 NULL 이라 아직 dense 검색이 안 된다.
+ * 마지막 part 를 적재한 뒤 `embed` 를 큐에 넣어 벡터를 채우게 한다.
+ *
+ * 잡을 `completed` 로는 만들지 않는다 — `tag_summarize` · `doc_embed` 등이 아직
+ * 없으므로 완료가 아니다. 사실대로 running 에 둔다.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -90,17 +93,11 @@ export function makeLoadHandler(deps: LoadDeps): TaskHandler {
       }
     }
 
-    // 남은 part 가 있으면 이어간다. 없으면 여기서 멈춘다 — 다음 단계는 미이식이다.
-    if (part + 1 < totalParts) {
-      const { error: sendErr } = await deps.client.rpc("ingest_queue_send", {
-        payload: {
-          job_id: task.job_id,
-          doc_id: task.doc_id,
-          stage: "load",
-          from: part + 1,
-        },
-      });
-      if (sendErr) throw new Error(`다음 load part enqueue 실패: ${sendErr.message}`);
-    }
+    // 남은 part 가 있으면 이어가고, 마지막이면 embed 로 넘긴다.
+    const next = part + 1 < totalParts
+      ? { job_id: task.job_id, doc_id: task.doc_id, stage: "load", from: part + 1 }
+      : { job_id: task.job_id, doc_id: task.doc_id, stage: "embed" };
+    const { error: sendErr } = await deps.client.rpc("ingest_queue_send", { payload: next });
+    if (sendErr) throw new Error(`다음 작업 enqueue 실패 (${next.stage}): ${sendErr.message}`);
   };
 }
