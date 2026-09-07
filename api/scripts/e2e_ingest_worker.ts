@@ -44,6 +44,14 @@ if (!docId) {
 }
 const pagesPerTask = Number(arg("pages", "10"));
 const keep = Deno.args.includes("--keep");
+/**
+ * `--edge`: 드레인을 **배포된 Edge 함수**에 HTTP 로 시킨다.
+ *
+ * 로컬 Deno 통과는 Edge 통과의 근거가 아니다(Phase 0 교훈 — `@ohah/hwpjs` 가 로컬은
+ * 되고 Edge 에서 죽었다). mupdf WASM 24MB 가 Edge 런타임에서 뜨는지는 여기서만 안다.
+ * 준비·검증·정리는 그대로 로컬에서 하고 **드레인만** 바꾼다.
+ */
+const useEdge = Deno.args.includes("--edge");
 
 // --- .env 에서 자격증명 (셸 환경변수가 있으면 그쪽 우선) ---
 const env: Record<string, string> = {};
@@ -128,12 +136,27 @@ try {
     load: makeLoadHandler({ client }),
   };
 
+  /** Edge `/drain` 1 회. 반환 모양은 `drainOnce` 와 같다. */
+  async function drainViaEdge() {
+    const res = await fetch(`${url}/functions/v1/api-ingest-worker/drain`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    });
+    const body = await res.text();
+    if (!res.ok) throw new Error(`Edge drain ${res.status}: ${body.slice(0, 400)}`);
+    return JSON.parse(body) as Awaited<ReturnType<typeof drainOnce>>;
+  }
+  const drain = useEdge
+    ? drainViaEdge
+    : () => drainOnce({ client, handlers, batch: 1, vtSeconds: 120 });
+  console.log(`  드레인 경로: ${useEdge ? "**배포된 Edge 함수**" : "로컬 Deno"}`);
+
   const t0 = performance.now();
   let rounds = 0;
   let lastStage = "";
   // 넉넉한 상한 — 무한 루프 방지용이지 예상 횟수가 아니다.
   for (; rounds < 400; rounds++) {
-    const r = await drainOnce({ client, handlers, batch: 1, vtSeconds: 120 });
+    const r = await drain();
     if (r.read === 0) break;
     if (r.errors.length) {
       console.log(`  [${rounds}] **오류** ${JSON.stringify(r.errors)}`);

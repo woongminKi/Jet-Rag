@@ -7,7 +7,7 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { drainOnce, MAX_ATTEMPTS, type QueueMessage } from "./worker.ts";
+import { drainLoop, drainOnce, MAX_ATTEMPTS, type QueueMessage, type TaskPayload } from "./worker.ts";
 
 interface Call {
   fn: string;
@@ -152,4 +152,112 @@ Deno.test("여러 건을 각각 독립 처리한다 (하나 실패해도 나머�
     },
   });
   assertEquals([r.read, r.ok, r.retried, r.archived], [3, 1, 1, 1]);
+});
+
+// ---------------------------------------------------------------------------
+// drainLoop — 예산 안에서 여러 판을 돈다
+// ---------------------------------------------------------------------------
+
+/** `ingest_queue_read` 가 대본대로 응답하는 클라이언트. */
+function scriptedClient(rounds: (TaskPayload | null)[]) {
+  let i = 0;
+  const seen: string[] = [];
+  const client = {
+    rpc(name: string, _args: Record<string, unknown>) {
+      if (name === "ingest_queue_read") {
+        const t = rounds[i++] ?? null;
+        return Promise.resolve({
+          data: t ? [{ msg_id: i, read_ct: 1, enqueued_at: "", vt: "", message: t }] : [],
+          error: null,
+        });
+      }
+      return Promise.resolve({ data: true, error: null });
+    },
+    from() {
+      return { update: () => ({ eq: () => Promise.resolve({ error: null }) }) };
+    },
+  };
+  return { client, seen };
+}
+
+const T = (stage: string): TaskPayload => ({ job_id: "j", doc_id: "d", stage });
+
+Deno.test("drainLoop — 큐가 비면 멈춘다", async () => {
+  const { client } = scriptedClient([T("a"), T("a"), null]);
+  const handled: string[] = [];
+  const r = await drainLoop({
+    // deno-lint-ignore no-explicit-any
+    client: client as any,
+    handlers: { a: () => (handled.push("a"), Promise.resolve()) },
+  });
+  assertEquals(handled.length, 2);
+  assertEquals(r.ok, 2);
+  // 3번째 판에서 read 0 을 보고 멈춘다.
+  assertEquals(r.rounds, 3);
+});
+
+Deno.test("drainLoop — 예산을 넘기면 멈춘다", async () => {
+  // 100 판 분량을 줘도 예산이 끊는다.
+  const { client } = scriptedClient(Array.from({ length: 100 }, () => T("slow")));
+  let n = 0;
+  const r = await drainLoop({
+    // deno-lint-ignore no-explicit-any
+    client: client as any,
+    handlers: {
+      slow: async () => {
+        n++;
+        await new Promise((res) => setTimeout(res, 12));
+      },
+    },
+    budgetMs: 40,
+  });
+  // 판당 약 12ms → 40ms 예산이면 서너 판.
+  assertEquals(n === r.ok, true);
+  assertEquals(r.rounds >= 2 && r.rounds <= 8, true, `rounds=${r.rounds}`);
+  assertEquals(r.elapsedMs >= 40, true, `elapsed=${r.elapsedMs}`);
+});
+
+Deno.test("drainLoop — 판 도중에는 끊지 않는다", async () => {
+  // 예산 0 이어도 **첫 판은 끝까지** 돈다. 중간에 자르면 산출물이 반만 남는다.
+  const { client } = scriptedClient([T("a"), T("a")]);
+  let done = 0;
+  const r = await drainLoop({
+    // deno-lint-ignore no-explicit-any
+    client: client as any,
+    handlers: {
+      a: async () => {
+        await new Promise((res) => setTimeout(res, 5));
+        done++;
+      },
+    },
+    budgetMs: 0,
+  });
+  assertEquals(done, 1);
+  assertEquals(r.rounds, 1);
+  assertEquals(r.ok, 1);
+});
+
+Deno.test("drainLoop — maxRounds 가 무한 루프를 막는다", async () => {
+  const { client } = scriptedClient(Array.from({ length: 1000 }, () => T("fast")));
+  const r = await drainLoop({
+    // deno-lint-ignore no-explicit-any
+    client: client as any,
+    handlers: { fast: () => Promise.resolve() },
+    budgetMs: 60_000,
+    maxRounds: 7,
+  });
+  assertEquals(r.rounds, 7);
+});
+
+Deno.test("drainLoop — 판별 집계를 합산한다", async () => {
+  const { client } = scriptedClient([T("a"), T("모르는단계"), T("a"), null]);
+  const r = await drainLoop({
+    // deno-lint-ignore no-explicit-any
+    client: client as any,
+    handlers: { a: () => Promise.resolve() },
+  });
+  assertEquals(r.read, 3);
+  assertEquals(r.ok, 2);
+  assertEquals(r.archived, 1); // 핸들러 없는 stage 는 보관
+  assertEquals(r.errors.length, 1);
 });

@@ -9,14 +9,16 @@
  * 남은 일은 큐에 다시 넣는다. 작업 단위는 실측으로 정했다 — vision 래스터화가 붙는 PDF
  * 페이지는 최악 443ms 라 **요청당 1~2 페이지**, 텍스트만이면 10 페이지.
  *
- * ## 아직 핸들러가 없다 (의도적)
- * `extract` 를 페이지 단위로 쪼개려면 **중간 산출물을 어딘가 둬야 한다.** 청킹이
+ * ## 작업은 순차 의존이다
+ * `extract` 를 페이지 단위로 쪼개면 중간 산출물을 둘 곳이 필요하다. 청킹이
  * `_merge_short_sections` 로 **인접 섹션을 병합**하기 때문에(원본 `chunk.py:96`), 페이지별로
  * 따로 청킹하면 경계에서 병합이 안 일어나 청크가 달라진다. 즉 "페이지 추출 → 전부 모아
- * 청킹" 이어야 하고, 그 중간 텍스트를 보관할 자리가 필요하다. 그 설계 전에 핸들러를 쓰면
- * 되돌리게 된다.
+ * 청킹" 이어야 한다. 그 자리가 `ingest_artifacts` 다(마이그 027).
  *
- * 그래서 이 골격은 **큐 왕복·재시도·상태 전이만** 책임진다. 핸들러는 주입받는다.
+ * 그 결과 **다음 작업은 직전 작업이 끝나야 큐에 들어간다.** `batch` 를 키워도 소용이
+ * 없고(큐에 아직 없다), 대신 `drainLoop` 이 예산 안에서 여러 판을 돈다.
+ *
+ * 이 모듈은 **큐 왕복·재시도·상태 전이만** 책임진다. 핸들러는 주입받는다.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -90,6 +92,68 @@ async function touchJob(
     console.warn(`ingest_jobs 갱신 실패 (job=${jobId}):`, e);
   }
 }
+
+/**
+ * 예산이 남는 동안 `drainOnce` 를 반복한다.
+ *
+ * ## 왜 반복이 필요한가
+ * 작업은 **순차 의존**이다 — PDF extract 는 직전 범위가 끝나야 다음이 큐에 들어간다.
+ * 그래서 `batch` 를 키워도 소용이 없다(큐에 아직 없다). 요청당 1 건만 처리하면
+ * 1,513 페이지 문서가 152 요청 × cron 주기만큼 걸린다.
+ *
+ * ## 예산은 wall clock 이다 — 일부러 보수적이다
+ * Supabase 가 재는 것은 **CPU 시간**(I/O 제외)인데 Edge 에 CPU 시계 API 가 없다
+ * (Phase 0 스파이크도 `performance.now()` 로 근사했다). 여기서 재는 wall clock 은
+ * DB 왕복까지 포함하므로 **실제 CPU 보다 크다** → 예산을 넘겼다고 판단하는 쪽이
+ * 안전하다.
+ *
+ * 한 판이 끝난 뒤에 예산을 본다. **판 도중에는 끊지 않는다** — 핸들러를 중간에
+ * 자르면 산출물이 반만 남는다.
+ */
+export async function drainLoop(
+  deps: WorkerDeps & { budgetMs?: number; maxRounds?: number },
+): Promise<DrainResult & { rounds: number; elapsedMs: number }> {
+  const budget = deps.budgetMs ?? DEFAULT_BUDGET_MS;
+  const maxRounds = deps.maxRounds ?? DEFAULT_MAX_ROUNDS;
+  const started = performance.now();
+
+  const total: DrainResult & { rounds: number; elapsedMs: number } = {
+    read: 0,
+    ok: 0,
+    retried: 0,
+    archived: 0,
+    errors: [],
+    rounds: 0,
+    elapsedMs: 0,
+  };
+
+  for (let i = 0; i < maxRounds; i++) {
+    const r = await drainOnce(deps);
+    total.rounds++;
+    total.read += r.read;
+    total.ok += r.ok;
+    total.retried += r.retried;
+    total.archived += r.archived;
+    total.errors.push(...r.errors);
+    // 큐가 비면 더 돌 이유가 없다.
+    if (r.read === 0) break;
+    if (performance.now() - started >= budget) break;
+  }
+
+  total.elapsedMs = Math.round(performance.now() - started);
+  return total;
+}
+
+/**
+ * 한 요청이 쓸 wall clock 예산.
+ *
+ * PDF extract 한 판이 `PDF_PAGES_PER_TASK`(10) 페이지에 약 1s 다(Phase 0 Edge 실측
+ * 페이지당 최대 100.8ms). 1,500ms 면 무거운 판 하나를 마치고 멈추고, `chunk`·`load`
+ * 같은 가벼운 판은 여러 개가 한 요청에 들어간다.
+ */
+const DEFAULT_BUDGET_MS = 1500;
+/** 예산과 무관한 안전장치. 가벼운 판이 무한히 이어지는 것을 막는다. */
+const DEFAULT_MAX_ROUNDS = 50;
 
 export async function drainOnce(deps: WorkerDeps): Promise<DrainResult> {
   const vt = deps.vtSeconds ?? DEFAULT_VT_SECONDS;

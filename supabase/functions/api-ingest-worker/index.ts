@@ -22,7 +22,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { loadSettings } from "../_shared/config.ts";
 import { createServiceClient } from "../_shared/db.ts";
 import { jsonResponse, methodNotAllowed, notFound, toResponse } from "../_shared/errors.ts";
-import { drainOnce, type TaskHandler } from "../_shared/ingest/worker.ts";
+import { drainLoop, type TaskHandler } from "../_shared/ingest/worker.ts";
 import { makeChunkHandler } from "../_shared/ingest/handlers/chunk.ts";
 import { makeExtractHandler } from "../_shared/ingest/handlers/extract.ts";
 import { makeLoadHandler } from "../_shared/ingest/handlers/load.ts";
@@ -85,11 +85,15 @@ Deno.serve(async (req: Request) => {
     const settings = loadSettings();
     const url = new URL(req.url);
     const batch = Number(url.searchParams.get("batch") ?? "1");
+    const budget = Number(url.searchParams.get("budget") ?? "");
     const client = createServiceClient(settings);
-    const result = await drainOnce({
+    // 예산이 남는 동안 반복한다. 작업이 순차 의존이라 batch 를 키워도 소용이 없다 —
+    // 다음 작업은 직전 작업이 끝나야 큐에 들어간다.
+    const result = await drainLoop({
       client,
       handlers: buildHandlers(settings, client),
       batch: Number.isFinite(batch) && batch > 0 ? Math.min(batch, 10) : 1,
+      budgetMs: Number.isFinite(budget) && budget > 0 ? Math.min(budget, 20_000) : undefined,
     });
     return jsonResponse(result);
   } catch (e) {
