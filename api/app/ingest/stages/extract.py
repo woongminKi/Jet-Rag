@@ -4,7 +4,6 @@
 - PDF: `PyMuPDFParser` — 블록 단위 섹션·bbox·페이지 (스캔본 감지 시 ImageParser 재라우팅)
 - HWPX: `HwpxParser` — section 단위 단락 (Day 3, §3.C)
 - 이미지: `ImageParser` (Vision composition) — PNG/JPEG/HEIC (Day 3, §3.D)
-- URL: `UrlParser` — trafilatura 본문 추출 (Day 4, §3.E)
 - HWP 5.x: `Hwp5Parser` — pyhwp `hwp5txt` CLI + olefile fallback (Day 4 §3.F + DE-52)
 - HWPML: `HwpmlParser` — 법제처/한컴 옛 XML 직렬화. doc_type='hwp' 그대로 두고
   raw bytes prefix sniff 로 dispatcher 가 분기 (DE-39 패턴)
@@ -30,7 +29,6 @@ from app.adapters.impl.image_parser import ImageParser
 from app.adapters.impl.pptx_parser import PptxParser
 from app.adapters.impl.pymupdf_parser import PyMuPDFParser
 from app.adapters.impl.supabase_storage import SupabaseBlobStorage
-from app.adapters.impl.url_parser import UrlParser
 from app.adapters.parser import DocumentParser, ExtractedSection, ExtractionResult
 from app.config import get_settings
 from app.db import get_supabase_client
@@ -50,7 +48,6 @@ _STAGE = "extract"
 # 가벼운 파서들은 module-level 단일 인스턴스 — 외부 호출/네트워크 0 이라 안전.
 _pdf_parser = PyMuPDFParser()
 _hwpx_parser = HwpxParser()
-_url_parser = UrlParser()
 _hwp_parser = Hwp5Parser()
 _hwpml_parser = HwpmlParser()
 _docx_parser = DocxParser()
@@ -84,7 +81,6 @@ def _get_parsers_by_doc_type() -> dict[str, DocumentParser]:
         "pdf": _pdf_parser,
         "hwpx": _hwpx_parser,
         "image": _get_image_parser(),
-        "url": _url_parser,
         "hwp": _hwp_parser,
         "docx": _docx_parser,
         "pptx": _get_pptx_parser(),

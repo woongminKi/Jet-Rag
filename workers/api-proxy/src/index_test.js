@@ -140,7 +140,7 @@ Deno.test("`/documents` — 이관한 것만 Edge, 나머지는 Railway", () => 
   // 먼저 삼키면 Railway 로도 안 가고 Edge 로도 안 간다.
   assertEquals(resolveTarget("/documents/abc/reingest", "GET"), null);
   // **아직 Railway** — URL 업로드. GET 전용 규칙이라 자연히 안 걸린다.
-  assertEquals(resolveTarget("/documents/url", "POST"), null);
+  // `POST /documents/url` 은 2026-09-07 폐기됐다 — 라우트 자체가 없다.
   // 2026-09-07 전환 — 이메일 webhook. 경로가 정확히 일치해야 한다.
   assertEquals(resolveTarget("/ingest/email", "POST"), "api-documents");
   // 결제 — POST 만. 다른 메서드·경로는 안 걸린다.
@@ -300,26 +300,45 @@ Deno.test("POST 의 본문과 메서드를 보존한다", async () => {
 
 /* ------------------------------------------------------------------ 기존 백엔드로 전달 */
 
-// 여기서 쓰는 예시 경로는 **아직 안 옮긴 것**이어야 한다. 옮기고 나면 이 테스트가
-// 깨지므로, 깨지면 예시를 바꾸면 된다 — 실제로 `/stats` 전환 때 `/stats/overview` 를
-// 쓰고 있어서 세 건이 한꺼번에 깨졌고, `/documents` 읽기 전환 때 또 세 건이 깨졌다.
-// 지금 예시는 `POST /documents/url` — Railway 에 실재하고 아직 안 옮긴 라우트다.
-// **메서드를 명시해야 한다.** GET 으로 두면 `GET /documents/{doc_id}` 규칙에 걸려 Edge 로 간다.
+/**
+ * 아직 Railway 로 가는 경로 하나. **하드코딩하지 않는다.**
+ *
+ * 예시로 쓴 경로가 이관되거나 삭제되면 이 테스트들이 조용히 뜻을 잃는다 — 실제로
+ * `/stats/overview`(전환), `/documents` 읽기(전환), `POST /documents/url`(2026-09-07
+ * 폐기)에서 세 번 반복됐다. 라우트 전수에서 유도하면 마지막 하나까지 넘어간 순간
+ * `undefined` 가 되어 즉시 드러난다.
+ */
+const routesForLegacy = JSON.parse(
+  await Deno.readTextFile(
+    new URL("../../../api/scripts/fixtures/fastapi_routes.json", import.meta.url),
+  ),
+);
+const LEGACY_EXAMPLE = (() => {
+  for (const { path, methods } of routesForLegacy) {
+    for (const method of methods) {
+      if (resolveTarget(path, method) === null && !path.includes("{")) {
+        return { path, method };
+      }
+    }
+  }
+  throw new Error("Railway 로 가는 경로가 없다 — 이 테스트들을 지울 때가 됐다");
+})();
+
 Deno.test("미이관 경로는 기존 백엔드로, 경로·쿼리를 유지한다", async () => {
-  const { sent } = await capture(req("/documents/url", { method: "POST" }));
+  const { sent } = await capture(req(LEGACY_EXAMPLE.path, { method: LEGACY_EXAMPLE.method }));
   assertEquals(
     sent.url,
-    "https://jet-rag-production.up.railway.app/documents/url",
+    `https://jet-rag-production.up.railway.app${LEGACY_EXAMPLE.path}`,
   );
   // 기존 백엔드로 갈 때는 이 헤더를 붙이지 않는다 — 원본이 모르는 헤더다.
   assertEquals(sent.headers.get("X-Forwarded-Path"), null);
 });
 
 Deno.test("LEGACY_ORIGIN 이 비면 404 (Phase 6 의 종료 상태)", async () => {
-  const { sent, response } = await capture(req("/documents/url", { method: "POST" }), {
-    ...ENV,
-    LEGACY_ORIGIN: "",
-  });
+  const { sent, response } = await capture(
+    req(LEGACY_EXAMPLE.path, { method: LEGACY_EXAMPLE.method }),
+    { ...ENV, LEGACY_ORIGIN: "" },
+  );
   assertEquals(sent, null, "네트워크 호출이 없어야 한다");
   assertEquals(response.status, 404);
   assertEquals(await response.json(), { detail: "Not Found" });
@@ -327,10 +346,10 @@ Deno.test("LEGACY_ORIGIN 이 비면 404 (Phase 6 의 종료 상태)", async () =
 
 Deno.test("LEGACY_ORIGIN 이 자기 자신이면 루프 대신 500", async () => {
   // 설정 실수로 jetrag-api.woong-s.com 을 넣으면 Worker 가 자기를 부른다.
-  const { sent, response } = await capture(req("/documents/url", { method: "POST" }), {
-    ...ENV,
-    LEGACY_ORIGIN: "https://jetrag-api.woong-s.com",
-  });
+  const { sent, response } = await capture(
+    req(LEGACY_EXAMPLE.path, { method: LEGACY_EXAMPLE.method }),
+    { ...ENV, LEGACY_ORIGIN: "https://jetrag-api.woong-s.com" },
+  );
   assertEquals(sent, null, "루프를 만들지 않아야 한다");
   assertEquals(response.status, 500);
   assertStringIncludes((await response.json()).detail, "설정 오류");

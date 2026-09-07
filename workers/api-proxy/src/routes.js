@@ -58,8 +58,8 @@ export const ROUTES = [
   [/^\/documents\/?$/, "api-documents", new Set(["GET", "POST"])],
   // 2026-09-07 전환 — 상세·상태·active·batch-status. GET 하위 경로가 전부 이관됐다.
   // 처음엔 `/active`·`/batch-status` 가 Railway 라 부정 전방탐색으로 뺐었다.
-  // **`POST /documents/url` 은 아직 Railway** 인데, 이 규칙이 GET 전용이라 자연히
-  // 안 걸린다 — 쓰기 라우트를 옮길 때 여기 규칙을 다시 봐야 한다.
+  // 이 규칙은 **GET 전용**이다. `/documents/{id}` 의 쓰기를 옮길 때 여기를 다시 봐야 한다.
+  // (`POST /documents/url` 은 2026-09-07 폐기됐다 — §47.)
   [/^\/documents\/[^/]+$/, "api-documents", new Set(["GET"])],
   [/^\/documents\/[^/]+\/status$/, "api-documents", new Set(["GET"])],
   // 2026-09-07 전환 — 재인제스트 2 종. **`{id}` 규칙보다 아래여도 된다** — 위 규칙은

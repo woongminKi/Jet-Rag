@@ -93,12 +93,6 @@ class UploadRateLimitTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 429)
         self.assertIn("한도", resp.json()["detail"])
 
-    def test_upload_url_over_cap_returns_429(self) -> None:
-        payload = {"url": "https://example.com/doc.pdf"}
-        with patch("app.services.rate_limit.get_supabase_client", return_value=_over_cap_client()):
-            resp = self.client.post("/documents/url", json=payload)
-        self.assertEqual(resp.status_code, 429)
-        self.assertIn("한도", resp.json()["detail"])
 
 
 if __name__ == "__main__":

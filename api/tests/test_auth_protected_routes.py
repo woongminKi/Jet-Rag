@@ -50,9 +50,10 @@ _ANONYMOUS_GET_PASS_DB = [
 
 # 쓰기 endpoint — 익명은 401 (require_authenticated_user 게이트).
 _WRITE_ENDPOINTS_401 = [
-    # documents write (4곳)
+    # documents write (3곳)
+    # (`POST /documents/url` 은 2026-09-07 제거 — Python 전용 trafilatura 의존을 걷어내
+    #  Railway 를 없애기 위해서다. work-log 2026-09-07 §47 참조)
     ("POST", "/documents"),
-    ("POST", "/documents/url"),
     ("POST", "/documents/some-doc-id/reingest"),
     ("POST", "/documents/some-doc-id/reingest-missing"),
     # answer write (1곳) — feedback

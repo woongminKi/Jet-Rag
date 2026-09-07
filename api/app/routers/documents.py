@@ -19,7 +19,6 @@ from pathlib import PurePosixPath
 from typing import Literal
 
 import httpx
-import trafilatura
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -50,7 +49,6 @@ from app.ingest import (
 )
 from app.ingest.eta import compute_remaining_ms
 from app.routers._input_gate import HEAD_BYTES, validate_magic
-from app.routers._url_gate import recheck_dns_consistency, validate_url_safety
 from app.services.ingest_mode import INGEST_MODES, IngestMode, resolve_page_cap
 from app.services.rate_limit import check_rate_limit
 
@@ -163,25 +161,6 @@ class ReingestMissingResponse(BaseModel):
         "결과는 GET /documents/{id}/status 로 폴링."
     )
 
-
-class UrlUploadRequest(BaseModel):
-    url: str = Field(..., description="수집할 페이지 URL (http/https 만 허용).")
-    title: str | None = Field(
-        None,
-        description="제공 안 할 시 trafilatura 메타·OG title·hostname 순으로 자동 추정.",
-    )
-    source_channel: _SourceChannel = "url"
-    # S2 D3 — 운영 모드 (fast/default/precise). default=default. invalid 시 400.
-    mode: str = Field(
-        "default",
-        description="운영 모드: 'fast' | 'default' | 'precise'.",
-    )
-
-
-_URL_FETCH_TIMEOUT_SECONDS = 10
-_URL_FETCH_USER_AGENT = (
-    "Mozilla/5.0 (compatible; Jet-Rag/1.0; +https://github.com/woongminKi/Jet-Rag)"
-)
 
 
 class DocumentListItem(BaseModel):
@@ -568,210 +547,6 @@ async def upload_document(
         raw=raw,
         sha256=sha256,
         ext=ext,
-        content_type=content_type,
-        page_cap_override=page_cap_override,
-        user_id=current_user.user_id,
-    )
-    return UploadResponse(doc_id=doc_id, job_id=job.id, duplicated=False)
-
-
-# ============================================================
-# POST /documents/url
-# ============================================================
-@router.post(
-    "/url",
-    response_model=UploadResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[
-        Depends(require_authenticated_user),  # 쓰기 = 로그인 필수 (수익화 W1)
-        Depends(check_rate_limit("docs")),  # 수익화 W2 — 일일 업로드 상한
-    ],
-)
-async def upload_url(
-    background_tasks: BackgroundTasks,
-    payload: UrlUploadRequest,
-    current_user: CurrentUserDep = LEGACY_DEFAULT_USER,
-) -> UploadResponse:
-    """URL 수집. SSRF 검증 → fetch → 기존 BG 흐름 (`run_full_ingest`) 재사용.
-
-    수신 ≤ 2초 SLO 는 fetch timeout (10s) 으로 제한적이지만, 정상 사이트는 통상 ≤ 2초 응답.
-    명세 v0.3 §3.E. doc_type='url', `flags.source_url` 에 원본 URL 보존.
-    """
-    started_at = time.perf_counter()
-
-    # S2 D3 — 운영 모드 검증 (SSRF 직전, SLO 영향 0).
-    ingest_mode: IngestMode = _validate_ingest_mode(payload.mode)
-
-    # SSRF 검증 (multi-IP round-robin 차단 포함). resolved IP 집합 캐시 → recheck 입력.
-    safe, reason, resolved_ips = validate_url_safety(payload.url)
-    if not safe:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"안전하지 않은 URL: {reason}",
-        )
-
-    # Fetch
-    try:
-        async with httpx.AsyncClient(
-            timeout=_URL_FETCH_TIMEOUT_SECONDS,
-            follow_redirects=True,
-        ) as client:
-            resp = await client.get(
-                payload.url, headers={"User-Agent": _URL_FETCH_USER_AGENT}
-            )
-            resp.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"URL 응답 에러: {exc.response.status_code}",
-        ) from exc
-    except httpx.RequestError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"URL 조회 실패: {exc}",
-        ) from exc
-
-    # DNS rebinding 방어 — fetch 사이에 DNS 가 사설 IP 로 회전됐는지 재검증.
-    # 검증 시점 (T1) → fetch (T2) 사이 IP 변경되면 fetch 결과 폐기.
-    rebind_ok, rebind_reason = recheck_dns_consistency(payload.url, resolved_ips)
-    if not rebind_ok:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"안전하지 않은 URL: {rebind_reason}",
-        )
-
-    html_bytes = resp.content
-    size = len(html_bytes)
-    if size == 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="URL 응답 본문이 비어있습니다.",
-        )
-    if size > _MAX_SIZE_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"HTML 크기 상한(50MB) 초과: {size} bytes",
-        )
-
-    # content_type — semicolon 뒤 charset 등 제거
-    raw_ct = resp.headers.get("content-type", "text/html")
-    content_type = raw_ct.split(";")[0].strip() or "text/html"
-
-    sha256 = hashlib.sha256(html_bytes).hexdigest()
-    settings = get_settings()
-    supabase = get_supabase_client()
-
-    # ---- Tier 1 dedup ----
-    existing = (
-        supabase.table("documents")
-        .select("id, flags")
-        .eq("user_id", current_user.user_id)
-        .eq("sha256", sha256)
-        .is_("deleted_at", "null")
-        .limit(1)
-        .execute()
-    )
-    if existing.data:
-        existing_doc = existing.data[0]
-        existing_doc_id = existing_doc["id"]
-        existing_flags = existing_doc.get("flags") or {}
-
-        if existing_flags.get("failed"):
-            _reset_doc_for_reingest(supabase, existing_doc_id)
-            received_ms = int((time.perf_counter() - started_at) * 1000)
-            # S2 D3 — 새 mode 를 flags 에 보존 + page_cap 결정. 기존 source_url 도 유지.
-            page_cap_override = resolve_page_cap(ingest_mode, settings)
-            preserved_flags = dict(existing_flags)
-            # _reset_doc_for_reingest 가 flags 를 빈 dict 로 reset 했지만 source_url 은
-            # POST /documents/url 의 dedup 분기 이전 SELECT 한 existing_flags 에서 보존.
-            new_flags: dict = {}
-            if "source_url" in preserved_flags:
-                new_flags["source_url"] = preserved_flags["source_url"]
-            new_flags["ingest_mode"] = ingest_mode
-            (
-                supabase.table("documents")
-                .update({"received_ms": received_ms, "flags": new_flags})
-                .eq("id", existing_doc_id)
-                .execute()
-            )
-            job = create_job(doc_id=existing_doc_id)
-            background_tasks.add_task(
-                run_full_ingest,
-                job_id=job.id,
-                doc_id=existing_doc_id,
-                raw=html_bytes,
-                sha256=sha256,
-                ext=".html",
-                content_type=content_type,
-                page_cap_override=page_cap_override,
-                user_id=current_user.user_id,
-            )
-            return UploadResponse(
-                doc_id=existing_doc_id, job_id=job.id, duplicated=False
-            )
-
-        return UploadResponse(
-            doc_id=existing_doc_id, job_id=None, duplicated=True
-        )
-
-    # 제목 추정 — payload → trafilatura 메타 → URL hostname
-    title = payload.title
-    if not title:
-        try:
-            metadata = trafilatura.extract_metadata(
-                html_bytes.decode("utf-8", errors="replace")
-            )
-            if metadata and metadata.title:
-                title = metadata.title.strip()
-        except Exception:  # noqa: BLE001
-            logger.exception("trafilatura.extract_metadata 실패 (title fallback 사용)")
-    if not title:
-        from urllib.parse import urlparse as _urlparse
-
-        title = _urlparse(payload.url).hostname or "untitled URL"
-
-    # W25 D14 — title NFC 정규화 (한국어 NFD/NFC 불일치 회피)
-    title = unicodedata.normalize("NFC", title)
-
-    # ---- documents insert (pending path + flags.source_url + ingest_mode) ----
-    # D2 (plan §3.1) — `user/<uid>/pending/<uuid>.html` prefix.
-    doc_uuid = uuid.uuid4().hex
-    pending_path = SupabaseBlobStorage.build_pending_path(
-        user_id=current_user.user_id, doc_uuid=doc_uuid, ext=".html"
-    )
-    received_ms = int((time.perf_counter() - started_at) * 1000)
-    page_cap_override = resolve_page_cap(ingest_mode, settings)
-    doc_row = (
-        supabase.table("documents")
-        .insert(
-            {
-                "user_id": current_user.user_id,
-                "title": title,
-                "doc_type": "url",
-                "source_channel": payload.source_channel,
-                "storage_path": pending_path,
-                "sha256": sha256,
-                "size_bytes": size,
-                "content_type": content_type,
-                "received_ms": received_ms,
-                "flags": {
-                    "source_url": payload.url,
-                    "ingest_mode": ingest_mode,
-                },
-            }
-        )
-        .execute()
-    )
-    doc_id = doc_row.data[0]["id"]
-
-    job = create_job(doc_id=doc_id)
-    background_tasks.add_task(
-        run_full_ingest,
-        job_id=job.id,
-        doc_id=doc_id,
-        raw=html_bytes,
-        sha256=sha256,
-        ext=".html",
         content_type=content_type,
         page_cap_override=page_cap_override,
         user_id=current_user.user_id,

@@ -20,13 +20,13 @@
   {
     "path": "/admin/subscriptions",
     "methods": [
-      "GET"
+      "POST"
     ]
   },
   {
     "path": "/admin/subscriptions",
     "methods": [
-      "POST"
+      "GET"
     ]
   },
   {
@@ -87,12 +87,6 @@
     "path": "/documents/batch-status",
     "methods": [
       "GET"
-    ]
-  },
-  {
-    "path": "/documents/url",
-    "methods": [
-      "POST"
     ]
   },
   {

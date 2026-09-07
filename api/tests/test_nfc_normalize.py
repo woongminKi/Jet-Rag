@@ -63,16 +63,19 @@ class AnswerQueryNormalizationTest(unittest.TestCase):
 
 class IngestTitleNormalizationTest(unittest.TestCase):
     def test_documents_router_normalizes_title_at_insert(self) -> None:
-        """POST /documents 가 title 을 NFC 로 통일 후 저장 (file upload + URL 두 경로)."""
+        """POST /documents 가 title 을 NFC 로 통일 후 저장.
+
+        2026-09-07 이전에는 URL 경로(`POST /documents/url`)까지 두 곳이었는데, 그
+        라우트가 폐기되면서 파일 업로드 한 곳만 남았다(work-log 2026-09-07 §47).
+        """
         from pathlib import Path
 
         src = Path(__file__).resolve().parents[1] / "app" / "routers" / "documents.py"
         text = src.read_text(encoding="utf-8")
-        # 두 곳 모두 NFC 호출 필요
         self.assertGreaterEqual(
             text.count('unicodedata.normalize("NFC"'),
-            2,
-            "documents.py 가 file upload + URL 두 경로 모두 NFC 정규화 안 함",
+            1,
+            "documents.py 의 파일 업로드 경로가 NFC 정규화 안 함",
         )
 
 

@@ -14,8 +14,9 @@
  * | `POST /documents/{id}/reingest-missing` | 증분 — chunks 보존 + 누락 vision 페이지만 |
  * | `POST /ingest/email` | 이메일 첨부 인제스트 (공유 secret 인증) |
  *
- * ## 아직 Railway 인 것
- * `POST /documents/url` (URL 파서 미이관).
+ * ## 원본에 있었으나 사라진 것
+ * `POST /documents/url` — 2026-09-07 폐기. 본문 추출이 `trafilatura`(Python 전용)에
+ * 묶여 있었고, 그 채널로 만들어진 문서가 **0 건**이라 옮길 대상이 없었다.
  *
  * ## 읽기에는 인증 게이트를 걸지 않는다
  * 토큰이 없으면 `getCurrentUser` 가 owner 컨텍스트(`isAuthenticated: false`)를 준다 —
