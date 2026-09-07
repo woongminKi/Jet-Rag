@@ -152,7 +152,11 @@ for (const [method, path] of EXTRA) {
 console.log(`
 ── 비-HTTP 의존 (자동으로 못 잰다 — 사람이 확인해야 한다) ──
   1. Railway cron — api/scripts/billing_charge.py
-     끄면 **월 자동결제가 멈춘다.** 대체: pg_cron 이 POST /billing/run 호출 (마이그 029 미작성)
+     **지금 돌고 있지 않다.** W5-6 에서 '0 18 * * *' 로 걸기로 해 놓고 카카오페이
+     SECRET_KEY 대기로 켜지 않았다(work-log 2026-07-08 §3). 그래서 끈다고 멈출 결제가
+     없다 — 처음부터 대기 상태였다.
+     대체: **마이그 029 작성 완료** (pg_cron → POST /billing/run, 같은 '0 18 * * *').
+     적용은 사용자가 SQL Editor 에서. Vault 에 billing_cron_secret + billing_run_url 필요
   2. .github/workflows/monitor-search-slo.yml — **2026-09-07 해소.**
      API base 를 프록시 도메인 기본값으로 박았다(공개 URL 이라 secret 이 아니다).
      secret 은 더 이상 읽지 않는다. 남은 확인: repo **variable** JET_RAG_API_BASE 가
@@ -170,7 +174,7 @@ console.log(`
 ── 끄기 전 순서 ──
   1. secret 4개 설정 → deno run --allow-net api/scripts/verify_cutover.ts
   2. 프록시 배포 (이메일·결제가 Edge 로)
-  3. billing cron 대체 (마이그 029)
+  3. billing cron — 마이그 029 적용 (Vault 2건 + SQL Editor)
   4. monitor-search-slo 의 JET_RAG_API_BASE 를 프록시 도메인으로
   5. 그 다음에 LEGACY_ORIGIN 비우기
 `);
