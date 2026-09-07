@@ -28,7 +28,9 @@ function fakeClient(
   rows: { seq: number; payload: unknown }[],
   visionRows: { seq: number; payload: unknown }[] = [],
   scanRows: { seq: number; payload: unknown }[] = [],
+  docFlags: Record<string, unknown> = {},
 ) {
+  const flagUpdates: Record<string, unknown>[] = [];
   const upserts: { row: Record<string, unknown>; opts: unknown }[] = [];
   const sends: Record<string, unknown>[] = [];
   const calls: string[] = [];
@@ -39,8 +41,23 @@ function fakeClient(
       if (name === "ingest_queue_send") sends.push(args.payload as Record<string, unknown>);
       return Promise.resolve({ data: 1, error: null });
     },
-    from(_t: string) {
-      // **stage 를 봐야 한다** — 핸들러가 extract 와 vision 을 따로 긁는다.
+    from(table: string) {
+      // `content_gate` 가 문서 flags 를 읽어 머지한다 — 테이블을 구분해야 한다.
+      if (table === "documents") {
+        // deno-lint-ignore no-explicit-any
+        const dq: any = {
+          eq: () => dq,
+          limit: () => Promise.resolve({ data: [{ flags: docFlags }], error: null }),
+        };
+        return {
+          select: () => dq,
+          update(row: Record<string, unknown>) {
+            flagUpdates.push(row.flags as Record<string, unknown>);
+            return { eq: () => Promise.resolve({ error: null }) };
+          },
+        };
+      }
+      // **stage 를 봐야 한다** — 핸들러가 extract·vision·scan 을 따로 긁는다.
       // 구분 없이 같은 행을 돌려주면 섹션이 두 번 들어가 테스트가 조용히 통과한다.
       let stage = "extract";
       const q = {
@@ -71,7 +88,7 @@ function fakeClient(
       };
     },
   };
-  return { client, upserts, sends, calls, wasOrdered: () => ordered };
+  return { client, upserts, sends, calls, flagUpdates, wasOrdered: () => ordered };
 }
 
 Deno.test("extract 산출물이 없으면 던진다 — 빈 청크로 덮지 않는다", async () => {
@@ -285,4 +302,69 @@ Deno.test("스캔 PDF — scan 산출물이 extract 를 **대체**한다", async
   // 대체다 — extract·vision 은 안 들어간다.
   assertEquals(text.includes("찌꺼기"), false, text);
   assertEquals(text.includes("비전 섹션"), false, text);
+});
+
+Deno.test("chunk_filter — 표 노이즈·머리말이 flags 로 마킹된다(삭제가 아니다)", async () => {
+  // 같은 짧은 텍스트가 3회 반복 → header_footer. 청크는 남고 flags 만 붙는다.
+  const { client, upserts } = fakeClient([{
+    seq: 0,
+    payload: {
+      sections: [
+        sec("머리말", 1), sec("머리말", 2), sec("머리말", 3),
+        sec("이것은 충분히 긴 본문 문장입니다. 필터에 걸리지 않아야 합니다.", 4),
+      ],
+    },
+  }]);
+  // deno-lint-ignore no-explicit-any
+  const h = makeChunkHandler({ client: client as any, env: ENV });
+  await h(TASK, {} as never);
+  const records = (upserts[0].row.payload as {
+    records: { text: string; flags?: Record<string, unknown> }[];
+  }).records;
+  // 삭제되지 않는다 — 전부 남아 있다.
+  assertEquals(records.length, 4);
+  const reasons = records.map((r) => r.flags?.filtered_reason ?? null);
+  assertEquals(reasons, ["header_footer", "header_footer", "header_footer", null]);
+});
+
+Deno.test("content_gate — PII·워터마크를 metadata 와 문서 flags 에 남긴다", async () => {
+  const { client, upserts, flagUpdates } = fakeClient([{
+    seq: 0,
+    payload: {
+      sections: [
+        sec("대외비 자료입니다. 주민번호 900101-1234567 이 포함된 긴 문장입니다.", 1),
+      ],
+    },
+  }], [], [], { scan: true }); // 기존 flags 는 보존돼야 한다
+  // deno-lint-ignore no-explicit-any
+  const h = makeChunkHandler({ client: client as any, env: ENV });
+  await h(TASK, {} as never);
+
+  const records = (upserts[0].row.payload as {
+    records: { metadata: Record<string, unknown> }[];
+  }).records;
+  assertEquals(Array.isArray(records[0].metadata.pii_ranges), true);
+  assertEquals(records[0].metadata.watermark_hits, ["대외비"]);
+
+  assertEquals(flagUpdates.length, 1);
+  assertEquals(flagUpdates[0], {
+    scan: true, // 기존 flags 보존
+    has_pii: true,
+    has_watermark: true,
+    third_party: false,
+    watermark_hits: ["대외비"],
+  });
+});
+
+Deno.test("content_gate — 아무것도 없으면 false 3개만 남긴다", async () => {
+  const { client, flagUpdates } = fakeClient([{
+    seq: 0,
+    payload: { sections: [sec("평범한 본문 문장입니다. 특별한 것이 없습니다.", 1)] },
+  }]);
+  // deno-lint-ignore no-explicit-any
+  const h = makeChunkHandler({ client: client as any, env: ENV });
+  await h(TASK, {} as never);
+  assertEquals(flagUpdates[0], {
+    has_pii: false, has_watermark: false, third_party: false,
+  });
 });

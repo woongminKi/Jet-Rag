@@ -27,6 +27,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { readChunkEnv, runChunkStage } from "../chunk_records.ts";
 import type { ExtractedSection } from "../pdf_extract.ts";
 import { stripNulls } from "../strip_nul.ts";
+import { runChunkFilterStage } from "../chunk_filter.ts";
+import { runContentGateStage } from "../content_gate.ts";
 import type { TaskHandler, TaskPayload } from "../worker.ts";
 
 /**
@@ -47,7 +49,23 @@ export interface ChunkDeps {
 
 interface ExtractArtifact {
   seq: number;
-  payload: { sections?: ExtractedSection[] } | null;
+  payload: { sections?: ExtractedSection[]; metadata?: Record<string, unknown> } | null;
+}
+
+/** 원본 `content_gate._merge_doc_flags` — 기존 flags 를 읽어 머지한다(덮어쓰지 않는다). */
+async function mergeDocFlags(
+  client: SupabaseClient,
+  docId: string,
+  updates: Record<string, unknown>,
+): Promise<void> {
+  const { data, error } = await client
+    .from("documents").select("flags").eq("id", docId).limit(1);
+  if (error) throw new Error(`flags 조회 실패: ${error.message}`);
+  const existing = ((data ?? [])[0] as { flags?: Record<string, unknown> } | undefined)
+    ?.flags ?? {};
+  const { error: uErr } = await client
+    .from("documents").update({ flags: { ...existing, ...updates } }).eq("id", docId);
+  if (uErr) throw new Error(`flags 갱신 실패: ${uErr.message}`);
 }
 
 export function makeChunkHandler(deps: ChunkDeps): TaskHandler {
@@ -122,11 +140,47 @@ export function makeChunkHandler(deps: ChunkDeps): TaskHandler {
       }
     }
 
-    const records = runChunkStage({
+    let records = runChunkStage({
       docId: task.doc_id,
       sections,
       env: deps.env ?? readChunkEnv(),
     });
+
+    // 원본 파이프라인 순서: chunk → **chunk_filter → content_gate** → … → load.
+    // 둘 다 청크를 지우지 않는다. 표시만 남기고 검색 쪽 쿼리가 그걸 보고 거른다.
+    const filtered = runChunkFilterStage(records);
+    records = filtered.chunks;
+    if (filtered.filterRatio > 0.05) {
+      // 원본과 같은 경고 — 오탐이 늘어난 신호일 수 있다.
+      console.warn(
+        `chunk_filter: doc=${task.doc_id} 마킹 비율 ` +
+          `${(filtered.filterRatio * 100).toFixed(1)}% > 5% — false positive risk 검토 필요`,
+      );
+    }
+    console.info(
+      `chunk_filter: doc=${task.doc_id} total=${records.length} ` +
+        `table_noise=${filtered.counts.table_noise} ` +
+        `header_footer=${filtered.counts.header_footer} ` +
+        `empty=${filtered.counts.empty} extreme_short=${filtered.counts.extreme_short} ` +
+        `filter_ratio=${filtered.filterRatio.toFixed(3)}`,
+    );
+
+    // `vision_type` 은 `ExtractionResult.metadata` 에서 온다 — 단독 이미지 업로드에서만
+    // 채워진다(스캔 PDF 경로는 원본이 그 값을 안 넘긴다).
+    const srcRows = scanRows.length > 0 ? scanRows : rows;
+    const visionType =
+      (srcRows[0]?.payload as { metadata?: Record<string, unknown> } | null)
+        ?.metadata?.["vision_type"];
+    const gated = runContentGateStage({ chunks: records, visionType });
+    records = gated.chunks;
+    await mergeDocFlags(deps.client, task.doc_id, gated.flagsUpdate);
+    console.info(
+      `content_gate: doc=${task.doc_id} has_pii=${gated.flagsUpdate.has_pii} ` +
+        `has_watermark=${gated.flagsUpdate.has_watermark} ` +
+        `third_party=${gated.flagsUpdate.third_party} ` +
+        `chunks_with_pii=${gated.chunksWithPii} ` +
+        `chunks_with_watermark=${gated.chunksWithWatermark}`,
+    );
 
     // 빈 문서라도 part 를 **하나는** 남긴다. 없으면 `load` 가 "순서가 깨졌다" 로 오해한다.
     const totalParts = Math.max(1, Math.ceil(records.length / perPart));

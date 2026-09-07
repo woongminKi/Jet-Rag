@@ -36,6 +36,12 @@ export interface ChunkRecord {
   bbox: [number, number, number, number] | null;
   char_range: [number, number];
   metadata: Record<string, unknown>;
+  /**
+   * `chunks.flags` JSONB. `chunk_filter` 가 `{filtered_reason}` 를 넣으면
+   * `search_hybrid_rrf` 의 `WHERE flags->>'filtered_reason' IS NULL` 이 그 청크를
+   * 검색에서 뺀다. 청크를 만드는 단계에서는 안 채운다 — 그래서 선택 필드다.
+   */
+  flags?: Record<string, unknown>;
 }
 
 /** 인제스트 시점 ENV. 원본이 **함수 호출마다** 평가하므로 여기서도 매번 읽는다. */
