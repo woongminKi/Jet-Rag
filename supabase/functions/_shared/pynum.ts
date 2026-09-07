@@ -130,6 +130,24 @@ function toAsciiDecimal(s: string): string {
   return out;
 }
 
+/**
+ * Python `int(str)` — 변환 못 하면 `null`. 10진수만 받는다.
+ *
+ * `parseInt` 과 다르다: `parseInt("12abc")` 는 12 지만 Python 은 예외고,
+ * `parseInt("0x10")` 은 16 이지만 Python `int("0x10")` 도 예외다(밑수 인자 없이는).
+ * 유니코드 십진 숫자·앞뒤 공백·밑줄 구분자는 `float()` 과 같은 규칙으로 받는다.
+ */
+export function pyInt(v: unknown): number | null {
+  if (typeof v === "number") return Number.isInteger(v) ? v : Math.trunc(v);
+  if (typeof v === "boolean") return v ? 1 : 0;
+  if (typeof v !== "string") return null;
+  const s = toAsciiDecimal(v).trim();
+  const body = s.replace(/^[+-]/, "");
+  const sign = s.startsWith("-") ? -1 : 1;
+  if (!/^\d(?:_?\d)*$/.test(body)) return null;
+  return sign * Number(body.replace(/_/g, ""));
+}
+
 export function pyFloat(v: unknown): number | null {
   if (typeof v === "number") return Number.isNaN(v) ? v : v;
   if (typeof v === "boolean") return v ? 1.0 : 0.0;

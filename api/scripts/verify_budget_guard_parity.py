@@ -74,7 +74,15 @@ COST_CASES = [
     (0.12345678, 0.05), (None, 1.0), (3.14159, 0.0001),
 ]
 
-FIXED_NOW_MS = 1_757_251_496_789  # 2026-09-07T13:24:56.789Z
+FIXED_NOW_MS = 1_757_251_496_789  # 밀리초 있음
+
+# 마이크로초가 0 이면 Python `isoformat()` 이 소수부를 통째로 생략한다 — 그 분기까지 태운다.
+ISO_NOW_CASES = [
+    1_757_251_496_789,   # .789
+    1_757_251_496_000,   # 소수부 0 → Python 은 생략
+    1_757_203_200_000,   # 정각 자정
+    1_757_251_496_001,   # .001
+]
 
 RUNNER_TS = """
 import {
@@ -115,8 +123,8 @@ out.sums = cfg.sumRowCases.map((rows: Array<Record<string, unknown>>) =>
   num(sumCostRows(rows)));
 out.pageCaps = cfg.pageCapCases.map(([called, cap]: [number, number]) =>
   checkDocPageCap(env, { calledPages: called, pageCap: cap }));
-out.midnight = utcMidnightIso(cfg.nowMs);
-out.cutoff = slidingCutoffIso(cfg.nowMs);
+out.isos = cfg.isoNowCases.map((ms: number) =>
+  [utcMidnightIso(ms), slidingCutoffIso(ms)]);
 
 const costs: unknown[] = [];
 for (const [sum, cap] of cfg.costCases) {
@@ -144,7 +152,6 @@ def main() -> None:
     from app.services import budget_guard as bg
 
     negative = "--negative" in sys.argv
-    fixed_now = datetime.fromtimestamp(FIXED_NOW_MS / 1000, tz=timezone.utc)
 
     def num(v):
         if v is None:
@@ -173,15 +180,18 @@ def main() -> None:
         bg.check_doc_page_cap(called_pages=c, page_cap=p) for c, p in PAGE_CAP_CASES
     ]
 
-    class FixedDT(datetime):
-        @classmethod
-        def now(cls, tz=None):  # noqa: D102
-            return fixed_now
-
+    py_isos = []
     orig_dt = bg.datetime
-    bg.datetime = FixedDT  # type: ignore[assignment]
-    py_midnight = bg._utc_midnight_iso()
-    py_cutoff = bg._sliding_cutoff_iso()
+    for ms in ISO_NOW_CASES:
+        fixed = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+
+        class FixedAt(datetime):
+            @classmethod
+            def now(cls, tz=None, _f=fixed):  # noqa: D102
+                return _f
+
+        bg.datetime = FixedAt  # type: ignore[assignment]
+        py_isos.append([bg._utc_midnight_iso(), bg._sliding_cutoff_iso()])
     bg.datetime = orig_dt  # type: ignore[assignment]
 
     py_costs = []
@@ -212,6 +222,7 @@ def main() -> None:
                 "floatCases": FLOAT_CASES, "formatCases": FORMAT_CASES,
                 "sumRowCases": SUM_ROW_CASES, "pageCapCases": PAGE_CAP_CASES,
                 "costCases": COST_CASES, "nowMs": FIXED_NOW_MS,
+                "isoNowCases": ISO_NOW_CASES,
                 "negative": negative,
             }, f)
         with open(rf, "w", encoding="utf-8") as f:
@@ -242,9 +253,9 @@ def main() -> None:
         cmp(f"page_cap({called},{cap}).cap", a.cap_usd, b["capUsd"])
         cmp(f"page_cap({called},{cap}).scope", a.scope, b["scope"])
         cmp(f"page_cap({called},{cap}).reason", a.reason, b["reason"])
-    cmp("utc_midnight_iso", py_midnight, ts["midnight"])
-    # 원본은 마이크로초 6자리, JS 는 밀리초 3자리 — 초까지만 비교하고 나머지는 아래 별도 확인.
-    cmp("sliding_cutoff_iso(초까지)", py_cutoff[:19], ts["cutoff"][:19])
+    for ms, a, b in zip(ISO_NOW_CASES, py_isos, ts["isos"]):
+        cmp(f"utc_midnight_iso({ms})", a[0], b[0])
+        cmp(f"sliding_cutoff_iso({ms})", a[1], b[1])
 
     for (stub, cap), pyc, tsc in zip(COST_CASES, py_costs, ts["costs"]):
         for k in ("doc", "docNoId", "daily", "sliding", "combined", "combinedNoSliding"):
@@ -257,11 +268,12 @@ def main() -> None:
             cmp(f"{tag}.reason", a.reason, b["reason"])
 
     total = (len(FLOAT_CASES) + len(FORMAT_CASES) + len(SUM_ROW_CASES)
-             + len(PAGE_CAP_CASES) * 5 + 2 + len(COST_CASES) * 6 * 5)
+             + len(PAGE_CAP_CASES) * 5 + len(ISO_NOW_CASES) * 2 + len(COST_CASES) * 6 * 5)
     for f in fails[:30]:
         print(f"  **{f}**")
     print()
-    print(f"  마이크로초 정밀도: py={py_cutoff}  ts={ts['cutoff']}")
+    for ms, a, b in zip(ISO_NOW_CASES, py_isos, ts["isos"]):
+        print(f"  ISO({ms}) py={a[1]}  ts={b[1]}")
     print(f"  비교 {total}건, 불일치 {len(fails)}건")
     if negative:
         print("음성 대조: " + ("검사기 정상 (변조 검출)" if fails else "**검사기가 못 잡는다**"))

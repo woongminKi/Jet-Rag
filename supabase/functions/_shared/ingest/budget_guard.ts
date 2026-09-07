@@ -18,6 +18,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { pyFloat, pyFormatF } from "../pynum.ts";
+import { pyIsoUtc } from "../pytime.ts";
 
 export type BudgetScope =
   | "doc"
@@ -94,17 +95,17 @@ async function sumCost(
 /** 오늘 UTC 자정 ISO8601. Python `datetime.combine(date, time.min, utc).isoformat()`. */
 export function utcMidnightIso(nowMs: number): string {
   const d = new Date(nowMs);
-  const midnight = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-  // Python 은 `+00:00` 을 붙이고 마이크로초가 0 이면 생략한다.
-  return `${new Date(midnight).toISOString().replace(/\.\d{3}Z$/, "")}+00:00`;
+  return pyIsoUtc(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
 
-/** now - 24h ISO8601. Python `datetime.isoformat()` 은 마이크로초 6자리를 쓴다. */
+/**
+ * now - 24h ISO8601.
+ *
+ * 마이크로초가 0 이면 Python 이 소수부를 통째로 생략한다 — `pyIsoUtc` 가 그 규칙을
+ * 안다. JS 는 밀리초까지라 뒤 3자리는 항상 0 이지만, `gte` 필터라 동작 차이는 없다.
+ */
 export function slidingCutoffIso(nowMs: number): string {
-  const cutoff = new Date(nowMs - SLIDING_WINDOW_HOURS * 3600_000);
-  const iso = cutoff.toISOString(); // ...THH:MM:SS.mmmZ
-  const ms = iso.slice(20, 23);
-  return `${iso.slice(0, 19)}.${ms}000+00:00`;
+  return pyIsoUtc(nowMs - SLIDING_WINDOW_HOURS * 3600_000);
 }
 
 export interface GuardDeps {
