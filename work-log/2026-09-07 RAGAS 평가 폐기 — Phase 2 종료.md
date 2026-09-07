@@ -734,3 +734,148 @@ JS 는 ASCII `\w`. 한국어 문서에서 정면으로 갈린다.
 
 `api/scripts/fixtures/entity_regex_baseline.json` 에 Python 정답을 떠 뒀다 —
 재측정 없이 바로 대조할 수 있다.
+
+
+## 22. Phase 3 — chunk 조각 c 완료: **기준선 digest 직접 대조 성공**
+
+§21 이 남긴 과제를 전부 닫고, 이번 이식의 최종 관문인 **운영 기준선 digest 대조**까지
+통과했다.
+
+```
+chunks_digest  기준선 942f1b2e98ae666e
+               python 942f1b2e98ae666e  일치
+               deno   942f1b2e98ae666e  일치
+```
+
+### 22.1 Python `\w` 전수 대조 — 새 자산이 필요 없었다
+
+§18 의 `isalnum` 이 5,004 자 달랐던 전례 때문에 짐작하지 않고 0x0~0x10FFFF 를 다 셌다.
+
+```
+Python \w        : 137,936자, 748개 범위
+JS [\p{L}\p{N}_] : 142,940자
+  Python 만 :     0자,  0개 범위
+  JS 만     : 5,004자, 27개 범위
+```
+
+Python `\w` = `isalnum`(137,935) + `_` = 137,936 이고, **JS 와의 차이 27 범위가 §18 에서
+만든 `ALNUM_EXCESS` 와 완전히 동일**했다. 새 전수 테이블 없이 재사용했다.
+
+`v` 플래그 집합 뺄셈(`[[\p{L}\p{N}_]--[...]]`)이 Deno 에서 동작하는 것을 확인하고
+`PY_WORD_CLASS` 로 노출했다. 0x0~0x10FFFF 전수 테스트 2 개(`pyIsWord`, 정규식 형태)
+추가 — `pychar_test.ts` 7 passed.
+
+### 22.2 `\b` 축약형은 틀린다 — 음성 대조가 3 건 잡았다
+
+`\b` 를 `(?<!W)`(앞) / `(?!W)`(뒤) 로 줄여 쓰려 했다. **패턴 양끝 문자가 항상 word 일
+때만 같다.** ISBN 패턴 `[\p{Nd}\-Xx]{10,17}` 은 `-` 로 끝날 수 있어 갈린다.
+
+| 입력 | Python | 축약형 |
+|---|---|---|
+| `ISBN 1234567890-a` | `1234567890-` | `1234567890` |
+| `ISBN 1234567890-` | `1234567890` | `1234567890-` |
+
+정확히 **정반대**다. 정의 그대로 `(?:(?<=W)(?!W)|(?<!W)(?=W))` 로 구현했다.
+쓰기 전에 의심하고 케이스를 넣어 뒀기 때문에 음성 대조가 잡았다.
+
+### 22.3 대조 결과
+
+| 대상 | 케이스 | 결과 |
+|---|---|---|
+| `entity_extract` | 49 건 (§21 fixture 17 + 신규 32) | 전부 일치 |
+| `chunk_records` | 23 건 × caption ON/OFF | 전부 일치 |
+| HWP 파이프라인 전체 | 기준선 11 청크 | 3 방향 전부 일치 |
+
+**음성 대조 19 종 중 18 종이 실제로 깨졌다.**
+
+- entity: JS 기본 `\b` 14 / 축약형 `\b` 3 / `\d` 4 / JS `\s` 2 / dedup 제거 1
+- records: 코드포인트 len 4 / NFC 2 / 제목 NFC 2 / caption 잘림 2 / caption 우선순위 1 /
+  `is not None`→truthy 2 / vision 진입 18 / 2차분할 임계 2 / metadata 승계 2 /
+  overlap 메타 6 / entities 34 / merge 2 / cpSlice 1
+
+0 건이 나온 2 건은 원인을 각각 규명했다:
+
+- **`pyStrip`→`trim` 0 건** — 케이스 부족이 아니라 **구조적 no-op**. 패턴 8 개가 전부
+  숫자·`$`·`₩`·`제` 로 시작해 숫자·`원`·`%`·`호`·`[Nd Xx]` 로 끝나므로 매칭 결과가
+  공백으로 시작·끝날 수 없다. 무작위 200,000 입력 × 30,587 매칭에서 `strip()` 이 값을
+  바꾼 경우 **0 건**으로 확인했다.
+- **2차분할 임계 `<=`→`<` 0 건** — 정확히 1000 자 케이스가 없었다. 그런데 1000 자를
+  그냥 넣어도 안 된다 — 문장 경계가 없으면 분할해도 1 조각이라 임계를 바꿔도 결과가
+  같다. `"끝났다. "` 200 회(정확히 1000 자)로 바꿔 태웠다 → 2 건 차이.
+
+### 22.4 ENV 는 추측하지 않고 DB 결과물로 판정했다
+
+Railway CLI 가 없어 ENV 를 못 읽는다. **ENV 대신 운영 chunk 에 뭐가 박혔는지**를 봤다 —
+ENV 가 켜져 있어도 인제스트가 안 됐으면 chunk 엔 안 박히므로 이쪽이 더 강한 증거다.
+
+| metadata / text | 행수 | 판정 |
+|---|---|---|
+| `entities` | 7,067 | 상시 ON |
+| `overlap_with_prev_chunk_idx` | 37,067 | 상시 |
+| `synonym_candidates` | 199 | **2026-05-13 하루치, 문서 8 개** |
+| `[표 p.N: ` prefix | 101 | **2026-05-13 하루치, 문서 3 개** |
+| `[그림 p.N: ` prefix | 37 | 〃 |
+| `vision_incremental` | 0 | 코드 경로만 존재 |
+
+2026-05-13 에 ablation 으로 하루 켰다 껐다. 이후 2026-05-14 대량 인제스트(34,000 행
+이상)와 2026-07-07 최신 건은 전부 0 → **현재 둘 다 OFF**.
+
+그래도 caption 은 양쪽 경로를 다 옮기고 ON/OFF 양쪽으로 대조했다. synonym 은 훅만 두고
+**ENV ON 이면 던진다** — 조용히 다른 청크를 만드는 것보다 낫다.
+
+### 22.5 `raw_text` 는 일치하지 않는다 (숨기지 않고 고정)
+
+```
+raw_text   py 985자  ts 993자   공백 제외 동일? True   (+8자)
+```
+
+- 원인은 **추출기가 다른 것**. Python 은 `hwp5txt` CLI 가 이 파일에서 죽어
+  (`msoleprops.py` `KeyError: 2`) olefile fallback 을 타고, TS 는 `@rhwp/core` 다.
+  CLI 실패는 파일의 SummaryInformation 스트림 문제라 **환경 무관 — Railway 에서도 같다.**
+- 차이는 **빈 줄 3 곳뿐**이고 공백을 모두 제거하면 동일. 섹션 36 개·청크 11 개는 완전 일치.
+- `raw_text` 사용처는 `tag_summarize` LLM 입력과 `doc_embed` 의 summary-없음 fallback
+  둘뿐이고 모두 비결정 단계(기준선도 `nondeterministic` 분류) → **결정적 산출물 영향 0**.
+- 문자 내용이 갈리면 잡히도록 "공백 제외 동일" 을 회귀 검사에 넣었다.
+
+### 22.6 실측이 다음 우선순위를 바꿨다 — PDF 가 99.3%
+
+이식 순서를 Phase 0 스파이크 기준으로 잡았는데, 운영 사용량을 재 보니 달랐다.
+
+| doc_type | 문서 | chunk | 비중 |
+|---|---|---|---|
+| **pdf** | 9 | **36,818** | **99.3%** |
+| hwpx | 2 | 227 | 0.6% |
+| hwp | 1 | 30 | 0.08% |
+| pptx | 1 | 5 | 0.01% |
+
+게다가 운영의 유일한 `hwp` 문서(`law sample2`)는 **HWPML(XML)** 이라 방금 이식한
+`@rhwp/core` 경로를 아예 안 탄다. **지금 Edge 로 옮긴 HWP 파서를 타는 운영 문서는 0 건.**
+
+### 22.7 검증
+
+| 항목 | 결과 |
+|---|---|
+| Deno `_shared/` 전체 | **129 passed / 0 failed** |
+| Python `test_chunk*` | 63 OK |
+| Python `test_entity*` | 26 OK |
+| Python 전체 discover | 1,465 tests, 4 failed (전부 기존 `test_embed_cache` — 단독 실행 시 통과, 이번 작업 무관) |
+
+### 22.8 커밋
+
+| 해시 | 내용 |
+|---|---|
+| `6d5944e` | HWP 파이프라인 기준선 직접 대조 |
+| `eb4add4` | chunk 레코드 조립 이식 (조각 c1) |
+| `27f2881` | entity_extract 이식 (`\b`·`\d` 경계) |
+
+### 22.9 남은 것
+
+| 항목 | 상태 |
+|---|---|
+| chunk 조각 c2 — `synonym_inject` | ⬜ (ENV OFF 라 급하지 않음, 훅은 던지게 해 둠) |
+| **PDF extract 이식** | ⬜ — **운영 99.3%. 다음 순위 1 순위** |
+| HWPML extract 이식 | ⬜ — 운영 hwp 문서가 실제로 타는 경로 |
+| hwpx / docx / pptx extract | ⬜ |
+| chunk 핸들러 결선 | ⬜ |
+| chunk_filter / content_gate / tag_summarize / load / embed / doc_embed / dedup | ⬜ |
+| `api-documents` HTTP 경로 · pg_cron 드레인(마이그 028) | ⬜ |
