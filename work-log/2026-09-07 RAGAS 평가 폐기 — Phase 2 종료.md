@@ -3815,7 +3815,7 @@ verify_cutover.ts   이메일 준비 완료 · 결제 준비 완료 · 프록시
 Edge 응답 확인: `/ingest/email` 401(secret 불일치 시) · `/payments/subscribe/ready`
 401(비인증) · `/billing/run` 401(secret 불일치) · `GET /billing/run` 405.
 
-### 55.4 **아직 증명 안 된 것 하나** — 실제 메일
+### 55.4 실제 메일 E2E — **성공** (2026-09-07 23:47)
 
 점검기는 secret 이 **설정됐는지**만 안다(503 → 401). Cloudflare Worker 의 값과
 **같은지**는 모른다. 다르면 수신 메일이 401 로 **조용히 버려진다**.
@@ -3829,7 +3829,39 @@ Edge 응답 확인: `/ingest/email` 401(secret 불일치 시) · `/payments/subs
 구독      : pro/active ✅
 ```
 
-성공하면 `documents` 에 `source_channel='email'` 행이 생긴다.
+**결과 — 파이프라인 전 구간이 한 번에 돌았다:**
+
+```
+문서   f39a0c6d  제목을 입력해주세요_-001
+타입   image · 51,669B · image/png
+경로   user/…/4adc9f24….png      ← pending/ 아닌 최종 경로(§42.4 의 의도된 차이)
+잡     completed / done · error_msg 없음
+청크   1개  [OCR 텍스트] "파도 모양의 로고와 'ANDADASEA'라는 텍스트가 있는 이미지"
+태그   로고 · 이미지 · 텍스트 · ANDADASEA
+flags  has_pii · has_watermark · third_party 기록됨
+```
+
+이메일 → 업로드 → extract(**단독 이미지 Vision**, §45) → chunk → chunk_filter →
+content_gate → tag_summarize → load → embed → doc_embed → dedup 전부.
+**이메일 secret 이 Worker 값과 일치**한다는 것도 이걸로 증명됐다(불일치면 401 로 버려진다).
+
+### 55.4b 진단을 두 번 틀렸다 — 기록해 둔다
+
+메일을 보낸 직후 문서가 안 보여서 **"Email Routing 이 워커를 안 부른다"** 고 단정했다.
+두 가지가 겹쳤다:
+
+1. **너무 일찍 봤다.** 문서 생성은 23:47:49 인데 폴링은 23:43 에 끝냈다.
+2. **자를 망가뜨렸다.** 이메일 워커 tail 을 `--format=json` 으로 파일에 리다이렉트한 뒤
+   `pkill` 로 죽여 버퍼가 flush 없이 날아갔다. "로그 0 줄" 을 증거로 썼는데 그건
+   측정 실패였다. (프록시 tail 은 `--format=pretty` 라 정상 동작했고, 그걸로 "tail 은
+   작동한다" 를 확인한 뒤에도 이메일 쪽 결론을 안 뒤집었다.)
+
+Cloudflare Analytics 가 `Total received 2 · Handled 2` 를 보여 주고 있었다 — **그게
+정답이었는데 모순 증거로 읽었다.** 외부 시스템이 "처리했다" 고 말할 때는 내 관측을
+먼저 의심해야 했다.
+
+> 이번 세션의 자[尺] 오판 아홉 번째. 앞의 여덟 번은 "자가 틀렸나?" 를 물어서 잡았는데,
+> 여기서는 자가 틀렸다는 걸 확인하고도(프록시 tail 정상) 결론을 안 고쳤다.
 
 ### 55.5 마이그 029 적용 완료 — **secret 사슬이 전 구간 검증됐다**
 
@@ -3867,13 +3899,12 @@ net._http_response 325   → **503 {"detail":"결제 기능이 비활성 상태�
 2. 프록시 배포 → 드리프트 0                ✅
 3. billing cron 마이그 029 적용            ✅ §55.5
 4. monitor-search-slo API base            ✅ §49
-5. 실제 메일 E2E                          ⬜ §55.4 — **남은 유일한 검증**
-6. LEGACY_ORIGIN 비우기                   ⬜ 5 이후
+5. 실제 메일 E2E                          ✅ §55.4
+6. LEGACY_ORIGIN 비우기                   ⬜ **남은 마지막 한 걸음**
 ```
 
 ### 55.7 아직 증명 안 된 것과 그 이유
 
-- **이메일 secret 이 Worker 와 같은가** — 점검기는 설정 여부만 안다. 실제 메일 1 통이
-  유일한 확인이다(§55.4).
+- ~~이메일 secret 이 Worker 와 같은가~~ — §55.4 에서 실제 메일로 증명됐다.
 - **Fernet 키가 Railway 와 같은가** — 지금은 `billing_key` 암호문이 **0 건**이라 확인할
   대상이 없다. 결제가 켜지고 첫 구독이 생긴 뒤에야 의미가 생긴다.
