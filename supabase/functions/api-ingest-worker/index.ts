@@ -8,21 +8,37 @@
  * 큐를 고갈시킬 수 있다. `ingest_queue_*` 래퍼도 service_role 에게만 EXECUTE 를 줬으므로
  * DB 층에서도 막히지만, **함수 층에서 먼저 끊는다**.
  *
- * ## 핸들러는 아직 비어 있다
- * `extract` 를 페이지 단위로 쪼개려면 중간 산출물 자리가 필요하다(청킹이 인접 섹션을
- * 병합하기 때문 — `worker.ts` 헤더 참조). 그 설계 전에는 등록하지 않는다.
- * 지금 이 함수는 **큐 왕복과 재시도 경로가 실제로 도는지**를 확인하는 용도다.
+ * ## 지금은 `extract`(HWP) 하나만 처리한다
+ * 중간 산출물 자리는 마이그 027 로 생겼다(`ingest_artifacts`). extract 는 거기에
+ * 산출물을 upsert 하고 끝난다 — **다음 단계를 큐에 넣지 않는다.** `chunk` 핸들러가
+ * 없어서 넣는 순간 archive + 잡 failed 가 되기 때문이다.
  */
+
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { loadSettings } from "../_shared/config.ts";
 import { createServiceClient } from "../_shared/db.ts";
 import { jsonResponse, methodNotAllowed, notFound, toResponse } from "../_shared/errors.ts";
 import { drainOnce, type TaskHandler } from "../_shared/ingest/worker.ts";
+import { makeExtractHandler } from "../_shared/ingest/handlers/extract.ts";
 
 const FUNCTION_PREFIX = "/api-ingest-worker";
 
-/** stage → 핸들러. **의도적으로 비어 있다** (위 주석 참조). */
-const HANDLERS: Record<string, TaskHandler> = {};
+/**
+ * stage → 핸들러.
+ *
+ * `extract` 만 있다. `chunk` 이후는 아직 안 옮겼고, **없는 stage 를 큐에 넣으면 즉시
+ * archive + 잡 failed** 가 되므로(`worker.ts` 계약) extract 핸들러도 다음 단계를
+ * enqueue 하지 않는다.
+ */
+function buildHandlers(
+  settings: { supabaseStorageBucket: string },
+  client: SupabaseClient,
+): Record<string, TaskHandler> {
+  return {
+    extract: makeExtractHandler({ client, bucket: settings.supabaseStorageBucket }),
+  };
+}
 
 function resolvePath(req: Request): string {
   const forwarded = req.headers.get("X-Forwarded-Path");
@@ -62,9 +78,10 @@ Deno.serve(async (req: Request) => {
     const settings = loadSettings();
     const url = new URL(req.url);
     const batch = Number(url.searchParams.get("batch") ?? "1");
+    const client = createServiceClient(settings);
     const result = await drainOnce({
-      client: createServiceClient(settings),
-      handlers: HANDLERS,
+      client,
+      handlers: buildHandlers(settings, client),
       batch: Number.isFinite(batch) && batch > 0 ? Math.min(batch, 10) : 1,
     });
     return jsonResponse(result);
