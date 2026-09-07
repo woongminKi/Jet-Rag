@@ -59,10 +59,21 @@ App Store / Play Store 등록 **없이** 폰 브라우저로 직접 설치 가�
 | Frontend (custom) | <https://jetrag.woong-s.com> | Vercel Hobby | $0 |
 | Frontend (default) | <https://jetrag.vercel.app> | Vercel Hobby | $0 |
 | API 진입 | <https://jetrag-api.woong-s.com> | Cloudflare Workers (경로 라우팅 프록시) | $0 |
-| Backend | Supabase Edge Functions 6개 (`ap-northeast-2`) | Supabase | (아래 포함) |
-| DB / Storage | Supabase (Seoul) | Supabase | — |
+| Backend | Supabase Edge Functions 6개 (`ap-northeast-2`) | Supabase Pro | (아래 포함) |
+| DB / Storage | Supabase (Seoul) | **Supabase Pro** | $25 |
 | 임베딩 | `BAAI/bge-m3` via DeepInfra (always-warm) | DeepInfra pay-per-token | < $1 |
 | 생성 LLM | Gemini 2.5 Flash | Google AI Studio | $0 (cap 안) |
+
+**총 운영비**: **~$26/월** (도메인 `woong-s.com` 별도 ~$10/년 Cloudflare Registrar).
+
+Supabase Pro $25 에는 컴퓨트 크레딧 $10(Micro 인스턴스 1개) · DB 8GB · Storage 100GB ·
+egress 250GB · **Edge Function 호출 200만 건**이 포함된다 (공식 가격 페이지 확인 2026-09-08).
+백엔드가 Edge Functions 로 옮겨 왔으므로 이 호출 한도가 새 관측 대상이다.
+
+> **비용 이력**: 이관 전은 Railway $5 + Supabase Free 로 ~$5~6/월이었다.
+> 2026-09-08 Supabase 를 Pro 로 올리면서 ~$26/월이 됐다. **Railway $5 는 서비스를
+> 삭제해야 실제로 빠진다** — 프록시가 안 부를 뿐 아직 돌고 있다
+> (`work-log/2026-09-08 Railway 제거 완료 — 종합 핸드오프.md` §7.1).
 
 **2026-09-08 — 백엔드가 Railway FastAPI 에서 Supabase Edge Functions 로 이관 완료.**
 `jetrag-api.woong-s.com` 은 그대로지만 그 뒤가 바뀌었다. Cloudflare Worker 가 경로를
@@ -423,12 +434,13 @@ Railway (backend) · Vercel (frontend) · Supabase (DB·Storage) · DeepInfra (e
 ### 3. 측정 문화 (Ragas + golden_v2 + 결정성 시험)
 - **golden_v2** 182 row 자체 골든셋 (broken row 라벨 재검수 거친 사용자 보강)
 - **Ragas** Faithfulness / Answer Relevancy / Context Precision 자동 측정 + Gemini 2.5 Flash judge
+  (2026-09-07 폐기 — Python 전용이라 Edge 로 못 옮겼다. 아래 수치는 운영했던 기간의 기록이다)
 - **결정성 시험** — DeepInfra swap 전 n=100 cosine 0.999984 ≥ 0.999 사전 검증 → 캐시 호환 + R@10 회귀 0 이론 보장
 - **noise floor 도달 확인** — top-1 ±0.012 변동 인제스트 비결정성 정량화, surgical 실험 종결 판단
 
 ### 4. 한국어 멀티포맷 RAG + 멀티모달
 - BGE-M3 (1024-dim dense + sparse) — 한국어 다국어 강건성
-- Gemini 2.0 Flash **Vision** — 표·다이어그램·화이트보드 캡셔닝 (vision 201장 누적, $1.72)
+- Gemini 2.5 Flash **Vision** — 표·다이어그램·화이트보드 캡셔닝 (vision 201장 누적, $1.72)
 - **PGroonga** 토큰 분석 (Mecab) — 한국어 어절 sparse
 - **하이브리드 RRF k=60** (dense + sparse + RRF Python merge) → KPI #7 qtype-aware 우세 실증
 
