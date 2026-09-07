@@ -1032,3 +1032,115 @@ npm 에 1.27.2 가 없다(1.27.0 다음이 1.28.0).
 | chunk 조각 c2 (`synonym_inject`) | ⬜ |
 | chunk_filter / content_gate / tag_summarize / load / embed / doc_embed / dedup | ⬜ |
 | `api-documents` HTTP 경로 · pg_cron 드레인(마이그 028) | ⬜ |
+
+
+## 24. Phase 3 — extract→chunk 결선. **실제 DB E2E 로만 잡히는 버그 2건**
+
+§23 까지는 함수를 옮기고 대조만 했다. 여기서 처음으로 **큐·Storage·DB 를 붙여 끝까지**
+돌렸다. 그러자 대조로는 절대 안 나올 버그가 두 개 나왔다.
+
+### 24.1 구조
+
+| 단계 | 단위 | 다음 작업 |
+|---|---|---|
+| `extract` (PDF) | 페이지 **10 개**씩 | 남았으면 다음 범위, 끝났으면 `chunk` |
+| `extract` (HWP) | 문서 전체 1 회 | 바로 `chunk` |
+| `chunk` | extract 아티팩트 전부 | 없음(다음 핸들러 미이식) |
+
+**PDF 는 순차여야 한다.** `current_title` 이 문서 전체 sticky 라 범위를 병렬로 돌리면
+제목이 어긋난다(§23.1). 그래서 범위를 한꺼번에 큐에 넣지 않고 **직전 범위가 끝날 때
+다음 하나만** 넣는다. `carryTitle` 은 큐 메시지가 아니라 **직전 아티팩트의
+`next_title`** 에서 읽는다 — 메시지에 실으면 재시도 때 낡은 값이 따라온다.
+
+저장 → enqueue **순서**도 계약이다. 반대면 다음 태스크가 아직 없는 아티팩트에서
+`carryTitle` 을 찾다가 던진다. 단위 테스트로 고정했다.
+
+### 24.2 실제 Supabase E2E
+
+`api/scripts/e2e_ingest_worker.ts` — `documents` 는 읽기만 하고, 만든 job 1 행과 그
+job_id 의 아티팩트만 쓰고 끝나면 지운다.
+
+| 문서 | 페이지 | 태스크 | 섹션 | 청크 | 시간 |
+|---|---|---|---|---|---|
+| law sample3 | 4 | 2 | 34 | 26 | 1.7s |
+| 보건의료 | 26 | 3 | 614 | 149 | 2.4s |
+| arXiv | 56 | 6 | 1,239 | 749 | 3.1s |
+| 삼성 사업보고서 | 573 | 58 | 29,787 | 8,477 | 27.7s |
+| **SK 사업보고서** | **1,513** | **152** | **72,588** | **25,831** | **85.7s** |
+
+전부 페이지 분할 대조·파이프라인 대조와 같은 청크 수다. 큐 잔여 0, 아티팩트 잔여 0 확인.
+
+### 24.3 **버그 ① — Postgres jsonb 는 NUL 을 못 받는다**
+
+arXiv 를 돌리자 `ingest_artifacts 저장 실패: unsupported Unicode escape sequence` 로
+죽었다. LaTeX PDF 가 `U+0000` 을 뱉는데 Postgres 는 TEXT/JSONB 어디에도 못 담는다.
+
+원본은 이미 알고 있었다 — `SupabasePgVectorStore._strip_null_bytes` 가 **`chunks` 저장
+직전**에 재귀 제거한다(주석: "arXiv 같은 LaTeX PDF 추출 보호"). 운영 chunks 에 NUL 이
+0 건인 이유다.
+
+Edge 는 중간 산출물을 jsonb 에 넣어야 해서 **더 일찍** 지워야 한다. 그러면 청킹 입력의
+길이가 줄어 800 자 분할 경계가 밀릴 수 있다. 쓰기 전에 쟀다:
+
+| 자산 | NUL | 늦게 지움(현행 Python) | 일찍 지움(Edge) |
+|---|---|---|---|
+| arXiv 56p | 96 개 | 749 청크 | 749 청크 — **동일** |
+| sample-report 60p | 0 | 525 | 525 |
+| SK 60p | 0 | 758 | 758 |
+
+이 자산들에서 같다는 뜻이지 일반 보장은 아니다. 갈리기 시작하면 파이프라인 대조가 잡는다.
+
+### 24.4 **버그 ② — `mediabox-clip` 은 deprecated 였다**
+
+E2E 로그에 `The 'mediabox-clip' option has been deprecated. Use 'clip' instead.` 가
+찍혔다. §23.2 에서 PyMuPDF `TEXTFLAGS_DICT` 를 재현하려고 넣은 옵션이다. 하위호환으로
+동작은 했지만(양쪽 결과 동일 확인) 경고를 남기면 다음 사람이 "무시되는 옵션" 으로
+오해한다 — `clip` 으로 바꿨다(`TEXT_CLIP == TEXT_MEDIABOX_CLIP == 64`).
+
+### 24.5 페이지 분할이 결과를 바꾸지 않는다
+
+분할 설계의 성립 조건이라 따로 고정했다(`verify_pdf_page_split.py`).
+**분할 크기를 4 종(1/3/10/7 페이지) 써서 경계 위치를 옮겨 가며** 통합 처리와 대조한다 —
+한 가지 크기로만 재면 우연히 맞을 수 있다.
+
+6 문서 × 4 크기 **전부 digest 동일**. 음성 대조로 `carryTitle` 인계를 끊으면 **5/6
+문서가 깨진다** — 검사가 유효하다는 증거다(2 페이지짜리 `law_sample2` 만 안 깨지는데,
+sticky title 이 경계를 넘을 일이 없어서다).
+
+### 24.6 E2E 스크립트 자체의 결함도 하나 고쳤다
+
+첫 arXiv 실패 뒤 두 번째 실행이 **FK 위반**으로 죽었다. 실패한 큐 메시지는 `vt` 동안
+안 보이는데, 정리 루프가 그때 읽으려 해서 못 지웠다. 그 사이 job 행은 지워졌으니
+다음 실행이 없는 job_id 를 참조한 것이다. `drainOnce` 가 돌려주는 `errors[].msg_id` 로
+바로 보관하게 고쳤다.
+
+### 24.7 검증
+
+| 항목 | 결과 |
+|---|---|
+| Deno `_shared/` 전체 | **147 passed / 0 failed** (신규 23) |
+| 페이지 분할 대조 | 6 문서 × 4 분할 크기 FAIL 0 |
+| 파이프라인 대조 | FAIL 0 (알려진 차이 8 건 그대로) |
+| 실제 DB E2E | 5 문서 성공, 큐·아티팩트 잔여 0 |
+
+### 24.8 커밋
+
+| 해시 | 내용 |
+|---|---|
+| `c257011` | extract→chunk 결선 + 페이지 분할 워커 + NUL 방어 |
+
+### 24.9 다음 단계가 알아야 할 것
+
+**chunk 아티팩트가 크다** — 삼성 4.4MB, SK 는 약 13MB 로 추정된다. `load` 단계가 이걸
+통째로 읽으면 Edge 메모리 상한 240MB(Phase 0 실측)에 부담이 된다. JSON 파싱 후 힙은
+몇 배가 되므로 **분할 읽기**가 필요하다. chunk 핸들러가 레코드를 seq 로 나눠 저장하도록
+바꾸는 편이 나을 수 있다.
+
+| 항목 | 상태 |
+|---|---|
+| `load` 단계 — 분할 읽기 설계 필요 | ⬜ |
+| pg_cron 드레인(마이그 028) · Edge 배포 | ⬜ |
+| HWPML / hwpx / docx / pptx extract | ⬜ |
+| chunk 조각 c2 (`synonym_inject`) | ⬜ |
+| chunk_filter / content_gate / tag_summarize / embed / doc_embed / dedup | ⬜ |
+| `api-documents` HTTP 경로 | ⬜ |
