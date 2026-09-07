@@ -38,12 +38,8 @@ import {
   type VisionCarry,
   type VisionEnv,
 } from "../vision_enrich.ts";
-import { checkCombined, type BudgetStatus } from "../budget_guard.ts";
-import {
-  asIngestMode,
-  DEFAULT_INGEST_MODE,
-  resolvePageCap,
-} from "../ingest_mode.ts";
+import { type BudgetStatus, checkCombined } from "../budget_guard.ts";
+import { asIngestMode, DEFAULT_INGEST_MODE, resolvePageCap } from "../ingest_mode.ts";
 import type { TaskHandler, TaskPayload } from "../worker.ts";
 
 export interface VisionDeps {
@@ -202,7 +198,10 @@ export function makeVisionHandler(deps: VisionDeps): TaskHandler {
       for (let p = 1; p <= processCount; p++) pages.push(p);
       const uncached = doc.sha256
         ? await visionCache.countUncachedPages(
-          { client: deps.client, env }, doc.sha256, pages)
+          { client: deps.client, env },
+          doc.sha256,
+          pages,
+        )
         : null;
       const allCached = uncached === 0 && processCount > 0;
       if (allCached) {
@@ -305,11 +304,19 @@ export function makeVisionHandler(deps: VisionDeps): TaskHandler {
       try {
         if (result.carry.budgetExceeded !== null) {
           await markBudgetExceeded(
-            deps.client, task.doc_id, flags, result.carry.budgetExceeded);
+            deps.client,
+            task.doc_id,
+            flags,
+            result.carry.budgetExceeded,
+          );
         }
         if (result.carry.pageCapExceeded !== null) {
           await markPageCapExceeded(
-            deps.client, task.doc_id, flags, result.carry.pageCapExceeded);
+            deps.client,
+            task.doc_id,
+            flags,
+            result.carry.pageCapExceeded,
+          );
         }
       } catch (e) {
         console.warn(`vision cap flags 마킹 실패 (graceful): ${e} (doc=${task.doc_id})`);

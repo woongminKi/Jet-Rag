@@ -6,8 +6,11 @@ W22 Day 3 — by_mode rendering + DB 영속화 baseline 갱신.
 - W6 Day 2 (DE-65) 후 chunks 555 → 1256 (×2.3) — HNSW 인덱스 부담 ↑.
 - W4-Q-3 embedding cache 효과 (cache hit p95 159~169ms) 가 누적 자료에서도 유지되는지 추적 필요.
 - search_metrics ring buffer 는 in-memory (재시작 시 reset, W3 P3 F-4)
-- W15 Day 2·3 — search_metrics_log 테이블 + write-through 영속화 ship. 본 스크립트는 여전히
-  in-memory ring buffer snapshot 기반 (운영 시점 빠른 가시성). 장기 추세는 /stats/trend RPC 활용.
+- W15 Day 2·3 — search_metrics_log 테이블 + write-through 영속화 ship.
+- 2026-09-05 Edge 이관 — `/stats` 가 `search_slo.source` 로 표본 출처를 알려준다
+  (`db` = search_metrics_log 최근 500행 / `ring` = in-memory / `ring_fallback`).
+  Edge 는 isolate 가 휘발성이라 **db 가 기본**이다. 렌더러가 그 값을 그대로 표시한다.
+  장기 추세는 /stats/trend RPC 활용.
 
 사용
     cd api && uv run python scripts/monitor_search_slo.py            # 1회 snapshot
@@ -28,8 +31,8 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-# W14 Day 2 — 외부 배포 backend (Railway 등) 가리키도록 env 지원.
-# CI / cron 에서 `JET_RAG_API_BASE=https://api.example.com` 으로 override.
+# W14 Day 2 — 배포된 backend 를 가리키도록 env 지원.
+# CI(.github/workflows/monitor-search-slo.yml)는 프록시 도메인을 넘긴다.
 _BASE = os.environ.get("JET_RAG_API_BASE", "http://localhost:8000").rstrip("/")
 
 # 2026-09-04 — Cloudflare 프록시 전환(Phase 1 Task 1.7) 이후 `Python-urllib/*` UA 가

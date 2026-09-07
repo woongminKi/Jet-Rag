@@ -168,9 +168,8 @@ export function makeChunkHandler(deps: ChunkDeps): TaskHandler {
     // `vision_type` 은 `ExtractionResult.metadata` 에서 온다 — 단독 이미지 업로드에서만
     // 채워진다(스캔 PDF 경로는 원본이 그 값을 안 넘긴다).
     const srcRows = scanRows.length > 0 ? scanRows : rows;
-    const visionType =
-      (srcRows[0]?.payload as { metadata?: Record<string, unknown> } | null)
-        ?.metadata?.["vision_type"];
+    const visionType = (srcRows[0]?.payload as { metadata?: Record<string, unknown> } | null)
+      ?.metadata?.["vision_type"];
     const gated = runContentGateStage({ chunks: records, visionType });
     records = gated.chunks;
     await mergeDocFlags(deps.client, task.doc_id, gated.flagsUpdate);

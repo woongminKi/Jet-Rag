@@ -21,11 +21,11 @@
  * | 원본 | 문제 | 대응 |
  * |---|---|---|
  * | `statistics.median` | 짝수 개면 **두 중간값의 평균** | 직접 구현 |
- * | 정규식 `\s` | Python 은 `\x1c-\x1f`·`\x85` 포함, JS 는 `﻿` 포함 | `PY_SP` |
+ * | 정규식 `\s` | Python 은 `\x1c-\x1f`·`\x85` 포함, JS 는 `U+FEFF` 포함 | `PY_SP` |
  * | 정규식 `\d` | Python 은 유니코드 Nd 전부 | `\p{Nd}` |
  * | 정규식 `$` | Python 은 **끝의 개행 하나 앞**에서도 매칭 | `(?=\n?$)` |
  * | `len(text)` | 코드포인트 | 직접 셈 |
- * | `.strip()` | `\x1c` 를 지우고 `﻿` 는 안 지움 | `pyStrip` |
+ * | `.strip()` | `\x1c` 를 지우고 `U+FEFF` 는 안 지움 | `pyStrip` |
  */
 
 import { PY_SP, pyStrip } from "../search/pystr.ts";

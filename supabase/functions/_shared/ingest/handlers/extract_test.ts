@@ -11,11 +11,7 @@
  */
 
 import { assertEquals, assertRejects } from "@std/assert";
-import {
-  GRACEFUL_SKIP_DOC_TYPES,
-  makeExtractHandler,
-  SUPPORTED_DOC_TYPES,
-} from "./extract.ts";
+import { GRACEFUL_SKIP_DOC_TYPES, makeExtractHandler, SUPPORTED_DOC_TYPES } from "./extract.ts";
 import { ALLOWED_EXTENSIONS } from "../../documents/input_gate.ts";
 import type { PdfRangeResult } from "../pdf_open.ts";
 import type { TaskPayload } from "../worker.ts";
@@ -387,7 +383,11 @@ Deno.test("스캔 PDF — 문서 전체 텍스트가 50자 이하면 chunk 대�
     const end = Math.min(3, o.from + o.count);
     const processed = Math.max(0, end - o.from);
     return Promise.resolve({
-      sections: [], rawParts: [], nextTitle: null, totalPages: 3, processed,
+      sections: [],
+      rawParts: [],
+      nextTitle: null,
+      totalPages: 3,
+      processed,
     });
   };
   const { client, sends } = fakeClient(PDF_DOC);

@@ -85,8 +85,7 @@ function precomputeCoeffs(inSize: number, outSize: number): Coeffs {
     for (let x = 0; x < ksize; x++) {
       const v = k[x];
       // 음수는 -0.5, 양수는 +0.5 를 더해 절삭 — Pillow 와 같은 0 방향 반올림.
-      kk[base + x] = Math.trunc(v < 0 ? -0.5 + v * (1 << PRECISION_BITS)
-                                     : 0.5 + v * (1 << PRECISION_BITS));
+      kk[base + x] = Math.trunc(v < 0 ? -0.5 + v * (1 << PRECISION_BITS) : 0.5 + v * (1 << PRECISION_BITS));
     }
     bounds[xx * 2] = xmin;
     bounds[xx * 2 + 1] = xmax;

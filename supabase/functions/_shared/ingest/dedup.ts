@@ -175,8 +175,7 @@ export async function runDedupStage(
     const { data: fData, error: fErr } = await deps.client
       .from("documents").select("flags").eq("id", docId).limit(1);
     if (fErr) throw new Error(`flags 조회 실패: ${fErr.message}`);
-    const existing =
-      ((fData ?? [])[0] as { flags?: Record<string, unknown> } | undefined)?.flags ?? {};
+    const existing = ((fData ?? [])[0] as { flags?: Record<string, unknown> } | undefined)?.flags ?? {};
     const { error: uErr } = await deps.client
       .from("documents").update({ flags: { ...existing, ...match } }).eq("id", docId);
     if (uErr) throw new Error(`flags 갱신 실패: ${uErr.message}`);

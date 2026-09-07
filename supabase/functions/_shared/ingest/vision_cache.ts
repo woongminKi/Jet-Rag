@@ -80,7 +80,7 @@ export function deserialize(raw: unknown): VisionCaption | null {
     ocr_text: ocrText as string,
     caption: captionText as string,
     structured: (structured !== null && typeof structured === "object" &&
-      !Array.isArray(structured))
+        !Array.isArray(structured))
       ? structured as Record<string, unknown>
       : null,
     usage: null, // 캐시 hit 은 새 호출이 아니다

@@ -125,7 +125,10 @@ export async function checkDocBudget(
   }
   if (!docId) {
     return {
-      allowed: true, usedUsd: 0.0, capUsd, scope: "doc",
+      allowed: true,
+      usedUsd: 0.0,
+      capUsd,
+      scope: "doc",
       reason: "doc_id 미지정 (단독 이미지 호출)",
     };
   }
@@ -137,13 +140,19 @@ export async function checkDocBudget(
   );
   if (used === null) {
     return {
-      allowed: true, usedUsd: 0.0, capUsd, scope: "doc",
+      allowed: true,
+      usedUsd: 0.0,
+      capUsd,
+      scope: "doc",
       reason: "DB 조회 실패 — 가드 graceful (allowed)",
     };
   }
   if (used > capUsd) {
     return {
-      allowed: false, usedUsd: used, capUsd, scope: "doc",
+      allowed: false,
+      usedUsd: used,
+      capUsd,
+      scope: "doc",
       reason: `문서당 비용 한도 초과 ` +
         `($${pyFormatF(used, 4)} > $${pyFormatF(capUsd, 4)}) — vision 보강 일부 생략`,
     };
@@ -168,13 +177,19 @@ export async function checkDailyBudget(
   );
   if (used === null) {
     return {
-      allowed: true, usedUsd: 0.0, capUsd, scope: "daily",
+      allowed: true,
+      usedUsd: 0.0,
+      capUsd,
+      scope: "daily",
       reason: "DB 조회 실패 — 가드 graceful (allowed)",
     };
   }
   if (used > capUsd) {
     return {
-      allowed: false, usedUsd: used, capUsd, scope: "daily",
+      allowed: false,
+      usedUsd: used,
+      capUsd,
+      scope: "daily",
       reason: `일일 비용 한도 초과 ` +
         `($${pyFormatF(used, 4)} > $${pyFormatF(capUsd, 4)}) — vision 보강 일부 생략`,
     };
@@ -189,7 +204,11 @@ export async function check24hSlidingBudget(
   const { capUsd } = opts;
   if (isDisabled(deps.env)) {
     return {
-      allowed: true, usedUsd: 0.0, capUsd, scope: "24h_sliding", reason: "가드 비활성 (ENV)",
+      allowed: true,
+      usedUsd: 0.0,
+      capUsd,
+      scope: "24h_sliding",
+      reason: "가드 비활성 (ENV)",
     };
   }
   const cutoff = slidingCutoffIso(deps.nowMs);
@@ -201,19 +220,29 @@ export async function check24hSlidingBudget(
   );
   if (used === null) {
     return {
-      allowed: true, usedUsd: 0.0, capUsd, scope: "24h_sliding",
+      allowed: true,
+      usedUsd: 0.0,
+      capUsd,
+      scope: "24h_sliding",
       reason: "DB 조회 실패 — 가드 graceful (allowed)",
     };
   }
   if (used > capUsd) {
     return {
-      allowed: false, usedUsd: used, capUsd, scope: "24h_sliding",
+      allowed: false,
+      usedUsd: used,
+      capUsd,
+      scope: "24h_sliding",
       reason: `최근 24시간 비용 한도 초과 ` +
         `($${pyFormatF(used, 4)} > $${pyFormatF(capUsd, 4)}) — vision 보강 일부 생략`,
     };
   }
   return {
-    allowed: true, usedUsd: used, capUsd, scope: "24h_sliding", reason: "24시간 한도 내",
+    allowed: true,
+    usedUsd: used,
+    capUsd,
+    scope: "24h_sliding",
+    reason: "24시간 한도 내",
   };
 }
 
@@ -235,13 +264,17 @@ export async function checkCombined(
 ): Promise<BudgetStatus> {
   if (isDisabled(deps.env)) {
     return {
-      allowed: true, usedUsd: 0.0, capUsd: opts.docCapUsd, scope: "doc",
+      allowed: true,
+      usedUsd: 0.0,
+      capUsd: opts.docCapUsd,
+      scope: "doc",
       reason: "가드 비활성 (ENV)",
     };
   }
   if (opts.docId) {
     const docStatus = await checkDocBudget(deps, {
-      docId: opts.docId, capUsd: opts.docCapUsd,
+      docId: opts.docId,
+      capUsd: opts.docCapUsd,
     });
     if (!docStatus.allowed) return docStatus;
   }
@@ -267,25 +300,37 @@ export function checkDocPageCap(
   const { calledPages, pageCap } = opts;
   if (isDisabled(env)) {
     return {
-      allowed: true, usedUsd: 0.0, capUsd: pageCap, scope: "page_cap",
+      allowed: true,
+      usedUsd: 0.0,
+      capUsd: pageCap,
+      scope: "page_cap",
       reason: "가드 비활성 (ENV)",
     };
   }
   if (pageCap <= 0) {
     return {
-      allowed: true, usedUsd: calledPages, capUsd: 0.0, scope: "page_cap",
+      allowed: true,
+      usedUsd: calledPages,
+      capUsd: 0.0,
+      scope: "page_cap",
       reason: "페이지 cap 무한 (ENV 0)",
     };
   }
   if (calledPages >= pageCap) {
     return {
-      allowed: false, usedUsd: calledPages, capUsd: pageCap, scope: "page_cap",
+      allowed: false,
+      usedUsd: calledPages,
+      capUsd: pageCap,
+      scope: "page_cap",
       reason: `문서당 vision 페이지 한도 도달 ` +
         `(${calledPages}/${pageCap}) — vision 보강 일부 생략`,
     };
   }
   return {
-    allowed: true, usedUsd: calledPages, capUsd: pageCap, scope: "page_cap",
+    allowed: true,
+    usedUsd: calledPages,
+    capUsd: pageCap,
+    scope: "page_cap",
     reason: "페이지 한도 내",
   };
 }

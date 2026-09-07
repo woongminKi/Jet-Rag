@@ -7,6 +7,10 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import handler from "./index.js";
+// **정적 import 다.** `Deno.readTextFile` 로 읽으면 `--allow-read` 가 필요한데
+// CI 는 `deno test --allow-net` 으로 돈다(권한 없음). 모듈 그래프에 넣으면
+// 권한 없이 읽힌다 — 이것 때문에 이 잡이 오래 빨간불이었다.
+import FASTAPI_ROUTES from "../../../api/scripts/fixtures/fastapi_routes.json" with { type: "json" };
 import { resolveTarget } from "./routes.js";
 
 const ENV = {
@@ -81,11 +85,10 @@ const MIGRATED_METHOD_PATHS = new Set([
   "POST /billing/run",
 ]);
 
-Deno.test("프록시가 Edge 로 보내는 원본 라우트는 전부 이관돼 있어야 한다", async () => {
+Deno.test("프록시가 Edge 로 보내는 원본 라우트는 전부 이관돼 있어야 한다", () => {
   // `api/scripts/fixtures/fastapi_routes.json` 은 FastAPI 앱에서 뽑은 실제 라우트 전수다.
   // 원본에 라우트가 추가됐는데 프록시 규칙이 그걸 삼키면 여기서 터진다.
-  const url = new URL("../../../api/scripts/fixtures/fastapi_routes.json", import.meta.url);
-  const routes = JSON.parse(await Deno.readTextFile(url));
+  const routes = FASTAPI_ROUTES;
   const swallowed = [];
   for (const { path, methods } of routes) {
     for (const method of methods) {
@@ -99,9 +102,8 @@ Deno.test("프록시가 Edge 로 보내는 원본 라우트는 전부 이관돼 
   assertEquals(swallowed, [], `Edge 로 가는데 이관되지 않은 경로: ${swallowed.join(", ")}`);
 });
 
-Deno.test("이관 선언 목록은 원본에 실재하는 경로여야 한다", async () => {
-  const url = new URL("../../../api/scripts/fixtures/fastapi_routes.json", import.meta.url);
-  const routes = JSON.parse(await Deno.readTextFile(url));
+Deno.test("이관 선언 목록은 원본에 실재하는 경로여야 한다", () => {
+  const routes = FASTAPI_ROUTES;
   const known = new Set(routes.map((r) => r.path));
   // 오타나 이미 사라진 경로를 이관했다고 적어 두면 위 테스트가 헐거워진다.
   const ghosts = [...MIGRATED_PATHS].filter((p) => !known.has(p));
@@ -308,11 +310,7 @@ Deno.test("POST 의 본문과 메서드를 보존한다", async () => {
  * 폐기)에서 세 번 반복됐다. 라우트 전수에서 유도하면 마지막 하나까지 넘어간 순간
  * `undefined` 가 되어 즉시 드러난다.
  */
-const routesForLegacy = JSON.parse(
-  await Deno.readTextFile(
-    new URL("../../../api/scripts/fixtures/fastapi_routes.json", import.meta.url),
-  ),
-);
+const routesForLegacy = FASTAPI_ROUTES;
 const LEGACY_EXAMPLE = (() => {
   for (const { path, methods } of routesForLegacy) {
     for (const method of methods) {

@@ -37,7 +37,15 @@ def _make_dense_response(seed: float = 0.1) -> httpx.Response:
 
 
 class EmbedCacheBaseTest(unittest.TestCase):
-    """공통 setUp — HF_API_TOKEN dummy 주입 + 싱글톤 격리."""
+    """공통 setUp — HF_API_TOKEN dummy 주입 + 싱글톤 격리 + **영구 캐시 차단**.
+
+    `embed_query` 는 2단 캐시다: ① in-process LRU ② DB `embed_query_cache`.
+    이 파일이 검증하는 건 ①뿐인데 ②를 막지 않으면 **단독 실행은 통과하고 전체 실행은
+    실패한다** — 다른 테스트가 Supabase 자격증명을 올려놓으면 ②가 hit 을 내서
+    `_last_cache_hit` 가 True 가 되기 때문이다(실측: `unittest discover` 에서만 4건 실패).
+
+    그래서 ②를 setUp 에서 통째로 끊는다. 이 테스트의 관심사가 아니다.
+    """
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -47,6 +55,13 @@ class EmbedCacheBaseTest(unittest.TestCase):
         from app.adapters.impl.bgem3_hf_embedding import get_bgem3_provider
 
         get_bgem3_provider.cache_clear()
+
+        # 영구 캐시(DB)는 항상 miss + write 무시 — LRU 만 남긴다.
+        for target, repl in (("lookup", lambda *_a, **_k: None),
+                             ("upsert", lambda *_a, **_k: None)):
+            patcher = patch(f"app.services.embed_query_cache.{target}", repl)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
 
 class CacheHitTest(EmbedCacheBaseTest):

@@ -31,12 +31,8 @@ import { chunkRecordToRow } from "../chunk_row.ts";
 import { countPdfPages } from "../pdf_raster.ts";
 import { stripNulls } from "../strip_nul.ts";
 import * as visionCache from "../vision_cache.ts";
-import { checkCombined, type BudgetStatus } from "../budget_guard.ts";
-import {
-  asIngestMode,
-  DEFAULT_INGEST_MODE,
-  resolvePageCap,
-} from "../ingest_mode.ts";
+import { type BudgetStatus, checkCombined } from "../budget_guard.ts";
+import { asIngestMode, DEFAULT_INGEST_MODE, resolvePageCap } from "../ingest_mode.ts";
 import {
   emptyCarry,
   readVisionEnv,
@@ -45,11 +41,7 @@ import {
   type VisionCarry,
   type VisionEnv,
 } from "../vision_enrich.ts";
-import {
-  maxChunkIdx,
-  sectionsToChunks,
-  visionProcessedPages,
-} from "../vision_incremental.ts";
+import { maxChunkIdx, sectionsToChunks, visionProcessedPages } from "../vision_incremental.ts";
 import type { TaskHandler, TaskPayload } from "../worker.ts";
 
 /** `load` 와 같은 이유로 같은 값 — Supabase statement_timeout 안에 들어가야 한다. */
@@ -223,7 +215,10 @@ export function makeVisionMissingHandler(deps: VisionMissingDeps): TaskHandler {
       // --- 사전 비용 검사 (전 페이지 캐시 hit 이면 우회) ---
       const uncached = doc.sha256
         ? await visionCache.countUncachedPages(
-          { client: deps.client, env }, doc.sha256, missing)
+          { client: deps.client, env },
+          doc.sha256,
+          missing,
+        )
         : null;
       if (uncached === 0) {
         console.info(
@@ -248,7 +243,9 @@ export function makeVisionMissingHandler(deps: VisionMissingDeps): TaskHandler {
           );
           await markBudgetExceeded(deps.client, task.doc_id, pre);
           await enqueue(deps.client, {
-            job_id: task.job_id, doc_id: task.doc_id, stage: "embed",
+            job_id: task.job_id,
+            doc_id: task.doc_id,
+            stage: "embed",
           });
           return;
         }
@@ -370,14 +367,12 @@ export function makeVisionMissingHandler(deps: VisionMissingDeps): TaskHandler {
     // 저장이 끝난 뒤에 다음 작업을 넣는다 — 다른 핸들러와 같은 계약이다.
     await enqueue(
       deps.client,
-      done
-        ? { job_id: task.job_id, doc_id: task.doc_id, stage: "embed" }
-        : {
-          job_id: task.job_id,
-          doc_id: task.doc_id,
-          stage: "vision_missing",
-          from: from + 1,
-        },
+      done ? { job_id: task.job_id, doc_id: task.doc_id, stage: "embed" } : {
+        job_id: task.job_id,
+        doc_id: task.doc_id,
+        stage: "vision_missing",
+        from: from + 1,
+      },
     );
   };
 }

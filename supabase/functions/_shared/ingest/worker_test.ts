@@ -139,7 +139,8 @@ Deno.test("빈 큐면 아무 것도 안 한다", async () => {
 });
 
 Deno.test("여러 건을 각각 독립 처리한다 (하나 실패해도 나머지 진행)", async () => {
-  const { client, calls } = fakeClient([
+  // 이 테스트는 개수(`r.read/ok/retried/archived`)만 본다 — `calls` 는 안 쓴다.
+  const { client } = fakeClient([
     msg({ msg_id: 1 }),
     msg({ msg_id: 2, message: { job_id: "j2", doc_id: "d2", stage: "extract" } }),
     msg({ msg_id: 3, message: { job_id: "j3", doc_id: "d3", stage: "없는단계" } }),

@@ -22,12 +22,7 @@
  * 그래서 알파를 뗄 때는 `alpha=false` 픽스맵을 새로 만들어 색 채널만 옮긴다.
  */
 
-import {
-  applyOrientation,
-  type Orientation,
-  type Raster,
-  readOrientation,
-} from "./exif_orientation.ts";
+import { applyOrientation, type Orientation, type Raster, readOrientation } from "./exif_orientation.ts";
 import { normalizeTarget, resizeLanczosN } from "./image_normalize.ts";
 
 const JPEG_QUALITY = 85;

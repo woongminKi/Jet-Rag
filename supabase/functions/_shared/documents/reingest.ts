@@ -32,8 +32,8 @@ import {
   asIngestMode,
   DEFAULT_INGEST_MODE,
   flagsWithIngestMode,
-  validateIngestMode,
   type IngestMode,
+  validateIngestMode,
 } from "../ingest/ingest_mode.ts";
 import { visionProcessedPages } from "../ingest/vision_incremental.ts";
 
@@ -228,8 +228,7 @@ export async function reingestDocument(
 }
 
 /** 원본 `ReingestMissingResponse.note` 기본값. */
-const MISSING_NOTE =
-  "incremental vision reingest — 누락 페이지만 처리 후 백그라운드 진행. " +
+const MISSING_NOTE = "incremental vision reingest — 누락 페이지만 처리 후 백그라운드 진행. " +
   "결과는 GET /documents/{id}/status 로 폴링.";
 
 /** `POST /documents/{doc_id}/reingest-missing` */
@@ -241,7 +240,10 @@ export async function reingestMissingVision(
 ): Promise<ReingestResult> {
   try {
     const doc = await fetchOwnedDoc(
-      deps.client, docId, userId, "id, doc_type, flags, user_id, storage_path",
+      deps.client,
+      docId,
+      userId,
+      "id, doc_type, flags, user_id, storage_path",
     );
     // 원본 순서 그대로다 — PDF 검사가 409 보다 **먼저**다.
     if (doc.doc_type !== "pdf") {
@@ -273,7 +275,10 @@ export async function reingestMissingVision(
 
     const jobId = await createJob(deps.client, docId);
     await enqueue(deps.client, {
-      job_id: jobId, doc_id: docId, stage: "vision_missing", from: 0,
+      job_id: jobId,
+      doc_id: docId,
+      stage: "vision_missing",
+      from: 0,
     });
 
     return {

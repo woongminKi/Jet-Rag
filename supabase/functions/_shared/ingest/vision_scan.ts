@@ -151,9 +151,7 @@ export async function runScanWindow(
           sections.push({
             text: sec.text,
             page: pageIdx + 1,
-            section_title: baseTitle !== ""
-              ? pyStrip(`p.${pageIdx + 1} ${baseTitle}`)
-              : `p.${pageIdx + 1}`,
+            section_title: baseTitle !== "" ? pyStrip(`p.${pageIdx + 1} ${baseTitle}`) : `p.${pageIdx + 1}`,
             bbox: null,
             // **metadata 를 안 넘긴다.** 원본이 `ExtractedSection(...)` 호출에서
             // 빼먹었고(enrich 는 넘긴다), 그 결과 caption 메타가 여기서는 사라진다.

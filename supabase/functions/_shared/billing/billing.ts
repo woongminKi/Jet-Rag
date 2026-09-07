@@ -31,15 +31,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { pyStrError } from "../pyerror.ts";
 import { fernetDecrypt, fernetEncrypt } from "./fernet.ts";
 import type { KakaoPayClient, ReadyResult } from "./kakaopay.ts";
-import {
-  addOneMonth,
-  formatIso,
-  minusDays,
-  parseIso,
-  type PyDateParts,
-  utcParts,
-  ymd,
-} from "./pydate.ts";
+import { addOneMonth, formatIso, minusDays, parseIso, type PyDateParts, utcParts, ymd } from "./pydate.ts";
 
 const PRICE_KRW = 6900;
 /** 결제 실패 후 canceled 까지 grace (결정 이력 #7). */
@@ -272,7 +264,13 @@ export async function chargeDueSubscriptions(deps: BillingDeps): Promise<ChargeR
     // 1) 선결제 검증 — billing_key 가 없으면 past_due. 조용히 계속 건너뛰면 안 된다.
     if (!enc) {
       try {
-        await markPastDue(deps.client, userId, row as unknown as Record<string, unknown>, atIso, "billing_key 없음");
+        await markPastDue(
+          deps.client,
+          userId,
+          row as unknown as Record<string, unknown>,
+          atIso,
+          "billing_key 없음",
+        );
       } catch (e) {
         console.error(`past_due 처리 실패 (user=${userId}): ${e}`);
       }

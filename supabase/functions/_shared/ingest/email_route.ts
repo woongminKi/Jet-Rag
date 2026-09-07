@@ -15,6 +15,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { getEffectivePlan } from "../me/quota.ts";
 import {
+  type AttachmentResult,
   constantTimeEquals,
   incrementDocsCounter,
   ingestEmailAttachment,
@@ -22,7 +23,6 @@ import {
   parseToken,
   safeForLog,
   senderAllowed,
-  type AttachmentResult,
 } from "./email_ingest.ts";
 
 export interface EmailRouteDeps {

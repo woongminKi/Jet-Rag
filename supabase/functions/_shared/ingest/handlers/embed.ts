@@ -109,4 +109,3 @@ async function enqueueDocEmbed(client: SupabaseClient, task: TaskPayload): Promi
   });
   if (error) throw new Error(`doc_embed enqueue 실패: ${error.message}`);
 }
-

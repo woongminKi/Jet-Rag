@@ -153,9 +153,10 @@ console.log(`
 ── 비-HTTP 의존 (자동으로 못 잰다 — 사람이 확인해야 한다) ──
   1. Railway cron — api/scripts/billing_charge.py
      끄면 **월 자동결제가 멈춘다.** 대체: pg_cron 이 POST /billing/run 호출 (마이그 029 미작성)
-  2. .github/workflows/monitor-search-slo.yml
-     매일 02:00 UTC 에 JET_RAG_API_BASE 로 /stats 를 친다. 그 secret 이 Railway 를
-     가리키면 종료 후 실패한다 → 프록시 도메인으로 바꿔야 한다
+  2. .github/workflows/monitor-search-slo.yml — **2026-09-07 해소.**
+     API base 를 프록시 도메인 기본값으로 박았다(공개 URL 이라 secret 이 아니다).
+     secret 은 더 이상 읽지 않는다. 남은 확인: repo **variable** JET_RAG_API_BASE 가
+     Railway 주소로 설정돼 있으면 그쪽이 이긴다 — Settings → Variables 에서 한 번 볼 것
   3. api/scripts/verify_documents_read_parity.py
      원본과 Edge 를 비교하는 대조 스크립트다. Railway 가 사라지면 **비교 대상이 없어져**
      더 못 돈다 — 이관이 끝나면 역할도 끝나므로 정상이다

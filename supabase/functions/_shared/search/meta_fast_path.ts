@@ -333,7 +333,6 @@ export interface FastPathRow {
  * 날짜는 `[from, to)` 반개구간이라 `lt` 다(`lte` 가 아니다). 태그는 `contains`(AND) 이고
  * `overlaps`(OR) 이 아니다 — 태그가 2 개 이상일 때만 갈린다.
  */
-// deno-lint-ignore no-explicit-any
 export function buildFastPathQuery(
   client: SupabaseClient,
   plan: MetaFilterPlan,

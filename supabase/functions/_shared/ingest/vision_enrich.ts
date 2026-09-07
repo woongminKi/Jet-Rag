@@ -27,7 +27,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { checkCombined, checkDocPageCap, type BudgetStatus } from "./budget_guard.ts";
+import { type BudgetStatus, checkCombined, checkDocPageCap } from "./budget_guard.ts";
 import type { ExtractedSection } from "./hwp_extract.ts";
 import { composeResult } from "./image_parser.ts";
 import { renderPageForVision, SCAN_RENDER_DPI } from "./pdf_raster.ts";
@@ -101,9 +101,13 @@ export function readVisionEnv(env: Record<string, string | undefined>): VisionEn
     // 태스크 하나를 죽이는 것보다 낫고, 잘못된 ENV 는 로그에 남는다.
     maxPages: parseInt_(env["JETRAG_PDF_VISION_ENRICH_MAX_PAGES"], VISION_ENRICH_MAX_PAGES_DEFAULT),
     maxSweeps: parseInt_(
-      env["JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS"], VISION_ENRICH_MAX_SWEEPS_DEFAULT),
+      env["JETRAG_PDF_VISION_ENRICH_MAX_SWEEPS"],
+      VISION_ENRICH_MAX_SWEEPS_DEFAULT,
+    ),
     budgetRecheckEveryNPages: parseInt_(
-      env["JETRAG_BUDGET_RECHECK_EVERY_N_PAGES"], BUDGET_RECHECK_EVERY_N_PAGES_DEFAULT),
+      env["JETRAG_BUDGET_RECHECK_EVERY_N_PAGES"],
+      BUDGET_RECHECK_EVERY_N_PAGES_DEFAULT,
+    ),
     needScoreEnabled: parseBool(env["JETRAG_VISION_NEED_SCORE_ENABLED"], true),
     pageCapPerDoc: parseInt_(env["JETRAG_VISION_PAGE_CAP_PER_DOC"], 50),
     docBudgetUsd: parseFloat_(env["JETRAG_DOC_BUDGET_USD"], 0.10),
@@ -289,7 +293,11 @@ export async function runVisionWindow(
             carry.completed += 1;
             if (opts.progressTotal) {
               await updateStageProgress(
-                deps.client, opts.jobId, carry.completed, opts.progressTotal);
+                deps.client,
+                opts.jobId,
+                carry.completed,
+                opts.progressTotal,
+              );
             }
             continue;
           }
@@ -366,7 +374,11 @@ export async function runVisionWindow(
           carry.completed += 1;
           if (opts.progressTotal) {
             await updateStageProgress(
-              deps.client, opts.jobId, carry.completed, opts.progressTotal);
+              deps.client,
+              opts.jobId,
+              carry.completed,
+              opts.progressTotal,
+            );
           }
         } catch (e) {
           // 페이지 하나가 죽어도 문서는 살린다.

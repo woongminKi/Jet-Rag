@@ -46,7 +46,12 @@ import type { TaskHandler, TaskPayload } from "../worker.ts";
 
 /** 지금 처리할 수 있는 `documents.doc_type`. */
 export const SUPPORTED_DOC_TYPES = new Set([
-  "hwp", "pdf", "hwpx", "docx", "pptx", "image",
+  "hwp",
+  "pdf",
+  "hwpx",
+  "docx",
+  "pptx",
+  "image",
 ]);
 
 /**
@@ -157,8 +162,7 @@ export function makeExtractHandler(deps: ExtractDeps): TaskHandler {
           flags: {
             ...(doc.flags ?? {}),
             extract_skipped: true,
-            extract_skipped_reason:
-              `doc_type=${docType} 는 아직 지원되지 않는 포맷입니다 (W2 예정).`,
+            extract_skipped_reason: `doc_type=${docType} 는 아직 지원되지 않는 포맷입니다 (W2 예정).`,
           },
         })
         .eq("id", task.doc_id);
@@ -251,9 +255,7 @@ export function makeExtractHandler(deps: ExtractDeps): TaskHandler {
         : docType === "hwp"
         // 확장자가 `.hwp` 여도 내용이 HWPML(XML) 인 파일이 있다 — **바이트로** 가른다.
         // 원본 `run_extract_stage` 가 같은 자리에서 같은 판정을 한다.
-        ? (isHwpmlBytes(bytes.subarray(0, 4096))
-          ? extractHwpmlResult(bytes)
-          : await extractHwp(bytes))
+        ? (isHwpmlBytes(bytes.subarray(0, 4096)) ? extractHwpmlResult(bytes) : await extractHwp(bytes))
         : docType === "hwpx"
         ? extractHwpxResult(bytes)
         : docType === "docx"

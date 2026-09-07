@@ -108,7 +108,6 @@ export function buildRotateRow(
  * 처음엔 채점기가 조립을 복붙했는데, 그러면 이 함수를 고쳐도 안 잡힌다
  * (`on_conflict` 를 지워도 음성 대조가 0 건이었다).
  */
-// deno-lint-ignore no-explicit-any
 export function buildRotateQuery(
   client: SupabaseClient,
   row: Record<string, unknown>,

@@ -9,11 +9,7 @@ import { assertEquals, assertRejects } from "@std/assert";
 
 import { fernetDecrypt, fernetEncrypt, FernetError } from "./fernet.ts";
 import { addOneMonth, formatIso, parseIso, utcParts } from "./pydate.ts";
-import {
-  handleBillingRun,
-  handleSubscribeApprove,
-  type PaymentsRouteDeps,
-} from "./routes.ts";
+import { handleBillingRun, handleSubscribeApprove, type PaymentsRouteDeps } from "./routes.ts";
 
 // 이 파일 안에서만 쓰는 테스트용 키. 운영 키가 아니다.
 const KEY = "0123456789abcdef0123456789abcdef0123456789ab";

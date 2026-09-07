@@ -23,7 +23,7 @@
  */
 
 import { PY_SP } from "../search/pystr.ts";
-import { pyIsDigit, PY_WORD_CLASS } from "../pychar.ts";
+import { PY_WORD_CLASS, pyIsDigit } from "../pychar.ts";
 import { pyInt } from "../pynum.ts";
 import type { ChunkRecord } from "./chunk_records.ts";
 

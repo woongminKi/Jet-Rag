@@ -83,8 +83,7 @@ export interface PdfPageDict {
  * `preserve-spans` 는 쓰지 않는다 — 위 §asJSON 참조. span 은 walk 의 font·size run 으로
  * 만든다. (실측: 켜면 line 수가 30 → 515 로 폭증해 PyMuPDF 와 더 멀어진다.)
  */
-export const STEXT_OPTS =
-  "preserve-ligatures,preserve-whitespace,preserve-images,clip," +
+export const STEXT_OPTS = "preserve-ligatures,preserve-whitespace,preserve-images,clip," +
   "use-cid-for-unknown-unicode";
 
 /** mupdf 의 Rect/Quad 는 배열로 온다. */
@@ -220,9 +219,7 @@ export function toPageDict(st: StructuredTextLike, bounds: number[]): PdfPageDic
       // 그건 `table_like_score` 처럼 span 수를 세는 신호를 통째로 왜곡한다.
       const style = fontStyleOf(font as MupdfFont | null, fontCache);
       // 위첨자는 글자마다 다르다 — 폰트 캐시에 넣으면 안 된다.
-      const superscript = lineHorizontal && originY < lineFirstOriginY - size * 0.1
-        ? FLAG_SUPERSCRIPT
-        : 0;
+      const superscript = lineHorizontal && originY < lineFirstOriginY - size * 0.1 ? FLAG_SUPERSCRIPT : 0;
       // MuPDF 의 `fz_stext_char.color` 는 sRGB 정수다. 실수 배열로 비교하면 반올림 차이로
       // 같은 색이 갈릴 수 있다 — PyMuPDF 와 같은 정수로 바꿔서 본다.
       const colorId = color

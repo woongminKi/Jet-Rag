@@ -24,10 +24,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import {
-  flagsWithIngestMode,
-  validateIngestMode,
-} from "../ingest/ingest_mode.ts";
+import { flagsWithIngestMode, validateIngestMode } from "../ingest/ingest_mode.ts";
 
 import {
   ALLOWED_EXTENSIONS,

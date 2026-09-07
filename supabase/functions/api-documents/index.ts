@@ -42,10 +42,7 @@ import {
   type ValidationItem,
 } from "../_shared/documents/read.ts";
 import { batchStatus, listActiveDocuments } from "../_shared/documents/active.ts";
-import {
-  reingestDocument,
-  reingestMissingVision,
-} from "../_shared/documents/reingest.ts";
+import { reingestDocument, reingestMissingVision } from "../_shared/documents/reingest.ts";
 import { handleEmailWebhook } from "../_shared/ingest/email_route.ts";
 
 const FUNCTION_PREFIX = "/api-documents";

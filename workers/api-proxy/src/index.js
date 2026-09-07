@@ -30,6 +30,9 @@ export default {
    * @param {{ SUPABASE_FUNCTIONS_BASE: string, LEGACY_ORIGIN: string,
    *           SUPABASE_FUNCTION_REGION?: string }} env
    */
+  // `async` 를 뗄 수는 있지만 두 이유로 남긴다: ① 던지는 오류가 rejection 이 되어
+  // Workers 런타임이 동일하게 다룬다 ② 앞으로 await 이 생길 자리다.
+  // deno-lint-ignore require-await
   async fetch(request, env) {
     const url = new URL(request.url);
     const target = resolveTarget(url.pathname, request.method);

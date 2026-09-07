@@ -16,7 +16,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { complete, type ChatMessage } from "../llm/gemini.ts";
+import { type ChatMessage, complete } from "../llm/gemini.ts";
 import { isQuotaExhausted } from "../llm/quota.ts";
 import { pyStrip } from "../search/pystr.ts";
 
@@ -47,8 +47,7 @@ const TAG_SYSTEM =
   "- time_reference: 문서가 다루는 시점 (YYYY 또는 YYYY-MM, 없으면 null)\n" +
   "응답은 반드시 위 4개 키를 가진 단일 JSON 객체만 포함. 설명·Markdown·코드블록 금지.";
 
-const SUMMARY_SYSTEM =
-  "당신은 한국어 문서 요약 도우미입니다. 주어진 텍스트에서 다음 JSON 을 생성하세요.\n" +
+const SUMMARY_SYSTEM = "당신은 한국어 문서 요약 도우미입니다. 주어진 텍스트에서 다음 JSON 을 생성하세요.\n" +
   "- summary_3line: 3줄 요약 (각 줄 60자 이내, '\\n' 구분)\n" +
   "- implications: 이 문서가 개인 지식 관점에서 의미하는 바 (1~2문장)\n" +
   "응답은 반드시 위 2개 키를 가진 단일 JSON 객체만 포함. 설명·Markdown·코드블록 금지.";
@@ -191,7 +190,11 @@ export async function callTags(
     };
   }
   const text = await callLlm(
-    deps, "tag", TAG_SYSTEM, `다음 텍스트에서 태그를 추출하세요:\n\n${head}`, 0.1,
+    deps,
+    "tag",
+    TAG_SYSTEM,
+    `다음 텍스트에서 태그를 추출하세요:\n\n${head}`,
+    0.1,
   );
   return parseJson(text);
 }
@@ -206,7 +209,11 @@ export async function callSummary(
     return { summary_3line: "", implications: "" };
   }
   const text = await callLlm(
-    deps, "summary", SUMMARY_SYSTEM, `다음 텍스트를 요약하세요:\n\n${body}`, 0.2,
+    deps,
+    "summary",
+    SUMMARY_SYSTEM,
+    `다음 텍스트를 요약하세요:\n\n${body}`,
+    0.2,
   );
   return parseJson(text);
 }
@@ -303,8 +310,7 @@ export async function runTagSummarizeStage(
     const { data, error } = await deps.client
       .from("documents").select("flags").eq("id", docId).limit(1);
     if (error) throw new Error(`flags 조회 실패: ${error.message}`);
-    existingFlags =
-      ((data ?? [])[0] as { flags?: Record<string, unknown> } | undefined)?.flags ?? {};
+    existingFlags = ((data ?? [])[0] as { flags?: Record<string, unknown> } | undefined)?.flags ?? {};
   }
 
   const patch = buildPatch(tags, summary, existingFlags);

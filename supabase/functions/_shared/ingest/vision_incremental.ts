@@ -11,7 +11,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { composeVisionText, type ChunkEnv, type ChunkRecord } from "./chunk_records.ts";
+import { type ChunkEnv, type ChunkRecord, composeVisionText } from "./chunk_records.ts";
 import type { ExtractedSection } from "./hwp_extract.ts";
 
 /** 원본 `_VISION_ENRICH_TITLE_PREFIX`. `chunk_records` 의 `"(vision)"` 보다 좁다. */

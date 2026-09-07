@@ -139,13 +139,34 @@ export function applyOrientation(src: Raster, orientation: Orientation): Raster 
     for (let x = 0; x < dw; x++) {
       let sx: number, sy: number;
       switch (orientation) {
-        case 2: sx = w - 1 - x; sy = y; break;
-        case 3: sx = w - 1 - x; sy = h - 1 - y; break;
-        case 4: sx = x; sy = h - 1 - y; break;
-        case 5: sx = y; sy = x; break;
-        case 6: sx = y; sy = h - 1 - x; break;
-        case 7: sx = w - 1 - y; sy = h - 1 - x; break;
-        default: sx = w - 1 - y; sy = x; break; // 8
+        case 2:
+          sx = w - 1 - x;
+          sy = y;
+          break;
+        case 3:
+          sx = w - 1 - x;
+          sy = h - 1 - y;
+          break;
+        case 4:
+          sx = x;
+          sy = h - 1 - y;
+          break;
+        case 5:
+          sx = y;
+          sy = x;
+          break;
+        case 6:
+          sx = y;
+          sy = h - 1 - x;
+          break;
+        case 7:
+          sx = w - 1 - y;
+          sy = h - 1 - x;
+          break;
+        default:
+          sx = w - 1 - y;
+          sy = x;
+          break; // 8
       }
       const si = (sy * w + sx) * c;
       const di = (y * dw + x) * c;

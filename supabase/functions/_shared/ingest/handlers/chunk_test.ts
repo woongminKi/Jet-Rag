@@ -67,11 +67,7 @@ function fakeClient(
         },
         order(_c: string, o?: { ascending?: boolean }) {
           ordered = o?.ascending !== false;
-          const src = stage === "vision"
-            ? visionRows
-            : stage === "scan"
-            ? scanRows
-            : rows;
+          const src = stage === "vision" ? visionRows : stage === "scan" ? scanRows : rows;
           return Promise.resolve({
             data: [...src].sort((a, b) => a.seq - b.seq),
             error: null,
@@ -311,7 +307,9 @@ Deno.test("chunk_filter — 표 노이즈·머리말이 flags 로 마킹된다(�
     seq: 0,
     payload: {
       sections: [
-        sec("머리말", 1), sec("머리말", 2), sec("머리말", 3),
+        sec("머리말", 1),
+        sec("머리말", 2),
+        sec("머리말", 3),
         sec("이것은 충분히 긴 본문 문장입니다. 필터에 걸리지 않아야 합니다.", 4),
       ],
     },
@@ -329,14 +327,19 @@ Deno.test("chunk_filter — 표 노이즈·머리말이 flags 로 마킹된다(�
 });
 
 Deno.test("content_gate — PII·워터마크를 metadata 와 문서 flags 에 남긴다", async () => {
-  const { client, upserts, flagUpdates } = fakeClient([{
-    seq: 0,
-    payload: {
-      sections: [
-        sec("대외비 자료입니다. 주민번호 900101-1234567 이 포함된 긴 문장입니다.", 1),
-      ],
-    },
-  }], [], [], { scan: true }); // 기존 flags 는 보존돼야 한다
+  const { client, upserts, flagUpdates } = fakeClient(
+    [{
+      seq: 0,
+      payload: {
+        sections: [
+          sec("대외비 자료입니다. 주민번호 900101-1234567 이 포함된 긴 문장입니다.", 1),
+        ],
+      },
+    }],
+    [],
+    [],
+    { scan: true },
+  ); // 기존 flags 는 보존돼야 한다
   // deno-lint-ignore no-explicit-any
   const h = makeChunkHandler({ client: client as any, env: ENV });
   await h(TASK, {} as never);
@@ -366,6 +369,8 @@ Deno.test("content_gate — 아무것도 없으면 false 3개만 남긴다", asy
   const h = makeChunkHandler({ client: client as any, env: ENV });
   await h(TASK, {} as never);
   assertEquals(flagUpdates[0], {
-    has_pii: false, has_watermark: false, third_party: false,
+    has_pii: false,
+    has_watermark: false,
+    third_party: false,
   });
 });

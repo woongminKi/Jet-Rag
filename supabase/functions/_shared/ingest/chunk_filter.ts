@@ -94,7 +94,7 @@ export function lineMetrics(text: string): [number, number] {
   let nonWs = 0;
   for (const ch of text) {
     if (isDigitPunct(ch)) digitPunct++;
-    if (!pyIsSpace(ch)) nonWs++;  // Python `str.isspace()`
+    if (!pyIsSpace(ch)) nonWs++; // Python `str.isspace()`
   }
   const digitPunctRatio = nonWs ? digitPunct / nonWs : 0.0;
   return [shortLineRatio, digitPunctRatio];

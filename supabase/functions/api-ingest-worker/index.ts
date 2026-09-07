@@ -59,7 +59,8 @@ function buildHandlers(
     scan: makeScanHandler({ client, bucket: settings.supabaseStorageBucket }),
     vision: makeVisionHandler({ client, bucket: settings.supabaseStorageBucket }),
     vision_missing: makeVisionMissingHandler({
-      client, bucket: settings.supabaseStorageBucket,
+      client,
+      bucket: settings.supabaseStorageBucket,
     }),
     chunk: makeChunkHandler({ client }),
     load: makeLoadHandler({ client }),

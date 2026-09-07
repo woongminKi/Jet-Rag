@@ -108,7 +108,10 @@ export function pyFormatF(x: number, nd: number): string {
 function toAsciiDecimal(s: string): string {
   let ascii = true;
   for (let i = 0; i < s.length; i++) {
-    if (s.charCodeAt(i) > 0x7f) { ascii = false; break; }
+    if (s.charCodeAt(i) > 0x7f) {
+      ascii = false;
+      break;
+    }
   }
   if (ascii) return s; // ASCII 뿐이면 할 일이 없다
   let out = "";
