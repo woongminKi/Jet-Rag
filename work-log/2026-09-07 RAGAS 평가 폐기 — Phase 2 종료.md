@@ -3341,3 +3341,92 @@ proxy : fmt 통과 · lint 통과 · test 20 passed
 | **B** | billing cron 마이그 029 (3단계) — 신규 마이그레이션이라 확인 필요 |
 | **C** | PPTX Vision 보강 (`_vision_ocr_largest_picture`, §41.6) |
 | **D** | chunk 조각 c2 `synonym_inject` (200줄) |
+
+---
+
+## 50. 마이그 029 — pg_cron 정기결제 배치 (`77f6bda`). **작성만, 미적용**
+
+Railway 를 끄면 `billing_charge.py` 를 돌리던 cron 이 사라진다. 마이그 028(인제스트
+drain)의 Vault + `net.http_post` 패턴을 그대로 따라 그 자리를 채웠다.
+
+**적용하지 않았다.** 신규 마이그레이션이고 돈을 움직이는 경로라 SQL Editor 실행은
+사용자 몫이다.
+
+### 50.1 §48.4-1 을 정정한다 — **지금 Railway cron 은 돌고 있지 않다**
+
+리허설에 "끄면 월 자동결제가 멈춘다" 고 적었는데 **틀렸다.** W5-6 에서 `0 18 * * *` 로
+걸기로 해 놓고 카카오페이 SECRET_KEY 대기 때문에 **켜지 않았다**
+(work-log 2026-07-08 §3 · 메모리 `jetrag_w5_6_kakaopay_ship`).
+
+즉 끈다고 멈출 결제가 없다 — 처음부터 대기 상태였다. 이 마이그는 **돌던 것을 옮기는
+게 아니라 처음부터 대기 중이던 것을 Edge 쪽에 세우는 것**이다. 리허설 문구도 고쳤다.
+
+원본 cron 은 `charge_due_subscriptions()` → `sweep_past_due()` 를 그대로 부른다.
+`POST /billing/run` 이 같은 순서로 같은 일을 한다 — 등가다.
+
+### 50.2 028 과 다르게 한 것 둘 — 둘 다 근거가 있다
+
+**① 큐 가드를 안 넣었다.**
+028 은 10 초마다 돌아 "큐가 비면 호출 안 함" 이 필요했다(하루 8,640 회).
+여기는 **하루 1 회**라 아낄 게 없다. 반대로 가드 조건을 서비스의 선택 조건과 어긋나게
+쓰면 **청구가 조용히 안 도는** 실패가 생긴다. 절약(1회/일)보다 그 위험이 크다.
+
+**② Authorization 헤더를 안 붙였다.**
+실측: 헤더 없이 POST 해도 함수가 실행된다(503 은 게이트웨이가 아니라 **우리 게이트**의
+응답이다. `Bearer invalid` 로도 동일). 보안 경계는 `X-Billing-Cron-Secret` 이므로
+필요 없는 `service_role` 키를 한 곳 더 복사해 두지 않는다.
+
+### 50.3 실행 없이 할 수 있는 검증을 다 했다
+
+로컬 Postgres·Docker 가 없어 SQL 실행 검증은 **불가**하다. 대신:
+
+| 검증 | 결과 |
+|---|---|
+| **이미 적용돼 돌고 있는 028 과 구문 대조** | `net.http_post` 인자 이름(`url`/`headers`/`body`/`timeout_milliseconds`) 동일 · `LANGUAGE plpgsql` · `SECURITY DEFINER` · `vault.decrypted_secrets` 조회 · `REVOKE` 대상 · `cron.unschedule ... WHERE EXISTS` 모두 동일 |
+| **헤더 casing** | pg_cron 이 보낼 `X-Billing-Cron-Secret` 을 Deno `Headers.get("x-billing-cron-secret")` 이 읽는다 (HTTP 헤더는 대소문자 무관) |
+| **pg_cron 이 보낼 형태 그대로 라이브 호출** | `503 "billing cron 이 비활성 상태입니다"` — 우리 게이트에 도달. 마이그 STEP 3 상태코드 표의 예상값 그대로다 |
+
+> 중간에 자를 두 번 고쳤다: `net.http_post` 인자 정규식이 빈값을 내서 다시 짰고,
+> CI 재현 스크립트가 zsh 의 미인용 변수 비분할 때문에 `deno "fmt --check"` 를
+> 한 덩어리로 넘겨 거짓 실패를 냈다.
+
+### 50.4 Edge 가 Python 스크립트보다 안전하다
+
+`billing_charge.py` 는 결제 키가 없으면 `get_payment_provider()` 에서 **RuntimeError** 다
+(그래서 켜지 못했다). `/billing/run` 은 provider 를 만들기 **전에** 503 으로 끊는다
+(`routes.ts` 의 `ensureEnabled`). 키를 넣기 전에 스케줄을 걸어 둬도 **매일 503 한 번**일
+뿐이다. 이 순서는 `billing_test.ts` 가 이미 고정하고 있다.
+
+### 50.5 사람이 할 일
+
+```sql
+-- 1) Vault (SQL Editor, 1회)
+select vault.create_secret('<JETRAG_BILLING_CRON_SECRET 과 같은 값>',
+  'billing_cron_secret', 'POST /billing/run 게이트. 마이그 029.');
+select vault.create_secret(
+  'https://mpmtydudhojpukuuadrd.supabase.co/functions/v1/api-payments/billing/run',
+  'billing_run_url', 'pg_cron 이 부를 결제 배치 엔드포인트. 마이그 029.');
+-- 2) api/migrations/029_billing_cron.sql 실행
+-- 3) STEP 3 검증 쿼리 (특히 net._http_response 의 status_code)
+```
+
+`Vault 값 ≠ Edge secret` 이면 매일 401 이 쌓인다 — STEP 3-3 의 상태코드 표로 바로 구분된다.
+
+### 50.6 Railway 종료 체크리스트
+
+```
+1. secret 4개 설정 → verify_cutover.ts        ⬜ 사용자 실행
+2. 프록시 배포 → 리허설 --live 드리프트 0       ⬜ 1 이후
+3. billing cron 마이그 029                    🟡 **작성 완료 · 적용 대기**
+4. monitor-search-slo API base 교체           ✅ §49
+5. LEGACY_ORIGIN 비우기                       ⬜ 1~4 이후
+```
+
+### 50.7 다음 후보
+
+| 후보 | 내용 |
+|---|---|
+| **A** | secret 4개 설정 → 이메일 + 결제 컷오버 (1·2단계) — 남은 차단 요인의 전부 |
+| **B** | PPTX Vision 보강 (`_vision_ocr_largest_picture`, §41.6) |
+| **C** | chunk 조각 c2 `synonym_inject` (200줄) |
+| **D** | 원본 이월 버그 정리 (MMR 도달 불가 · `9999-12-31` 500 · 비-UUID doc_id 500) |
