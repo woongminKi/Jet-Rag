@@ -2,8 +2,8 @@
 
 > **범위**: Edge 로 옮길 수 없던 4 라우트(`ragas` 의존)를 **폐기**해 Phase 6 의 차단 요인을
 > 없애고, Phase 2 를 닫기까지.
-> **다음 세션 재진입**: HWP extract 를 **워커 핸들러로 결선**(Storage 다운로드 →
-> `extractHwp` → `ingest_artifacts` 저장). 추출 로직 이식·대조는 끝났다(§16).
+> **다음 세션 재진입**: **`chunk` 단계 이식** — extract 산출물을 모아 청킹.
+> 큐→워커→산출물 경로는 E2E 로 성립했다(§17). 그 다음이 chunk_filter·content_gate.
 
 ## 0. 한눈에 보기
 
@@ -20,7 +20,8 @@
 | Phase 3 — 마이그 026 (pgmq 큐 + public 래퍼) | ✅ **운영 적용** (13ed304) |
 | Phase 3 — `ingest-worker` 드레인 골격 | ✅ 배포 (d3c74a6) — 핸들러는 아직 없음 |
 | Phase 3 — 마이그 027 (중간 산출물 테이블) | ✅ **운영 적용** (86c7eaa) |
-| Phase 3 — HWP extract 이식 + 대조 | ✅ (5815c4d) — 핸들러 결선은 남음 |
+| Phase 3 — HWP extract 이식 + 대조 | ✅ (5815c4d) |
+| Phase 3 — extract 핸들러 결선 (큐→워커→산출물) | ✅ **E2E 성립** (afe0d82) |
 
 ## 1. 왜 폐기했나
 
@@ -526,3 +527,51 @@ extract 만으로는 판정할 수 없다.
 로컬 Python 이 `hwp5txt CLI 실패 → olefile fallback` 을 탔다(경고 확인).
 **운영 Railway 에서 CLI 가 성공하면 텍스트가 다를 수 있다.** 기준선도 같은 로컬 경로로
 떴으므로 기준선↔Edge 일관성은 유지되지만, 운영 CLI 경로와의 대조는 아직 못 했다.
+
+
+## 17. Phase 3 — extract 핸들러 결선
+
+Storage 다운로드 → `extractHwp` → `ingest_artifacts` upsert. **큐가 처음으로 실제 일을 한다.**
+
+### 설계 선택 2가지
+
+- **다음 단계를 큐에 넣지 않는다.** `chunk` 핸들러가 없어 넣는 순간 "모르는 stage" 로
+  archive + 잡 failed 가 된다(§14 계약). 산출물 저장까지만.
+- **잡을 completed 로 만들지 않는다.** 청킹이 안 끝났으므로 완료가 아니다.
+  `running` + `current_stage='extract'` 로 사실대로 둔다.
+
+### 못 하는 건 못 한다고 던진다
+
+이식 안 된 포맷 · `pending/` 경로 · 빈 `storage_path` · 문서 없음 — 전부 예외.
+조용히 건너뛰면 잡이 영원히 running 으로 남고 어디서 멈췄는지도 안 보인다.
+
+### 멱등성 — 실제로 확인했다
+
+`ingest_artifacts` 의 `UNIQUE(job_id, stage, seq)` 위에 upsert 한다.
+E2E 에서 같은 작업을 다시 배달해도 **행이 1개**였다.
+
+### 검증
+
+단위 6건(문서 없음 / 미지원 포맷 / pending / 빈 경로 / 정상 upsert+onConflict /
+`task.from`→seq).
+
+**E2E 실패 0** — 샌드박스 + 실제 Storage + 실제 큐 + 배포된 워커:
+
+```
+Storage 업로드 → 큐 msg_id=8 → drain {read:1, ok:1, archived:0}
+ingest_artifacts 1행 · 섹션 36개 Python 과 완전일치 · raw_text 내용 일치(722자)
+재배달 멱등성 ok=1 행=1 · 잡 running/extract · 정리 완료 · 운영 총계 불변
+```
+
+`deno test` 122건 통과.
+
+### 현재 Phase 3 진행도
+
+| 단계 | 상태 |
+|---|---|
+| 큐 인프라(pgmq·래퍼·워커) | ✅ |
+| 중간 산출물 자리 | ✅ |
+| **extract** | ✅ HWP 만 (hwpx·pdf·docx·pptx 남음) |
+| chunk · chunk_filter · content_gate · tag_summarize · load · embed · doc_embed · dedup | ⬜ |
+| `api-documents` HTTP 경로(큐에 넣는 쪽) | ⬜ |
+| pg_cron 드레인 | ⬜ |
