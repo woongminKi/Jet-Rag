@@ -6,12 +6,12 @@
 >
 > "정리하지 않아도, 기억의 단편으로 꺼내 쓰는 앱."
 
-**상태**: v0.1 MVP — **production live** (2026-05-18 배포 → 2026-05-19 도메인 부착 → 2026-05-21 D1+D2 ship + E4 fix) / 검색 정확도 80% PRD **M0~M2 완료** (top-1 0.7966 — 0.80 게이트 noise band 내 사실상 달성, M2 W-4 `beb83b4`) / 단위 테스트 **1300+ PASS** (baseline flaky 3 동일) / 마이그레이션 **20개** (017~020 = invite_codes + 018 이관 + 019 RLS + 020 Storage prefix) / commit 누적 **563+**.
+**상태**: v0.1 MVP — **production live** (2026-05-18 배포 → 2026-05-19 도메인 부착 → 2026-05-21 D1+D2 ship + E4 fix) / **2026-09-08 백엔드 Railway FastAPI → Supabase Edge Functions 이관 완료** (앱 라우트 33건 전부 Edge) / 검색 정확도 80% PRD **M0~M2 완료** (top-1 0.7966 — 0.80 게이트 noise band 내 사실상 달성, M2 W-4 `beb83b4`) / 마이그레이션 **29개**.
 **목적**: **이직 포트폴리오** + 페르소나 A (한국 직장인) 개인 지식 보조. 공공·대기업 비IT 실무자가 일상적으로 받는 HWP/HWPX·PDF·DOCX·이미지·URL 자료를 자연어로 역검색.
 
 ## 🚀 라이브 사이트
 
-**👉 <https://jetrag.woong-s.com>** — 로그인 없이 즉시 사용 가능. 미리 인덱싱된 **12개 한국어 문서**(사업보고서·법률판례·정책·학술논문·이력서) 위에서 검색·답변 시연.
+**👉 <https://jetrag.woong-s.com>** — 로그인 없이 즉시 사용 가능. 미리 인덱싱된 **14개 한국어 문서**(사업보고서·법률판례·정책·학술논문·이력서) 위에서 검색·답변 시연.
 
 ### 추천 검색어
 
@@ -58,22 +58,30 @@ App Store / Play Store 등록 **없이** 폰 브라우저로 직접 설치 가�
 |---|---|---|---:|
 | Frontend (custom) | <https://jetrag.woong-s.com> | Vercel Hobby | $0 |
 | Frontend (default) | <https://jetrag.vercel.app> | Vercel Hobby | $0 |
-| Backend (custom) | <https://jetrag-api.woong-s.com> | Railway Hobby (Singapore) | $5 |
-| Backend (default) | <https://jet-rag-production.up.railway.app> | Railway Hobby (Singapore) | (위에 포함) |
-| DB / Storage | Supabase (Seoul) | Supabase Free | $0 |
+| API 진입 | <https://jetrag-api.woong-s.com> | Cloudflare Workers (경로 라우팅 프록시) | $0 |
+| Backend | Supabase Edge Functions 6개 (`ap-northeast-2`) | Supabase | (아래 포함) |
+| DB / Storage | Supabase (Seoul) | Supabase | — |
 | 임베딩 | `BAAI/bge-m3` via DeepInfra (always-warm) | DeepInfra pay-per-token | < $1 |
-| 생성 LLM | Gemini 2.0 Flash | Google AI Studio Free | $0 (cap 안) |
+| 생성 LLM | Gemini 2.5 Flash | Google AI Studio | $0 (cap 안) |
 
-**총 운영비**: **~$5~6/월** (도메인 `woong-s.com` 별도 ~$10/년 Cloudflare Registrar).
+**2026-09-08 — 백엔드가 Railway FastAPI 에서 Supabase Edge Functions 로 이관 완료.**
+`jetrag-api.woong-s.com` 은 그대로지만 그 뒤가 바뀌었다. Cloudflare Worker 가 경로를
+보고 Supabase Edge Function 으로 넘긴다 (`workers/api-proxy/src/routes.js` 가 그 표).
+프론트·이메일 워커·CI 모니터 **세 진입점 모두 이 도메인만 부른다** — 앱 코드는 안 바뀌었다.
 
-**검증 성과** (2026-05-19 v1.5 W-2):
-- KPI #10 production P95 검색 응답 **1.705s** (게이트 2.5s 의 32% 여유, 60 warm 호출)
+앱 라우트 **33 건(메서드 단위) 전부 Edge** 다. 이관 대상이 아니었던 건 FastAPI 가 스스로
+만들던 문서 페이지 5 개(`/` · `/docs` · `/docs/oauth2-redirect` · `/openapi.json` · `/redoc`)
+뿐이고, 지금은 404 다.
+
+**검증 성과**:
+- 전환 전후 앱 라우트 11 건 응답 **동일**(200/401), `/documents` 응답 **바이트 단위 일치**
+- 응답 헤더로 출처 확인: `x-served-by: supabase-edge-runtime` · `x-sb-edge-region: ap-northeast-2`
+- KPI #10 production P95 검색 응답 **1.705s** (게이트 2.5s 의 32% 여유, 60 warm 호출 · 2026-05-19 Railway 측정)
 - DeepInfra ↔ HF Inference Providers 어댑터 swap R@10 회귀 **0.0000** (115/115 row top-5 ordering 100% 일치, W-0 cosine 0.999984 보증)
-- CORS env 화 + Vercel/Railway 자동 SSL → 도메인 부착 시 **코드 변경 0**
 
 ## 아키텍처
 
-### 고수준 (4-tier 분리 배포)
+### 고수준 (Edge 이관 후, 2026-09-08 기준)
 
 ```mermaid
 flowchart TB
@@ -83,13 +91,23 @@ flowchart TB
         Vercel["Next.js 16<br/>jetrag.woong-s.com<br/>(default: jetrag.vercel.app)"]
     end
 
-    subgraph Backend ["백엔드 · Railway Singapore · $5/월"]
-        FastAPI["FastAPI · Python 3.12<br/>jetrag-api.woong-s.com"]
+    subgraph EdgeNet ["진입 · Cloudflare Workers · $0/월"]
+        Proxy["api-proxy<br/>jetrag-api.woong-s.com<br/>(routes.js 경로 표 · 33건)"]
+        EmailW["email-ingest Worker<br/>@in.woong-s.com catch-all"]
+    end
+
+    subgraph Backend ["백엔드 · Supabase Edge Functions · ap-northeast-2"]
+        FnSearch["api-search"]
+        FnAccount["api-account"]
+        FnDocs["api-documents"]
+        FnAnswer["api-answer"]
+        FnPay["api-payments"]
+        FnWorker["api-ingest-worker<br/>(pgmq drain · pg_cron)"]
         Adapter{{"Embedding Adapter<br/>JETRAG_EMBED_PROVIDER<br/>(ENV 1줄 swap)"}}
     end
 
-    subgraph DataLayer ["데이터 계층 · Supabase Seoul · $0/월"]
-        DB[("Postgres<br/>+ pgvector HNSW<br/>+ PGroonga Mecab")]
+    subgraph DataLayer ["데이터 계층 · Supabase Seoul"]
+        DB[("Postgres<br/>+ pgvector HNSW<br/>+ PGroonga Mecab<br/>+ pgmq · pg_cron · Vault")]
         Storage[("Supabase Storage<br/>PDF · HWP · 이미지")]
     end
 
@@ -100,13 +118,21 @@ flowchart TB
     end
 
     User -->|HTTPS| Vercel
-    Vercel -->|"NEXT_PUBLIC_API_BASE_URL<br/>(HTTPS · CORS env)"| FastAPI
-    FastAPI -->|"SQL · RPC<br/>(search_hybrid_rrf)"| DB
-    FastAPI -->|"signed URL"| Storage
-    FastAPI --> Adapter
+    Vercel -->|"NEXT_PUBLIC_API_BASE_URL<br/>(HTTPS · CORS env)"| Proxy
+    EmailW -->|"POST /ingest/email"| Proxy
+    Proxy -->|"경로 매칭 → 함수 선택"| FnSearch
+    Proxy --> FnAccount
+    Proxy --> FnDocs
+    Proxy --> FnAnswer
+    Proxy --> FnPay
+    DB -->|"pg_cron 이 깨움"| FnWorker
+    DB -->|"pg_cron · Vault<br/>(마이그 029)"| FnPay
+    FnSearch -->|"SQL · RPC<br/>(search_hybrid_rrf)"| DB
+    FnDocs -->|"signed URL"| Storage
+    FnSearch --> Adapter
     Adapter -.->|"ENV=deepinfra"| DeepInfra
     Adapter -.->|"ENV=hf (default)"| HF
-    FastAPI -->|"REST · vision_budget cap"| Gemini
+    FnWorker -->|"REST · vision_budget cap"| Gemini
 
     classDef prod fill:#0f172a,stroke:#3b82f6,stroke-width:3px,color:#f8fafc
     classDef fallback fill:#475569,stroke:#94a3b8,stroke-dasharray:5 5,color:#f1f5f9
@@ -116,7 +142,26 @@ flowchart TB
     class Adapter boundary
 ```
 
-> **4-tier 분리 배포** — 프론트엔드 (Vercel) / 백엔드 (Railway Singapore) / 데이터 (Supabase Seoul) / AI Provider (DeepInfra + Gemini). 어댑터 계층이 embedding provider 의 swap path 를 ENV 1줄로 추상화 — **HF Inference Providers ↔ DeepInfra production 간 R@10 회귀 0.0000 으로 검증** (W-0 결정성 시험 cosine 0.999984, 호출 사이트 8건 무수정). 총 운영비 **~$5~6/월** + 도메인 ~$10/년.
+> **경로 표가 스위치였다** — 이관은 `routes.js` 에 한 줄씩 더하는 방식으로 진행했다. 한 줄을
+> 더하면 그 경로만 Edge 로 넘어가고, 지우면 되돌아온다. 그래서 33 건을 한 번에 던지지 않고
+> 경로 단위로 원본과 응답을 대조하며 옮길 수 있었다 (`api/scripts/verify_*_parity.py` 14 종).
+>
+> 어댑터 계층이 embedding provider 의 swap path 를 ENV 1줄로 추상화 — **HF Inference
+> Providers ↔ DeepInfra production 간 R@10 회귀 0.0000 으로 검증** (W-0 결정성 시험
+> cosine 0.999984, 호출 사이트 8건 무수정).
+
+<details>
+<summary>이관 전 구조 (2026-05-18 ~ 2026-09-07, Railway 4-tier)</summary>
+
+프론트엔드 (Vercel) / 백엔드 **FastAPI · Railway Singapore $5/월** / 데이터 (Supabase Seoul)
+/ AI Provider (DeepInfra + Gemini) 의 4-tier 였다. `jetrag-api.woong-s.com` 이 Railway 를
+직접 가리켰고, 총 운영비는 ~$5~6/월이었다.
+
+Railway 를 걷어낸 이유와 12 주 이관 기록은
+[`docs/superpowers/plans/2026-08-24-railway-제거-supabase-전면이관.md`](./docs/superpowers/plans/2026-08-24-railway-제거-supabase-전면이관.md)
+와 `work-log/2026-09-07 RAGAS 평가 폐기 — Phase 2 종료.md` §40~§56 에 있다.
+
+</details>
 
 ### 인제스트 파이프라인 (9 stage + Vision rerouting)
 
@@ -285,23 +330,43 @@ flowchart LR
 - ✅ **W2 rate limit** — `usage_counters` 기반 per-user 일일 abuse cap (answers/docs, 429) + Gemini 유료 키 전환
 - ✅ **W3 plans/quota** — `plans`·`subscriptions` (마이그 022) + 플랜 한도 402 게이트 (`JETRAG_QUOTA_ENFORCEMENT_ENABLED`)
 - ✅ **W4 이메일 인제스트 (Pro 전용)** — Cloudflare Email Routing catch-all `@in.woong-s.com` → Email Worker (`workers/email-ingest`) → `POST /ingest/email` (공유 시크릿 + 발신자 화이트리스트 + Pro 게이트 fail-closed) → 업로드 동일 게이트 (확장자·50MB·magic·dedup) → `source_channel='email'` 인제스트. `/settings` 에서 주소 확인·재발급. 실메일 e2e PASS (수집→청킹→임베딩 83초)
-- ✅ **W5-6 카카오페이 정기결제 (Pro 구독)** — `PaymentProvider` Protocol + `KakaoPayImpl` 어댑터(ready→approve→subscription/inactive), SID(빌링키) Fernet 암호화 저장, 상태 머신 `active → past_due(7일 grace) → canceled`(Free 강등·데이터 보존). `/payments/subscribe/{ready,approve,cancel}` + 매일 배치(`scripts/billing_charge.py`, Railway cron)가 만료 자동결제 + grace sweep. 이중청구 멱등 마커. `/settings` 구독/해지 UI + `/billing/{success,fail,cancel}` + 공용 footer(이용약관·개인정보처리방침). 재청구 방지·재구독 다운그레이드 방지 코드리뷰 반영.
+- ✅ **W5-6 카카오페이 정기결제 (Pro 구독)** — `PaymentProvider` Protocol + `KakaoPayImpl` 어댑터(ready→approve→subscription/inactive), SID(빌링키) Fernet 암호화 저장, 상태 머신 `active → past_due(7일 grace) → canceled`(Free 강등·데이터 보존). `/payments/subscribe/{ready,approve,cancel}` + 매일 배치(당시 `scripts/billing_charge.py` + Railway cron → **2026-09-08 `pg_cron` 마이그 029 로 이관**)가 만료 자동결제 + grace sweep. 이중청구 멱등 마커. `/settings` 구독/해지 UI + `/billing/{success,fail,cancel}` + 공용 footer(이용약관·개인정보처리방침). 재청구 방지·재구독 다운그레이드 방지 코드리뷰 반영.
 
-#### 정기결제 운영 (W5-6)
+#### 정기결제 운영 (W5-6 · 2026-09-08 pg_cron 전환)
 
-**월 자동결제 — Railway cron**
-1. Railway 프로젝트 → API 서비스 → Settings → Cron Schedule.
-2. 스케줄 `0 18 * * *` (UTC 18:00 = KST 새벽 3시).
-3. 커맨드: `cd api && uv run python scripts/billing_charge.py`
-4. cron 서비스에 결제 ENV(.env.example W5-6 블록) + `SUPABASE_*` 주입. **Railway ENV 변경은 좌상단 보라색 Deploy(Apply changes) 클릭해야 반영됨.**
+**월 자동결제 — Supabase `pg_cron` (마이그 029, 적용 완료)**
 
-**외부 cron fallback** — `POST https://<api>/billing/run` 을 `X-Billing-Cron-Secret: <JETRAG_BILLING_CRON_SECRET>` 헤더로 호출 (cron-job.org / Cloudflare Workers cron).
+Railway cron 을 쓰던 자리다. 지금은 DB 안에서 돈다 — 외부 스케줄러도, 별도 컨테이너도 없다.
+
+```
+pg_cron  ─(매일 0 18 * * * UTC = KST 03:00)─▶  billing_run_tick()
+             │  Vault 에서 billing_cron_secret · billing_run_url 을 꺼내
+             └─▶ net.http_post → POST /billing/run  (api-payments Edge Function)
+                    → 만료 자동결제 + past_due 7일 grace sweep
+```
+
+셋업은 두 단계다 (둘 다 완료됨):
+1. Vault 에 시크릿 2개 등록 — `billing_cron_secret`(= `JETRAG_BILLING_CRON_SECRET` 과 동일 값) · `billing_run_url`
+2. `api/migrations/029_billing_cron.sql` 을 Supabase SQL Editor 에서 적용
+
+> Vault 가 비어 있으면 `billing_run_tick()` 은 **조용히 넘어가지 않고 `RAISE EXCEPTION`** 한다.
+> 조용히 실패하면 결제가 안 도는 이유를 나중에 못 찾기 때문이다.
+
+**동작 확인** (SQL Editor):
+```sql
+SELECT jobname, schedule, active FROM cron.job WHERE jobname = 'billing-run';
+SELECT public.billing_run_tick();                    -- 요청 id 반환
+SELECT status_code, content FROM net._http_response  -- 응답 확인
+  ORDER BY created DESC LIMIT 1;
+```
+카카오페이 심사 전이라 지금 응답은 **503 `결제 기능이 비활성화되어 있습니다`** 다.
+이건 정상이다 — cron → Vault → Edge 경로가 다 통과했고 마지막 결제 게이트에서만 막혔다는 뜻이다.
 
 **회복(rollback) 토글**
 - 결제 전면 비활성: `JETRAG_KAKAOPAY_SECRET_KEY` 또는 `JETRAG_BILLING_KEY_ENCRYPTION_KEY` 빈값 → payments 503 (기존 구독 DB 상태는 유지).
-- 배치 중단: `JETRAG_BILLING_CRON_SECRET` 빈값 → `/billing/run` 503 (또는 Railway cron 스케줄 off).
+- 배치 중단: `SELECT cron.unschedule('billing-run');` 또는 `JETRAG_BILLING_CRON_SECRET` 빈값 → `/billing/run` 503.
 - 심사 지연 시 수동 결제 fallback: `POST /admin/subscriptions` 로 admin 이 `status=active` 수동 upsert (마이그 022 경로).
-- 마이그레이션: `api/migrations/025_billing_subscription.sql` 를 Supabase SQL Editor 에서 적용해야 정기결제 동작 (pending_tid·past_due_since·payment_history).
+- 선행 마이그레이션: `api/migrations/025_billing_subscription.sql` (pending_tid·past_due_since·payment_history).
 
 ---
 
@@ -375,23 +440,30 @@ Railway (backend) · Vercel (frontend) · Supabase (DB·Storage) · DeepInfra (e
 
 ---
 
-## 기술 스택 (2026-05-19 v1.5 W-2 PASS 기준)
+## 기술 스택 (2026-09-08 Edge 이관 완료 기준)
 
 | 레이어 | 선택 |
 |---|---|
-| Backend | FastAPI (Python 3.12, uv) · Dockerfile (Railway RAILPACK) |
+| Backend | **Supabase Edge Functions** (Deno · TypeScript) 6개 — `api-search` · `api-account` · `api-documents` · `api-answer` · `api-payments` · `api-ingest-worker` |
+| API 진입 | **Cloudflare Workers** `api-proxy` — 경로 표(`routes.js`) 로 함수 선택. 앱 라우트 33건 |
+| 비동기 인제스트 | `pgmq` 큐 (마이그 026) + `pg_cron` drain (028) → `api-ingest-worker`. Edge 의 요청당 CPU 2초 제약을 큐로 우회 |
 | Frontend | Next.js 16 + Tailwind v4 + shadcn/ui (new-york, neutral) + Noto Sans KR + 'use client' Server initial / Client refetch 패턴 |
-| DB / Storage | Supabase (Postgres + pgvector HNSW + Storage, Seoul region) — 마이그레이션 16개 (`api/migrations/`) |
+| DB / Storage | Supabase (Postgres + pgvector HNSW + Storage, Seoul region) — 마이그레이션 **29개** (`api/migrations/`) |
 | Sparse FTS | PGroonga TokenBigram (Mecab) — 한국어 어절 sparse 검색 |
 | 임베딩 | **BGE-M3** (dense 1024) — `JETRAG_EMBED_PROVIDER` ENV 토글 (`hf` default / `deepinfra` production) + LRU cache + 영구 캐시 (마이그 016) |
-| 생성 LLM | Gemini 2.0 Flash (RPD 20) — Vision 통합 + class-based quota 감지 + factory 어댑터 |
+| 생성 LLM | Gemini 2.5 Flash — Vision 통합 + class-based quota 감지 + factory 어댑터 |
 | 검색 RPC | `search_hybrid_rrf` (003) + `search_dense_only` / `search_sparse_only` (008 진정 ablation) |
-| Vision | Gemini 2.0 Flash Vision + `vision_page_cache` (마이그 015) + per-doc budget cap |
-| 평가 | Ragas (Faithfulness/Answer Relevancy/Context Precision) + `golden_v2.csv` 182 row + `golden_batch_smoke` CI gate |
-| 호스팅 | **Railway Hobby** (BE, Singapore) · **Vercel Hobby** (FE) · **Supabase** (DB) · **DeepInfra** (embedding) |
-| 도메인 / DNS | Cloudflare Registrar (`woong-s.com`) — Vercel/Railway 양쪽 CNAME + 자동 Let's Encrypt SSL |
+| Vision | Gemini 2.5 Flash Vision + `vision_page_cache` (마이그 015) + per-doc budget cap |
+| 평가 | `golden_v2.csv` 182 row + `golden_batch_smoke` CI gate (Ragas 는 2026-09-07 폐기 — 아래 각주) |
+| 호스팅 | **Cloudflare Workers** (진입) · **Supabase Edge Functions** (BE, `ap-northeast-2`) · **Vercel Hobby** (FE) · **Supabase** (DB) · **DeepInfra** (embedding) |
+| 도메인 / DNS | Cloudflare Registrar (`woong-s.com`) — Vercel CNAME + Worker route (`jetrag-api`) |
 
-**어댑터 레이어 설계** (`api/app/adapters/`) — `LLM` / `Embedding` / `VectorStore` / `Parser` / `Storage` 5개 Protocol + `impl/` 구현체. v2 는 Ollama + LanceDB 로컬 전환 path 확보.
+**어댑터 레이어 설계** — 원본 `api/app/adapters/` 의 `LLM` / `Embedding` / `VectorStore` / `Parser` / `Storage` 5개 Protocol 을 Edge 로 옮기면서 `supabase/functions/_shared/` 의 모듈 경계로 재구성했다. 파서는 5종(PDF·HWP·HWPX·DOCX·PPTX)+이미지가 Deno 에서 돈다.
+
+> **Ragas 폐기 (2026-09-07)** — `POST /answer/eval-ragas` · `POST /search/eval-precision` 은
+> `ragas` + `langchain-google-genai` + `datasets` 에 묶인 Python 전용이라 Edge 로 옮길 수 없었다.
+> `answer_ragas_evals` 4행의 최근 생성이 **2026-05-05** — 4개월간 신규 0 이라 폐기를 택했다.
+> 아래 KPI 표의 RAGAS 수치는 그 시점의 **역사 기록**이다.
 
 ### 운영 환경 변수 (W15~v1.5 누적)
 
@@ -411,12 +483,25 @@ Railway (backend) · Vercel (frontend) · Supabase (DB·Storage) · DeepInfra (e
 
 ```
 Jet-Rag/
-├── api/         # FastAPI 백엔드 + Dockerfile (Railway)
-├── web/         # Next.js 프론트엔드 (Vercel)
-├── docs/        # ADR · 아키텍처 노트 · v0 와이어프레임
-├── evals/       # Ragas 평가 셋 / 러너 / golden_v2.csv
-└── work-log/    # 일자별 작업 로그 + 기획서 + PRD
+├── supabase/
+│   ├── functions/       # 현 백엔드 — Edge Functions 6개 + _shared/ 공용 모듈
+│   └── config.toml
+├── workers/
+│   ├── api-proxy/       # 경로 → 함수 라우팅 (routes.js 가 전환 스위치였다)
+│   └── email-ingest/    # @in.woong-s.com catch-all → POST /ingest/email
+├── web/                 # Next.js 프론트엔드 (Vercel)
+├── api/
+│   ├── migrations/      # **현역** — Supabase SQL 마이그레이션 29개
+│   ├── scripts/         # **현역** — verify_*_parity.py 14종 (이관 대조 하네스)
+│   └── app/             # 이관 전 FastAPI 원본. 대조 기준으로 남겨 둔 상태
+├── docs/                # ADR · 아키텍처 노트 · 이관 플랜 · v0 와이어프레임
+├── evals/               # 골든셋 / 러너 / golden_v2.csv
+└── work-log/            # 일자별 작업 로그 + 기획서 + PRD
 ```
+
+> `api/app/` 의 FastAPI 소스는 **더 이상 배포되지 않는다.** 이관이 원본과 응답을 대조하는
+> 방식이었기 때문에 `verify_*_parity.py` 가 아직 그것을 import 한다 — 지우려면 대조 하네스를
+> 먼저 정리해야 한다.
 
 ## 기획 문서 + 핸드오프
 
@@ -467,17 +552,33 @@ cp .env.example .env.local
 # (production) NEXT_PUBLIC_API_BASE_URL=https://jetrag-api.woong-s.com
 ```
 
-### 백엔드 (API) 실행
+### 백엔드 (Edge Functions) 실행
+
+```bash
+supabase functions serve                 # http://localhost:54321/functions/v1/<함수명>
+```
+
+- 헬스: <http://localhost:54321/functions/v1/api-account/health>
+- 경로 매핑은 `workers/api-proxy/src/routes.js` 참조 (프록시를 안 거치면 `/<함수명>` 접두어가 붙는다)
+
+테스트·검증:
+```bash
+cd supabase/functions && deno test --allow-env --allow-net --allow-read
+cd workers/api-proxy   && deno test --allow-net
+cd api && uv run python scripts/verify_search_rrf_parity.py   # 원본 대조 하네스 14종 중 하나
+```
+
+<details>
+<summary>이관 전 FastAPI 로컬 실행 (배포되지 않음 · 대조용으로만 남아 있다)</summary>
 
 ```bash
 cd api
-uv sync                                  # 첫 실행 시 의존성 설치
+uv sync
 uv run uvicorn app.main:app --reload     # http://localhost:8000
 ```
+`verify_*_parity.py` 가 이 앱을 import 해 Edge 구현과 응답을 비교한다.
 
-- 헬스: <http://localhost:8000/health>
-- OpenAPI Swagger UI: <http://localhost:8000/docs>
-- 시스템 통계 한눈에: <http://localhost:8000/stats>
+</details>
 
 ### 프론트 (web) 실행
 
@@ -496,24 +597,33 @@ pnpm dev                                 # http://localhost:3000
 ### Supabase 초기 셋업 (첫 1회)
 
 1. [Supabase](https://supabase.com) 프로젝트 생성
-2. SQL Editor → 마이그레이션 16건 순서대로 적용 (`api/migrations/`)
-   - 핵심: 001 init · 003 hybrid_search · 004 pgroonga_korean_fts · 005 vision_usage_log · 008 search_mode_split_rpc · 015 vision_page_cache · 016 embed_query_cache
+2. SQL Editor → 마이그레이션 **29건** 순서대로 적용 (`api/migrations/`)
+   - 검색·인제스트: 001 init · 003 hybrid_search · 004 pgroonga_korean_fts · 005 vision_usage_log · 008 search_mode_split_rpc · 015 vision_page_cache · 016 embed_query_cache
+   - 멀티유저: 018 이관 · 019 RLS · 020 Storage prefix · 022 plans/subscriptions
+   - Edge 이관: **026 pgmq 큐 · 027 ingest_artifacts · 028 pg_cron drain · 029 billing cron**
 3. Storage → New bucket: `documents` (Private)
-4. Settings → API → service_role 키 복사 → `.env` 의 `SUPABASE_SERVICE_ROLE_KEY` 에 입력
+4. Settings → API → service_role 키 복사 → Edge secret `SUPABASE_SERVICE_ROLE_KEY` 로 등록
+   (`supabase secrets set --env-file <file>`). **프론트·공개 번들에는 절대 넣지 않는다.**
 5. 적용 후 검증 SQL: `api/migrations/README.md` 참조
+
+> Edge secret 은 `SUPABASE_` 접두어를 **거부**한다(조용히 무시된다). 그래서 코드가 별칭 이름을
+> 먼저 읽고 원래 이름으로 fallback 한다 — `supabase/functions/_shared/config.ts` 주석 참조.
 
 ---
 
 ## 현재 가용 기능
 
 ### 백엔드 엔드포인트
-- `POST /documents` — 멀티파트 업로드 (PDF/HWP/HWPX/DOCX/PPTX/이미지/TXT/MD/URL, 최대 50MB), 매직바이트 검증, SHA-256 dedup, 9스테이지 파이프라인 비동기 시작
+- `POST /documents` — 멀티파트 업로드 (PDF/HWP/HWPX/DOCX/PPTX/JPG·PNG·HEIC/TXT/MD, 최대 50MB), 매직바이트 검증, SHA-256 dedup, 9스테이지 파이프라인 비동기 시작
+  - `.txt` · `.md` 는 **원본에도 파서가 없다** — 업로드는 받되 extract 에서 `flags.extract_skipped` 를 켜고 정상 완료한다
+  - `POST /documents/url` (웹 클립)은 2026-09-07 폐기 — 사용 0건이었다
+- `POST /ingest/email` — Cloudflare Email Worker 전용 (공유 시크릿 + 발신자 화이트리스트 + Pro 게이트)
 - `POST /documents/{id}/reingest` — 기존 doc chunks/메타 reset 후 재처리
 - `POST /documents/{id}/incremental_reingest` — 누락 vision 페이지만 재처리 (DB 보존)
 - `GET /documents` — 최신순 리스트 (tags/summary/flags/chunks_count/latest_job_status 포함)
 - `GET /documents/{id}/status` — 인제스트 진행 상태 + 스테이지 로그
 - `GET /search?q=` — 하이브리드 검색 (PGroonga sparse + pgvector dense + RRF k=60) + doc 그룹화 + relevance + matched_chunks + meta filter + `?mode={hybrid,dense,sparse}` 진정 ablation
-- `POST /answer` — LLM RAG 답변 (Gemini 2.0 Flash + 신뢰도 배지 + 출처 highlight + Ragas 점수)
+- `POST /answer` — LLM RAG 답변 (Gemini 2.5 Flash + 신뢰도 배지 + 출처 highlight)
 - `GET /stats` — 시스템 통계 + search_slo + chunks 분포 + ingest_slo_aggregate
 - `GET /stats/trend` — 시계열 추세 (search/vision RPC + zero-fill)
 
@@ -522,14 +632,19 @@ pnpm dev                                 # http://localhost:3000
 extract → chunk → chunk_filter → content_gate → tag_summarize → load → embed → doc_embed → dedup
 ```
 
-### 지원 파서 (7종)
-- **PyMuPDFParser** (PDF) — block 단위 + bbox + page + dict 모드 + heading 휴리스틱 + arXiv 영어 학술 page-header 블랙리스트 (`062b130`)
-- **HwpxParser** (HWPX) — section/paragraph + heading sticky propagate
-- **HwpmlParser** (HWPML XML) / **Hwp5Parser** (HWP 5.x OLE2)
-- **DocxParser** (DOCX) — `iter_inner_content` paragraph/table 순서 보존
-- **PPTXParser** (PPTX) — python-pptx + 텍스트 0 슬라이드 Vision OCR rerouting
-- **ImageParser** (PNG/JPEG/HEIC) — Vision 캡셔닝 + 스캔 PDF rerouting
-- **UrlParser** (web 클립, trafilatura)
+### 지원 파서 (Edge · 6종)
+
+Deno 에서 도는 현재 구현이다. 괄호 안은 이관 전 Python 원본.
+
+- **PDF** — `mupdf` npm (원본 PyMuPDF) · block 단위 + bbox + page + heading 휴리스틱 + arXiv 영어 학술 page-header 블랙리스트
+- **HWPX** — section/paragraph + heading sticky propagate
+- **HWP 5.x** — `@rhwp/core` (원본 pyhwp OLE2)
+- **DOCX** — paragraph/table 순서 보존
+- **PPTX** — `fflate` unzip + 텍스트 0 슬라이드 **Vision OCR rerouting**, 1~49자 슬라이드는 기존 텍스트 뒤에 붙이는 augment
+- **이미지** (PNG/JPEG/HEIC) — EXIF orientation 8종 보정 후 Vision 캡셔닝 + 스캔 PDF rerouting
+
+`.txt` · `.md` 는 파서가 없어 graceful skip (위 엔드포인트 항목 참조).
+`UrlParser` (web 클립) 는 `POST /documents/url` 폐기와 함께 이관하지 않았다.
 
 ### Vision augmentation (M2 W-3)
 - 표·다이어그램 캡셔닝 → chunk **prefix** (`[표 p.N: cap]\n\n{base}`) 로 prepend (DECISION-8)
@@ -562,23 +677,29 @@ extract → chunk → chunk_filter → content_gate → tag_summarize → load �
 ## CI
 
 `.github/workflows/ci.yml` — push (main) / pull_request / 수동 (`workflow_dispatch`):
-- **api · unittest** — uv sync + `python -m unittest discover tests` (외부 secrets 0, mock.patch 기반, 1229건)
+- **api · unittest** — `uv sync --frozen` + `python -m unittest discover tests` (외부 secrets 0, mock.patch 기반)
 - **web · tsc + lint** — pnpm tsc --noEmit + ESLint
+- **edge · deno fmt/lint/test** — `supabase/functions` (`--allow-env --allow-net --allow-read`)
+- **proxy · deno fmt/lint/test** — `workers/api-proxy` (`--allow-net`)
+- **이관 대조 하네스 14종** — `api/scripts/verify_*_parity.py` 를 각각 별도 step 으로 실행
 - **golden_batch_smoke gate** — `--mode all --require-top1-min` (W21 도입)
 
 GitHub 에서 자동 실행. fork 시 별도 secrets 불필요 (단위 테스트는 mock 기반이라 dummy env 만 사용).
 
+> `deno fmt --check` 가 CI 게이트다. 로컬에서 `deno fmt` 를 안 돌리고 push 하면 깨진다 —
+> "원래 깨져 있었다" 고 넘기기 전에 세션 시작 커밋과 대조할 것.
+
 `monitor_search_slo.py` 같은 라이브 모니터는 별도 workflow `monitor-search-slo.yml` 로 분리:
 
-1. **사용자 액션**: `Settings → Secrets → JET_RAG_API_BASE` 추가 (예: `https://jetrag-api.woong-s.com`)
+1. API base 는 **기본값이 박혀 있다** — `vars.JET_RAG_API_BASE || 'https://jetrag-api.woong-s.com'`.
+   공개 URL 이라 secret 이 아니다. 별도 설정 없이 그대로 돈다.
 2. workflow 의 `schedule` 주석 해제 (기본 매일 02:00 UTC = 11:00 KST) 또는 Actions 탭에서 수동 실행
 3. 결과는 GitHub Actions artifact 로 30일 보관 (`search-slo-snapshot-{run_id}`)
-4. secrets 미설정 시 workflow 자체가 skip — 다른 CI 영향 0
 
 local 에서 즉시 실행:
 ```bash
-cd api && uv run python scripts/monitor_search_slo.py            # localhost:8000 기본
-JET_RAG_API_BASE=https://jetrag-api.woong-s.com uv run python scripts/monitor_search_slo.py --warmup
+cd api && JET_RAG_API_BASE=https://jetrag-api.woong-s.com \
+  uv run python scripts/monitor_search_slo.py --warmup
 ```
 
 ## 운영 정책 (W3~v1.5 누적 표준)

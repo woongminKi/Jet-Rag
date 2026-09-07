@@ -68,9 +68,11 @@ async function run(
   env: Record<string, string>,
 ): Promise<{ status: number; where: string }> {
   const original = globalThis.fetch;
-  let sentTo: string | null = null;
+  // 객체에 담는다. `let sentTo: string | null` 로 두면 TS 가 클로저 안의 대입을 못 봐서
+  // `sentTo === null` 이후 분기를 `never` 로 좁힌다(TS2339) — 실행은 되지만 타입이 거짓말한다.
+  const sent: { to: string | null } = { to: null };
   globalThis.fetch = ((input: Request | string | URL) => {
-    sentTo = input instanceof Request ? input.url : String(input);
+    sent.to = input instanceof Request ? input.url : String(input);
     // 실제 백엔드 대신 200 을 준다 — 우리가 보려는 건 "어디로 가는가" 다.
     return Promise.resolve(new Response("{}", { status: 200 }));
   }) as typeof fetch;
@@ -80,12 +82,12 @@ async function run(
       // deno-lint-ignore no-explicit-any
       env as any,
     );
-    if (sentTo === null) {
+    if (sent.to === null) {
       return { status: res.status, where: "프록시가 직접 응답" };
     }
     return {
       status: res.status,
-      where: sentTo.includes("railway.app") ? "Railway" : "Edge",
+      where: sent.to.includes("railway.app") ? "Railway" : "Edge",
     };
   } finally {
     globalThis.fetch = original;
@@ -170,32 +172,26 @@ for (const [method, path] of EXTRA) {
 
 console.log(`
 ── 비-HTTP 의존 (자동으로 못 잰다 — 사람이 확인해야 한다) ──
-  1. Railway cron — api/scripts/billing_charge.py
-     **지금 돌고 있지 않다.** W5-6 에서 '0 18 * * *' 로 걸기로 해 놓고 카카오페이
-     SECRET_KEY 대기로 켜지 않았다(work-log 2026-07-08 §3). 그래서 끈다고 멈출 결제가
-     없다 — 처음부터 대기 상태였다.
-     대체: **마이그 029 작성 완료** (pg_cron → POST /billing/run, 같은 '0 18 * * *').
-     적용은 사용자가 SQL Editor 에서. Vault 에 billing_cron_secret + billing_run_url 필요
+  1. 결제 배치 — **2026-09-08 해소.** Railway cron(api/scripts/billing_charge.py)은 애초에
+     켠 적이 없다. 카카오페이 SECRET_KEY 대기로 W5-6 부터 대기 상태였다.
+     지금은 마이그 029 의 pg_cron 이 같은 '0 18 * * *' 로 billing_run_tick() 을 부른다.
+     **적용·검증 완료**: cron.job 등록 확인, billing_run_tick() 수동 호출 → Vault 통과 →
+     POST /billing/run 도달 → 503(결제 게이트 대기). 즉 경로는 살아 있고 키만 남았다.
   2. .github/workflows/monitor-search-slo.yml — **2026-09-07 해소.**
      API base 를 프록시 도메인 기본값으로 박았다(공개 URL 이라 secret 이 아니다).
-     secret 은 더 이상 읽지 않는다. 남은 확인: repo **variable** JET_RAG_API_BASE 가
+     secret 은 더 이상 읽지 않는다. **남은 확인 1건**: repo *variable* JET_RAG_API_BASE 가
      Railway 주소로 설정돼 있으면 그쪽이 이긴다 — Settings → Variables 에서 한 번 볼 것
   3. api/scripts/verify_documents_read_parity.py
-     원본과 Edge 를 비교하는 대조 스크립트다. Railway 가 사라지면 **비교 대상이 없어져**
-     더 못 돈다 — 이관이 끝나면 역할도 끝나므로 정상이다
-  4. FastAPI 자체 문서(/docs · /redoc · /openapi.json · /)
-     Railway 와 함께 사라진다. 대체물을 둘지는 결정 사항
-  5. 프런트(Vercel) — **의존 아님**. NEXT_PUBLIC_API_BASE_URL 이
-     https://jetrag-api.woong-s.com (프록시 도메인)로 설정돼 있다
-     (2026-05-19 도메인 부착 기록). NEXT_PUBLIC_* 은 빌드 시 inlining 되므로
-     값이 바뀌었다면 재배포가 필요했을 것 — 대시보드에서 한 번 재확인하면 확실하다
+     원본과 Edge 를 비교하는 대조 스크립트다. Railway 를 **삭제하면 비교 대상이 없어져**
+     더 못 돈다 — 이관이 끝나면 역할도 끝나므로 정상이다. 삭제 시 같이 정리할 것
+  4. FastAPI 자체 문서(/docs · /redoc · /openapi.json · /) — 이미 404 다
+  5. 프런트(Vercel) — **의존 아님.** 배포 번들 실측(2026-09-08): jetrag-api.woong-s.com
+     만 참조하고 railway 주소는 0건
 
-── 끄기 전 순서 ──
-  1. secret 4개 설정 → deno run --allow-net api/scripts/verify_cutover.ts
-  2. 프록시 배포 (이메일·결제가 Edge 로)
-  3. billing cron — 마이그 029 적용 (Vault 2건 + SQL Editor)
-  4. monitor-search-slo 의 JET_RAG_API_BASE 를 프록시 도메인으로
-  5. 그 다음에 LEGACY_ORIGIN 비우기
+── 남은 것: Railway 서비스 삭제 ──
+  프록시는 더 이상 Railway 를 부르지 않지만 **서비스는 계속 돌고 요금도 나간다.**
+  jet-rag-production.up.railway.app 이 아직 200 이고 같은 Supabase DB 를 본다.
+  관찰 기간 뒤 대시보드에서 직접 삭제해야 끝난다.
 `);
 
 // ─────────────────────────────────────────────────────────────
