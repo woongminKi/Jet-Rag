@@ -3248,3 +3248,96 @@ inlining 된다). **기록 기반 확인**이고 라이브 재확인은 Vercel �
 | **B** | billing cron 마이그 029 (3단계) — 신규 마이그레이션이라 확인 필요 |
 | **C** | `monitor-search-slo` 의 API base 교체 (4단계) — 저장소 안에서 할 수 있는 유일한 잔여 |
 | **D** | PPTX Vision 보강 · `synonym_inject` 등 기능 잔여 |
+
+---
+
+## 49. `monitor-search-slo` 의 Railway 의존 제거 — 그리고 **깨져 있던 CI 전부 복구** (`2f5e92f`)
+
+### 49.1 원래 하려던 것
+
+`JET_RAG_API_BASE` secret 이 Railway 주소를 담고 있어 Railway 를 끄면 이 workflow 가
+조용히 실패한다(§48.4-2). API base 는 **공개 URL 이라 secret 이 아니므로** 프록시
+도메인을 기본값으로 박고 secret 을 더 이상 읽지 않게 했다. `if:` 가드도 뗐다.
+
+실측(스크립트를 프록시로 돌림): 표본 출처 `search_metrics_log (최근 500행)` ·
+p50 167ms · p95 1290ms · cache hit 0.990. `monitor_search_slo.py` 의 "여전히
+in-memory ring buffer 기반" docstring 은 낡아서 고쳤다 — 렌더러는 이미
+`search_slo.source` 를 읽고 있었다(2026-09-05 Edge 이관).
+
+**남은 확인 1건**: repo *variable* `JET_RAG_API_BASE` 가 Railway 주소로 설정돼 있으면
+여전히 그쪽이 이긴다. 저장소에서는 볼 수 없다 — Settings → Variables 확인 필요.
+
+### 49.2 그 과정에서 CI 가 깨져 있는 걸 발견했다 — **상당수가 내 탓이다**
+
+세션 시작 커밋(`5134b74`)을 꺼내 같은 검사를 돌려 대조했다:
+
+| 항목 | 세션 시작 | 발견 시점 | 원인 |
+|---|---|---|---|
+| edge fmt | **통과** | 29건 실패 | **내가 깨뜨림** |
+| edge lint | 2건 | 5건 | 3건 **내가 추가** |
+| proxy test | 17/2 실패 | 더 악화 | 선재 + **내가 악화** |
+| proxy lint | 1건 | 1건 | 선재 |
+| py unittest | 4건 실패 | 4건 실패 | 선재 |
+| py `uv sync --frozen` | **통과** | 실패 | **내가 깨뜨림** (§47) |
+
+### 49.3 앞선 판단이 틀렸다
+
+세션 중 `deno fmt --check` 가 18/53 실패하는 걸 보고 **"이 저장소는 fmt 를 강제하지
+않는다"** 고 결론내고 재포맷을 안 했다. 그때 이미 내가 만든 미포맷 파일을 보고 원래
+그런 줄 오독한 것이다. 실제로는 **CI 가 fmt 를 검사하고 세션 시작 시점엔 통과**했다.
+
+> "선재 결함" 은 편한 결론이라 검증 없이 채택하기 쉽다. 그러면 내가 만든 회귀가 그
+> 라벨 아래 숨는다. **선재라고 부르려면 대조 근거를 갖는다.**
+> (`git archive <시작커밋> | tar -x -C /tmp/base` 로 1 분이면 된다.)
+
+### 49.4 고친 것
+
+| 대상 | 내용 |
+|---|---|
+| edge fmt | `deno fmt` (29파일) |
+| edge lint 3건(내 것) | `pdf_extract.ts` 주석의 **U+FEFF 리터럴** 2건을 `U+FEFF` 표기로 · `worker_test.ts` 미사용 `calls` 제거 |
+| edge lint 2건(선재) | 선언 앞의 미사용 `deno-lint-ignore` 제거 |
+| **proxy test** | `Deno.readTextFile` 이 `--allow-read` 를 요구하는데 CI 는 `deno test --allow-net` 이다. **정적 JSON import** 로 바꿔 권한 없이 읽게 했다 — 선재 2건 + §47 에 내가 추가한 것이 함께 해소 |
+| proxy lint(선재) | `async fetch` 에 사유를 적은 ignore |
+| **uv.lock** | §47 에서 `pyproject` 의 trafilatura 만 지우고 락을 안 잡아 `uv sync --frozen` 이 깨졌다. `uv lock` 재생성 = **삭제 133줄뿐**(전이 의존 10개, 버전 상승 0) |
+| **py unittest 4건(선재)** | §49.5 |
+
+### 49.5 오래된 4건의 진짜 원인 — 2단 캐시
+
+`test_embed_cache` 는 in-process LRU 만 가정하는데 `embed_query` 는 **2단 캐시**다:
+① in-process LRU ② DB `embed_query_cache`. 다른 테스트가 Supabase 자격증명을 올려놓으면
+②가 hit 을 내서 `_last_cache_hit` 가 True 가 된다 — 그래서 **단독은 통과하고 전체는
+실패**했다. `setUp` 에서 ②를 끊었다(`lookup`→None, `upsert`→no-op).
+
+이 4건은 이전 세션부터 "알려진 선재 실패" 로 넘겨 왔다. 원인을 한 번 파니 5줄이었다.
+
+### 49.6 검증 — CI 9개 항목을 로컬에서 그대로 재현
+
+```
+py    : uv sync --frozen 통과 · unittest **0 failures** · 대조 스크립트 14/14
+edge  : fmt 통과 · lint 통과 · test 237 passed
+proxy : fmt 통과 · lint 통과 · test 20 passed
+종합  : 전부 통과
+```
+
+`unittest` 가 0 failures 로 끝난 건 이 프로젝트에서 처음이다.
+
+### 49.7 §48.6 체크리스트 갱신
+
+```
+1. secret 4개 설정 → verify_cutover.ts                  ⬜ 사용자 실행
+2. 프록시 배포 → 리허설 --live 드리프트 0                  ⬜ 1 이후
+3. billing cron 대체 (마이그 029)                        ⬜ 사용자 확인 필요
+4. monitor-search-slo API base 교체                     ✅ **이 커밋**
+   (남은 것: repo variable 이 Railway 를 가리키지 않는지 확인)
+5. LEGACY_ORIGIN 비우기                                 ⬜ 1~4 이후
+```
+
+### 49.8 다음 후보
+
+| 후보 | 내용 |
+|---|---|
+| **A** | secret 4개 설정 → 이메일 + 결제 컷오버 (1·2단계) |
+| **B** | billing cron 마이그 029 (3단계) — 신규 마이그레이션이라 확인 필요 |
+| **C** | PPTX Vision 보강 (`_vision_ocr_largest_picture`, §41.6) |
+| **D** | chunk 조각 c2 `synonym_inject` (200줄) |
