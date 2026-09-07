@@ -2113,3 +2113,108 @@ vision  창 1개  호출 2  처리 2  need_score skip 0  청크 2건
 ### 35.5 남은 것
 
 `§34.9` 그대로. 다음 후보는 **`reingest` 2 종** — 차단이 풀렸고 vision 과 같은 기계를 쓴다.
+
+---
+
+## 36. Phase 4 — `reingest` 2 종. **`/documents` 쓰기가 하나만 남았다**
+
+| 라우트 | 큐 흐름 |
+|---|---|
+| `POST /documents/{id}/reingest` | chunks 전부 삭제 → `extract` 부터 재실행 |
+| `POST /documents/{id}/reingest-missing` | chunks 보존 → `vision_missing` → `embed` |
+
+### 36.1 증분은 `chunk` 를 거치지 않는다
+
+원본이 `run_load_stage(chunks=...)` 로 **직접** 적재한다. chunk 단계를 태우면 기존
+청크를 재구성하게 되어 "보존" 이 아니게 된다. 그래서 `vision_missing` 핸들러가
+`chunks` 에 바로 upsert 한다.
+
+### 36.2 창 분할에서 무한 루프를 막았다
+
+매 태스크마다 `chunks` 에서 누락을 다시 구하는 설계가 자연스러워 보였는데, **틀렸다.**
+`needs_vision` 이 false 인 페이지는 청크가 안 생기므로 영원히 "누락" 으로 남아 태스크가
+끝나지 않는다. 첫 태스크가 구한 목록을 아티팩트로 넘기는 쪽으로 바꿨다.
+
+### 36.3 `runVisionWindow` 를 목록 기반으로
+
+전체 인제스트는 `[from, from+count)` 연속 범위지만 증분은 누락 페이지가 띄엄띄엄하다.
+두 흐름이 같은 sweep·cap·합성 로직을 쓰도록 `pages: number[]` 를 받게 했다.
+cap 메시지의 "남은 페이지 N" 을 원본과 맞추려고 `pendingTotal`·`pendingIndexBase` 도
+함께 받는다(창 밖을 알아야 계산된다).
+
+### 36.4 `page_cap_override` 를 큐로 나르지 않는다
+
+원본은 라우터가 `resolve_page_cap(mode, settings)` 를 계산해 인자로 나른다. 그 값의
+출처는 언제나 `documents.flags.ingest_mode` 다. Edge 는 단계가 큐로 나뉘어 있어
+**필요한 곳에서 flags 를 읽어 다시 계산**한다 — 메시지가 재시도로 낡아도 문서가 진실이다.
+
+### 36.5 이 과정에서 발견한 **업로드 누락** (`afc33b2`)
+
+원본 `POST /documents` 는 `mode` 폼 값을 `flags.ingest_mode` 에 쓴다. Edge 업로드
+포팅이 그걸 빼먹어서 재인제스트가 이전 모드를 못 이어받고 항상 default 로 떨어졌다.
+`ingest_mode.ts` 를 옮기고 업로드 양쪽 경로(신규 insert·실패 재시도)를 고쳤다.
+검증 순서도 원본대로 **확장자 검증보다 먼저**다.
+
+### 36.6 실측 — 대조
+
+| 검사 | 결과 |
+|---|---|
+| `verify_reingest_parity` | 22 케이스 × (상태·본문·부작용·다음작업) **88건 0 불일치** |
+| `verify_vision_incremental_parity` | **193건 0 불일치** |
+| `verify_vision_enrich_parity` (회귀) | 93건 0 불일치 |
+| 음성 대조 3 종 | 전부 검출 |
+| `deno test _shared/` | 209 passed |
+| 프록시 테스트 | 20 passed |
+
+reingest 대조는 **DB 만 스텁으로 갈고 라우트 함수를 그대로 실행**했다. 404/409/400/202
+와 한국어 메시지 전문, `flags` 로 무엇을 썼는지, 무엇을 시작하는지까지 비교한다.
+
+잡은 순서 함정: `reingest-missing` 은 **PDF 검사가 409 보다 먼저**다. 409 메시지도
+두 라우트가 다르다(전체만 `" 완료 후 다시 시도하세요."` 가 붙는다). 400 의 `{raw!r}`
+는 Python repr 이라 따옴표가 붙는다.
+
+### 36.7 **E2E 가 잡은 결함 — 잡이 영원히 running 이었다** (`7d80531`)
+
+`load.ts` 가 "tag_summarize·doc_embed 가 아직 없으니 완료가 아니다" 며 잡을 running
+에 뒀다. 그래서:
+
+- `/documents/active` 가 이미 검색 가능한 문서를 계속 "진행 중" 으로 표시
+- **`reingest` 2 종이 항상 409** — 쓸 수가 없다
+
+지금 사슬은 embed 에서 정말 끝나고 그 시점에 문서는 dense·lexical 양쪽으로 검색된다.
+남은 단계는 검색 가능 여부를 안 바꾼다. running 으로 두는 쪽이 더 큰 거짓말이라
+판단해 `embed` 끝에서 마감하도록 바꿨다. **남은 단계를 옮기면 마감 지점을 옮겨야
+한다**고 코드에 박아 뒀다.
+
+> 대조 검사 3종을 다 통과하고도 E2E 에서 터졌다. 순수 로직은 맞았지만 **단계 간
+> 계약**(잡 수명)이 틀렸다. 라우트 단위 대조로는 안 보이는 자리다.
+
+### 36.8 E2E — 실제 Supabase + pg_cron, 16 개 검사 통과
+
+`api/scripts/e2e_reingest.ts`. p.2 의 vision 청크를 **일부러 지워** 누락 상황을 만든다
+— 안 지우면 "누락 0" 경로만 타고 정작 보강 경로가 안 돈다.
+
+```
+① 업로드(mode=precise) → flags 기록 → done/completed, 청크 9, vision [1,2]
+② p.2 vision 청크 삭제 → 청크 8
+③ reingest-missing → missing_pages_before=[2] → vision_missing → 청크 10, vision [1,2]
+     기존 8건 전부 보존 · chunk_idx 충돌 없음 · dense_vec 전부 채움
+④ reingest?mode=fast → chunks_deleted=10 → 청크 9, chunk_idx 0 부터, 모드 fast 기록
+⑤ 진행 중 409(양쪽) · 남의 문서 404
+```
+
+**vision 신규 호출 0 건.** 앞선 스모크가 채운 `vision_page_cache` 로 전부 히트했다 —
+증분 경로가 캐시를 제대로 쓴다는 증거이기도 하다.
+
+### 36.9 남은 것
+
+`/documents` 9 개 중 **8 개 이관**. 남은 쓰기 1 개는 `POST /documents/url`(URL 파서 필요).
+
+| 항목 | 상태 |
+|---|---|
+| `POST /documents/url` | ⬜ — URL 파서 이식 필요 |
+| `_reroute_pdf_to_image` (스캔 PDF) | ⬜ — vision 기계 재사용 + `image_parser` OCR 경로 |
+| `tag_summarize` · `doc_embed` · `chunk_filter` · `content_gate` · `dedup` | ⬜ — **옮기면 잡 마감 지점도 옮겨야 한다** |
+| HWPML / hwpx / docx / pptx extract | ⬜ |
+| chunk 조각 c2 (`synonym_inject`) | ⬜ |
+| `/payments` · `/billing` · `/email` (Phase 4~5) | ⬜ |
