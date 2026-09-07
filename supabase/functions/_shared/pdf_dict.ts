@@ -58,10 +58,28 @@ export interface PdfPageDict {
 }
 
 /**
- * structured text 옵션.
- * `preserve-spans` 는 쓰지 않는다 — 위 §asJSON 참조. span 은 walk 의 font·size run 으로 만든다.
+ * structured text 옵션 — **PyMuPDF `TEXTFLAGS_DICT` 를 그대로 재현한다.**
+ *
+ * 짐작하지 말고 실제 값을 봤다(2026-09-07):
+ * ```
+ * fitz.TEXTFLAGS_DICT == 199
+ *   = 1 PRESERVE_LIGATURES | 2 PRESERVE_WHITESPACE | 4 PRESERVE_IMAGES
+ *   | 64 MEDIABOX_CLIP     | 128 CID_FOR_UNKNOWN_UNICODE
+ * ```
+ * 처음엔 `preserve-whitespace,preserve-images` 둘만 켰다. **`preserve-ligatures` 가
+ * 빠진 게 실제 버그였다** — mupdf 가 `ﬀ`(U+FB00)를 `ff` 로 풀어 버려서 arXiv 문서의
+ * 텍스트가 491 자 길어지고, 800 자 분할 경계가 밀려 **청크가 749 → 803 개(+7.2%)** 로
+ * 어긋났다. 옵션을 맞추자 blocks 10 / lines 25 / chars 1,682 / 리거처 4 로 완전 일치.
+ *
+ * `mediabox-clip` · `use-cid-for-unknown-unicode` 는 켜도 결과가 안 바뀌었지만
+ * (MuPDF 기본이 이미 그렇게 동작하는 것으로 보인다) 계약을 눈에 보이게 두려고 남긴다.
+ *
+ * `preserve-spans` 는 쓰지 않는다 — 위 §asJSON 참조. span 은 walk 의 font·size run 으로
+ * 만든다. (실측: 켜면 line 수가 30 → 515 로 폭증해 PyMuPDF 와 더 멀어진다.)
  */
-export const STEXT_OPTS = "preserve-whitespace,preserve-images";
+export const STEXT_OPTS =
+  "preserve-ligatures,preserve-whitespace,preserve-images,mediabox-clip," +
+  "use-cid-for-unknown-unicode";
 
 /** mupdf 의 Rect/Quad 는 배열로 온다. */
 type Quad = ArrayLike<number>;
