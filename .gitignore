@@ -88,3 +88,7 @@ evals/golden_v2.csv.bak.*
 
 # 이미지 대조 픽스처는 스크립트가 만든다 — 진짜 사진을 넣어 볼 때만 쓰는 자리
 api/scripts/fixtures/images/
+
+# 컷오버 secret 실제 값 (템플릿만 커밋한다)
+cutover.env
+*.cutover.env

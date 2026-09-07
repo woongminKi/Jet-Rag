@@ -7,7 +7,10 @@
  * | 경로 | 필요한 Edge secret |
  * |---|---|
  * | `POST /ingest/email` | `JETRAG_EMAIL_WEBHOOK_SECRET` |
- * | `POST /payments/subscribe/*` · `POST /billing/run` | `JETRAG_KAKAOPAY_SECRET_KEY` · `JETRAG_BILLING_KEY_ENCRYPTION_KEY` (+ cron 은 `JETRAG_BILLING_CRON_SECRET`) |
+ * | `POST /billing/run` | `JETRAG_BILLING_CRON_SECRET` |
+ *
+ * `JETRAG_KAKAOPAY_SECRET_KEY` 는 **컷오버 조건이 아니다** — 심사 대기라 Railway 에도
+ * 없고, 없으면 양쪽 다 503 이라 동작이 같다. 발급되면 그때 넣으면 결제가 켜진다.
  *
  * ── 아래는 이메일 경로 설명 ──
  *
@@ -141,12 +144,19 @@ const runRes = await fetch(`${EDGE_PAY}/billing/run`, {
 const runText = (await runRes.text()).slice(0, 200);
 console.log(`  POST /billing/run (틀린 secret) → ${runRes.status} ${runText}`);
 const cronSecretSet = runRes.status === 401;
-const payKeysSet = runRes.status !== 503 || !runText.includes("billing cron");
+// **카카오페이 키는 컷오버 조건이 아니다.**
+// `JETRAG_KAKAOPAY_SECRET_KEY` 는 심사 중이라 아직 발급된 적이 없다 — Railway 에도 없다
+// (memory `jetrag_w5_6_kakaopay_ship`). 없으면 양쪽 다 503 이므로 **동작이 같다.**
+// 컷오버가 요구하는 건 "결제가 켜져 있을 것" 이 아니라 "Edge 가 Railway 와 같을 것" 이다.
+// 처음엔 이걸 차단 요인으로 넣어 뒀는데, 그러면 심사가 끝날 때까지 이메일까지 못 넘긴다.
+const payKeysPending = runRes.status === 503 && !runText.includes("billing cron");
 if (runRes.status === 503 && runText.includes("billing cron")) {
   console.log("  **Edge 에 JETRAG_BILLING_CRON_SECRET 이 없다.**");
-} else if (runRes.status === 503) {
-  console.log("  **결제 키가 없다** (JETRAG_KAKAOPAY_SECRET_KEY / _BILLING_KEY_ENCRYPTION_KEY).");
+} else if (payKeysPending) {
+  console.log("  결제 키 미설정 → 503. **Railway 도 같은 상태라 컷오버를 막지 않는다**");
+  console.log("  (JETRAG_KAKAOPAY_SECRET_KEY 는 카카오페이 심사 대기 — 발급 후 넣으면 활성)");
 }
+
 const payGetRes = await fetch(`${EDGE_PAY}/billing/run`, { method: "GET" });
 await payGetRes.body?.cancel();
 say(payGetRes.status === 405, `GET /billing/run → 405 (받은 값 ${payGetRes.status})`);
@@ -162,7 +172,8 @@ console.log(`  POST /billing/run → ${pProxy.status} [${payBackend}] ${pProxyTe
 
 console.log("\n── 배포해도 되는가 ──");
 const emailReady = secretSet;
-const payReadyOk = cronSecretSet && payKeysSet;
+// 결제 준비 = **cron secret 만**. 카카오페이 키는 위 이유로 조건이 아니다.
+const payReadyOk = cronSecretSet;
 console.log(`  이메일  Edge 준비 ${emailReady ? "완료" : "**미완료**"} · 프록시 ${p.backend}`);
 console.log(`  결제    Edge 준비 ${payReadyOk ? "완료" : "**미완료**"} · 프록시 ${payBackend}`);
 if (emailReady && payReadyOk) {
