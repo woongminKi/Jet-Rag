@@ -2818,3 +2818,95 @@ Gemini 에 넘긴다(주석: "pillow-heif 등 추가 의존성 회피"). 필요�
 | **B** | 단독 이미지 업로드 이식 | §44.3. 막혀 있지 않다. Share Target 이 실제로 이미지를 받는다 |
 | **C** | `POST /documents/url` 처리 방향 결정 | §44.2. 이식/폐기/보류 중 선택 — 사용 0건이라 폐기가 RAGAS 패턴과 같다 |
 | **D** | 결제 3종 + `POST /billing/run` (135 + 398줄) | Railway 제거의 마지막 큰 덩어리 |
+
+---
+
+## 45. Phase 4 — 단독 이미지 업로드 (`33c9431`). **지원 포맷 5 → 6**
+
+`web/src/app/share/route.ts` 의 Web Share Target 이 폰에서 사진을 받는데, 그 경로가
+지금까지 §43 의 판단대로 **시끄럽게 실패**하고 있었다. 그걸 막은 게 무엇인지 다시 보니
+내가 직전에 보고한 이유가 틀렸다.
+
+### 45.1 정정 — HEIC 는 막고 있지 않았다
+
+직전 보고: "EXIF/HEIC 디코드를 Pillow 없이 해야 한다."
+실제: 원본 `image_parser.py:101` 은 HEIC/HEIF 를 **디코드하지 않는다.** raw bytes 를
+그대로 Gemini 에 넘긴다(주석: "pillow-heif 등 추가 의존성 회피").
+필요한 건 **EXIF orientation 하나**였다. 원본을 끝까지 안 읽고 요약한 결과다.
+
+### 45.2 mupdf 를 상상하지 않고 전부 재 봤다
+
+| 확인한 것 | 결과 |
+|---|---|
+| png·jpeg·gray 디코드 | 된다 |
+| `getNumberOfComponents()` | 알파를 **포함**한다 (RGBA → 4) |
+| EXIF 적용 | **안 한다** — 방향 6 인 1600×1200 을 그대로 준다 → 이중 적용 위험 없음 |
+| 알파 | **premultiplied** (alpha=0 픽셀의 RGB 가 0,0,0) |
+| `convertToColorSpace` 로 알파 떼기 | **못 한다** — "cannot drop alpha when converting pixmap" |
+| `asJPEG` + 알파 픽스맵 | **던진다** — "pixmap may not have alpha to save as JPEG" |
+
+→ 알파를 뗄 때는 `alpha=false` 픽스맵을 새로 만들어 색 채널만 옮긴다.
+
+**자를 먼저 의심한 건 여기서도 맞았다.** 첫 프로브에서 `n+1` 로 알파를 읽어
+`alpha_opaque` 를 `minAlpha=0` 으로 오판했다. 값이 이상해서 대상이 아니라 프로브를
+고쳤고, 그제야 `alpha_real=0 / alpha_opaque=255` 라는 맞는 값이 나왔다.
+
+### 45.3 대조 — 인코더를 방정식에서 뺐다
+
+`api/scripts/verify_image_decode_parity.py` — **비교 163건 / 불일치 0건**.
+
+처음엔 최종 JPEG 바이트로 PSNR 을 재고 "포팅 차이가 기준선보다 크다"며 10건을
+실패로 찍었다. **그 판정이 틀렸다.** 서로 다른 인코더 둘을 비교하면 각자의 오차가
+독립이라 PSNR 이 기준선보다 ~3dB 낮게 나오는 게 정상이다. 임계값을 완화하는 대신
+**인코딩 직전 픽셀**을 비교하도록 바꿨다 — 디코드·회전·축소·RGB 변환까지가 내가
+포팅한 전부이고, 거기까지는 완전 일치를 요구할 수 있다.
+
+| 검사 대상 | 기준 | 결과 |
+|---|---|---|
+| 무손실(PNG) 입력 | **바이트 완전 일치** | `big_rgb.png`·`big_gray.png` 일치 (3·1채널 축소 증명) |
+| 무손실 + 알파 | 불투명 픽셀 완전 일치 | `big_rgba.png` 일치 (4채널 축소 증명) |
+| EXIF 8 방향 | 크기·픽셀 일치 | 8/8 일치 |
+| JPEG 입력 | **축소가 증폭하지 않을 것** | 3.18→2.87 · 2.82→2.68 · 0.12→0.12 (전부 감소) |
+| premultiplied 알파 | 투명 픽셀에만 | RGB 차이 100% 가 `alpha<255`, 불투명 0건, 알파 채널 완전 일치, 흰배경 합성 PSNR ∞ |
+
+**JPEG 에 절대 임계값을 두지 않은 이유**: 그 값은 그림 내용에 따라 0.12~2.9 로 움직인다.
+임계값을 정하면 픽스처를 바꿀 때마다 따라 올려야 하고, 그건 검사가 아니라 요식이다.
+실제로 픽스처를 다시 만들자 2.5 기준이 바로 깨졌다. 그래서 **축소 직전 픽셀로 디코더
+차이를 직접 재고 축소 후와 비교**하는 자기교정 방식으로 바꿨다.
+
+음성 대조: 픽셀 **1바이트** 변조를 검출.
+
+### 45.4 라이브 E2E
+
+900×600 PNG 1장(**$0.006** — 대조군은 가장 싼 것으로, §43.6 의 교훈):
+
+```
+extract → chunk → tag_summarize → load → embed → doc_embed → dedup  전부 succeeded
+청크 1 / dense_vec 1
+태그: 인제스트, 이관, 현황, 업로드, 첨부, 수집, 김우민   ← 이미지 안의 글자
+vision_usage_log  call_id 2197  source_type='image'  page=null  $0.006152
+```
+
+`source_type='image'` · `page=null` 은 원본의 단독 이미지 호출 의미와 같다.
+
+### 45.5 같이 한 것
+
+- `resizeRgbLanczos` → 채널 수를 받는 `resizeLanczosN` 으로 일반화. **구현이 하나여야**
+  PDF 경로와 이미지 경로가 갈리지 않는다. PDF 회귀 확인: `verify_image_normalize_parity.py`
+  **12/12 바이트 일치 유지**.
+- 대조 픽스처(2.1MB)를 커밋하지 않고 스크립트가 매번 만든다. 생성이 결정적이라 같은
+  바이트가 나오고 픽스처가 낡지 않는다. 진짜 카메라 사진을 보고 싶으면
+  `api/scripts/fixtures/images/` 에 넣으면 자동 포함된다(gitignore).
+- **미이식 예시를 하드코딩하지 않는다.** 예시로 쓴 포맷이 이식되면 테스트가 조용히
+  무의미해지는 일이 `extract_test.ts` 에서만 **네 번** 반복됐다(hwpx → image → …).
+  이제 집합에서 유도해서, 마지막 하나까지 이식되면 `undefined` 가 되어 즉시 드러난다.
+
+### 45.6 남은 것
+
+| 항목 | 상태 |
+|---|---|
+| `POST /ingest/email` 컷오버 | **secret 대기** (§42.5) — 코드·배포 완료 |
+| `POST /documents/url` | trafilatura 차단. 사용 0건 · 웹 UI 호출 0건 → 이식/폐기 결정 필요 |
+| `POST /payments/subscribe/*` · `POST /billing/run` | 135 + 398줄 — Railway 제거의 마지막 큰 덩어리 |
+| PPTX Vision 보강 (`_vision_ocr_largest_picture`) | §41.6 |
+| chunk 조각 c2 (`synonym_inject`) | 200줄 |
