@@ -2,9 +2,9 @@
 
 > **범위**: Edge 로 옮길 수 없던 4 라우트(`ragas` 의존)를 **폐기**해 Phase 6 의 차단 요인을
 > 없애고, Phase 2 를 닫기까지.
-> **다음 세션 재진입**: `chunk` **조각 b** — 짧은 섹션 병합(`_merge_short_sections` +
-> `_looks_like_table_cell`). 기반(문자 판정 3종 §18)과 조각 a(분할·마스킹·overlap §19)는
-> 끝났다. 그다음이 조각 c(레코드 변환).
+> **다음 세션 재진입**: `chunk` **조각 c** — 레코드 변환(`_to_chunk_records`).
+> NFC 정규화 + `entity_extract` 의존이 딸려온다. a·b 는 끝났다(§19, §20).
+> c 까지 가면 **기준선 청크 digest `942f1b2e98ae666e` 와 직접 대조**할 수 있다.
 
 ## 0. 한눈에 보기
 
@@ -24,7 +24,8 @@
 | Phase 3 — HWP extract 이식 + 대조 | ✅ (5815c4d) |
 | Phase 3 — extract 핸들러 결선 (큐→워커→산출물) | ✅ **E2E 성립** (afe0d82) |
 | Phase 3 — Python 문자 판정 3종 (chunk 기반) | ✅ (2689641) |
-| Phase 3 — chunk 조각 a (분할·마스킹·overlap) | ✅ (ff61062) — b·c 남음 |
+| Phase 3 — chunk 조각 a (분할·마스킹·overlap) | ✅ (ff61062) |
+| Phase 3 — chunk 조각 b (섹션 병합·표 셀 판정) | ✅ (743ce46) — c 남음 |
 
 ## 1. 왜 폐기했나
 
@@ -668,3 +669,36 @@ Deno 가 Python 보다 새 유니코드를 쓴다. **런타임이 올라가면 �
 | a | 문장 분할 · 날짜 마스킹 · overlap | ✅ |
 | b | 짧은 섹션 병합 (`_looks_like_table_cell` 포함) | ⬜ — 기반(§18)은 준비됨 |
 | c | 레코드 변환 (NFC, `entity_extract` 의존) | ⬜ |
+
+
+## 20. Phase 3 — chunk 조각 b (짧은 섹션 병합·표 셀 판정)
+
+표 셀 판정 하나가 뒤집히면 **병합 여부가 달라지고 청크 경계가 통째로 바뀐다.**
+그래서 §18(문자 판정 3종 전수 대조)을 먼저 깔았고, 여기서 그걸 쓴다.
+
+### 이식한 규칙
+
+- `looksLikeTableCell` — ` | ` 포함이면 무조건 참. 아니면 strip 후 **30자 미만**이고
+  `digit_punct / non_ws >= 0.5` 일 때 참.
+- `mergeShortSections` — 앞 조각 200자 미만 + **같은 page** + 합계(구분자 2자 포함)
+  1000 이하일 때만 병합. 표 셀 의심은 어느 쪽이든 걸리면 끊는다.
+  병합 시 `section_title` 은 **뒤쪽 우선**(빈 문자열은 falsy), `metadata` 도 뒤쪽이 이긴다.
+
+### 검증 — FAIL 0
+
+표 셀 18건(True 11 / False 7) · 병합 18건(병합 발생 11).
+경계를 직접 태웠다 — 30자 딱, 비율 0.5 딱, 199/200, 합계 1000/1001, `page None==None`,
+`²`(Python 만 digit), `U+001C`(Python 만 공백), `U+FEFF`(JS 만 공백), 새 유니코드,
+이모지 코드포인트.
+
+음성 대조 **12종 전부 발화** — ` | ` 검사 제거 3 · 30자 경계 1 · 비율 경계 1 ·
+`pyIsDigit`→`\p{Nd}` 1 · `pyIsSpace`→JS `\s` 1 · MIN_MERGE 경계 1 · page 비교 제거 1 ·
+`+2` 누락 1 · title 우선순위 1 · metadata 순서 1 · 표 셀 차단 제거 2 · `cpLen`→`.length` 2.
+
+### chunk 남은 조각
+
+| 조각 | 내용 | 상태 |
+|---|---|---|
+| a | 문장 분할 · 날짜 마스킹 · overlap | ✅ |
+| b | 짧은 섹션 병합 · 표 셀 판정 | ✅ |
+| c | 레코드 변환 (NFC, `entity_extract` 의존) | ⬜ — **여기까지 가면 기준선 digest 직접 대조** |
