@@ -58,10 +58,14 @@ export const ROUTES = [
   [/^\/documents\/?$/, "api-documents", new Set(["GET", "POST"])],
   // 2026-09-07 전환 — 상세·상태·active·batch-status. GET 하위 경로가 전부 이관됐다.
   // 처음엔 `/active`·`/batch-status` 가 Railway 라 부정 전방탐색으로 뺐었다.
-  // **`POST /documents/url` 과 `reingest` 는 아직 Railway** 인데, 이 규칙이 GET 전용이라
-  // 자연히 안 걸린다 — 쓰기 라우트를 옮길 때 여기 규칙을 다시 봐야 한다.
+  // **`POST /documents/url` 은 아직 Railway** 인데, 이 규칙이 GET 전용이라 자연히
+  // 안 걸린다 — 쓰기 라우트를 옮길 때 여기 규칙을 다시 봐야 한다.
   [/^\/documents\/[^/]+$/, "api-documents", new Set(["GET"])],
   [/^\/documents\/[^/]+\/status$/, "api-documents", new Set(["GET"])],
+  // 2026-09-07 전환 — 재인제스트 2 종. **`{id}` 규칙보다 아래여도 된다** — 위 규칙은
+  // 세그먼트가 하나뿐이라 `/documents/x/reingest` 와 겹치지 않는다.
+  [/^\/documents\/[^/]+\/reingest$/, "api-documents", new Set(["POST"])],
+  [/^\/documents\/[^/]+\/reingest-missing$/, "api-documents", new Set(["POST"])],
   // Phase 4 에서 해제: [/^\/payments/, "api-payments"], [/^\/billing/, "billing-run"],
   // Phase 5 에서 해제: [/^\/email/, "email-webhook"],
 ];

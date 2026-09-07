@@ -112,8 +112,11 @@ for (const c of cfg.cases) {
       { client, env, visionEnv: ve, nowMs: 0,
         caption: () => Promise.resolve(fakeCaption(callSeq++)) },
       { bytes, jobId: "j", docId: "d", fileName: c.path.split("/").pop(),
-        sha256: null, from, count: cfg.pagesPerTask, processCount,
-        pageCap: c.pageCap, carry },
+        sha256: null,
+        pages: Array.from(
+          { length: Math.min(cfg.pagesPerTask, processCount - from) }, (_, i) => from + i),
+        pendingTotal: processCount, pendingIndexBase: from,
+        pageCap: c.pageCap, carry, progressTotal: processCount },
     );
     sections.push(...r.sections);
     rawParts.push(...r.rawParts);

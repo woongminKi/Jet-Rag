@@ -33,13 +33,17 @@ import {
   clearStageProgress,
   emptyCarry,
   readVisionEnv,
-  resolvePageCapForDoc,
   runVisionWindow,
   VISION_PAGES_PER_TASK,
   type VisionCarry,
   type VisionEnv,
 } from "../vision_enrich.ts";
 import { checkCombined, type BudgetStatus } from "../budget_guard.ts";
+import {
+  asIngestMode,
+  DEFAULT_INGEST_MODE,
+  resolvePageCap,
+} from "../ingest_mode.ts";
 import type { TaskHandler, TaskPayload } from "../worker.ts";
 
 export interface VisionDeps {
@@ -229,10 +233,16 @@ export function makeVisionHandler(deps: VisionDeps): TaskHandler {
     }
 
     const carry = await loadCarry(deps.client, task.job_id, from);
-    // 원본의 `page_cap_override` 는 운영 모드(fast/default/precise) UI 토글에서 온다.
-    // 그 진입점(reingest 라우트)이 아직 안 옮겨졌으므로 지금은 항상 settings 값이다.
-    // reingest 를 옮길 때 여기로 값을 흘려보내야 한다.
-    const pageCap = resolvePageCapForDoc(null, ve.pageCapPerDoc);
+    // 원본은 `page_cap_override` 를 라우터에서 계산해 인자로 나른다. 그 값의 출처는
+    // 언제나 `flags.ingest_mode` 이므로 여기서 다시 계산한다 — 메시지가 재시도로
+    // 낡아도 문서의 모드가 진실이다.
+    const pageCap = resolvePageCap(
+      asIngestMode(flags["ingest_mode"]) ?? DEFAULT_INGEST_MODE,
+      { pageCapPerDoc: ve.pageCapPerDoc, env },
+    );
+
+    const pages: number[] = [];
+    for (let p = from; p < Math.min(processCount, from + pagesPerTask); p++) pages.push(p);
 
     const result = await runVisionWindow(
       { client: deps.client, env, visionEnv: ve, nowMs: now() },
@@ -242,11 +252,13 @@ export function makeVisionHandler(deps: VisionDeps): TaskHandler {
         docId: task.doc_id,
         fileName: path.split("/").pop() ?? path,
         sha256: doc.sha256 ?? null,
-        from,
-        count: pagesPerTask,
-        processCount,
+        pages,
+        // 전체 인제스트는 1 차 sweep 대상이 곧 처리 대상 전체다.
+        pendingTotal: processCount,
+        pendingIndexBase: from,
         pageCap,
         carry,
+        progressTotal: processCount,
       },
     );
 

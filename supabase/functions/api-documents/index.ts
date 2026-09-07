@@ -10,9 +10,11 @@
  *
  * | `GET /documents/active` | 진행 중·실패 문서 (프런트 폴러) |
  * | `GET /documents/batch-status` | 여러 문서 상태 일괄 |
+ * | `POST /documents/{id}/reingest` | 전체 재인제스트 — chunks 삭제 후 재실행 |
+ * | `POST /documents/{id}/reingest-missing` | 증분 — chunks 보존 + 누락 vision 페이지만 |
  *
  * ## 아직 Railway 인 것
- * `POST /documents/url` · `reingest` 2 종 (쓰기 3 개).
+ * `POST /documents/url` (URL 파서 미이관).
  *
  * ## 읽기에는 인증 게이트를 걸지 않는다
  * 토큰이 없으면 `getCurrentUser` 가 owner 컨텍스트(`isAuthenticated: false`)를 준다 —
@@ -38,6 +40,10 @@ import {
   type ValidationItem,
 } from "../_shared/documents/read.ts";
 import { batchStatus, listActiveDocuments } from "../_shared/documents/active.ts";
+import {
+  reingestDocument,
+  reingestMissingVision,
+} from "../_shared/documents/reingest.ts";
 
 const FUNCTION_PREFIX = "/api-documents";
 
@@ -61,6 +67,23 @@ Deno.serve(async (req: Request) => {
     const client = createServiceClient(settings);
     // 읽기·쓰기 공통으로 호출자를 먼저 정한다. 토큰이 없으면 owner 컨텍스트다.
     const caller = await getCurrentUser(req, settings);
+
+    // ---- 재인제스트 2종 — **GET 블록보다 먼저** 본다 ----
+    // 경로를 메서드보다 먼저 매칭해야 `GET /documents/{id}/reingest` 가 404 가 아니라
+    // 405 로 나간다. FastAPI 도 그렇게 동작한다(§Edge 이관 — 라우팅이 인증보다 먼저).
+    const re = path.match(/^\/documents\/([^/]+)\/(reingest|reingest-missing)$/);
+    if (re) {
+      if (req.method !== "POST") return methodNotAllowed();
+      // 쓰기 = 로그인 필수. 남의 문서면 아래에서 404 다(존재 위장).
+      const writer = requireAuthenticatedUser(caller);
+      const rdeps = { client, bucket: settings.supabaseStorageBucket };
+      const docId = decodeURIComponent(re[1]);
+      // 원본은 reingest 에 일일 상한을 안 건다 — 업로드(`POST /documents`)에만 있다.
+      const r = re[2] === "reingest"
+        ? await reingestDocument(rdeps, writer.userId, docId, url.searchParams)
+        : await reingestMissingVision(rdeps, writer.userId, docId, url.searchParams);
+      return applyCorsHeaders(req, jsonResponse(r.body, r.status), settings);
+    }
 
     // ---- 읽기 3종 — 인증 게이트 없음(데모 병행) ----
     if (req.method === "GET") {

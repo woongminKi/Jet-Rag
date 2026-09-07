@@ -176,8 +176,17 @@ export interface VisionRunDeps {
 /**
  * 페이지 창 하나를 처리한다. 0-based 페이지 인덱스를 쓴다(원본 `doc[i]` 와 같다).
  *
- * `processCount` 는 **문서 전체**의 vision 대상 페이지 수다(`min(총페이지, maxPages)`).
- * cap 메시지의 "남은 페이지" 계산이 이 값을 쓴다.
+ * ## 연속 범위가 아니라 **목록**을 받는다
+ * 전체 인제스트는 `[from, from+count)` 지만 증분 재인제스트(`reingest-missing`)는
+ * 누락 페이지가 띄엄띄엄하다. 두 흐름이 같은 sweep·cap·합성 로직을 쓰도록 목록으로 받는다.
+ *
+ * ## cap 메시지의 "남은 페이지 N" 을 맞추려면 창 밖을 알아야 한다
+ * 원본은 문서 하나를 한 번에 돌아서 `len(pending)` 이 곧 문서 전체 잔여다. 창 단위인
+ * 여기서는 그 값을 못 구하므로 호출자가 알려준다:
+ * - `pendingTotal` — 문서 전체의 1 차 sweep 대상 수
+ * - `pendingIndexBase` — 이 창의 첫 페이지가 그 목록에서 몇 번째인지
+ *
+ * 2 차 sweep 은 문서 전체의 실패 목록을 알 수 없어 창 기준으로 센다(§34.4).
  */
 export async function runVisionWindow(
   deps: VisionRunDeps,
@@ -187,13 +196,19 @@ export async function runVisionWindow(
     docId: string;
     fileName: string;
     sha256: string | null;
-    from: number;
-    count: number;
-    processCount: number;
+    /** 이 창이 맡을 0-based 페이지 목록. */
+    pages: number[];
+    pendingTotal: number;
+    pendingIndexBase: number;
     pageCap: number;
     carry: VisionCarry;
+    /** 로그·경고 접두사. 전체는 `vision_enrich`, 증분은 `incremental_vision`. */
+    label?: string;
+    /** 진행 표시를 쓸지. 원본 증분 경로는 안 쓴다. */
+    progressTotal?: number | null;
   },
 ): Promise<VisionWindowResult> {
+  const label = opts.label ?? "vision_enrich";
   const { visionEnv: ve } = deps;
   const sections: ExtractedSection[] = [];
   const rawParts: string[] = [];
@@ -210,9 +225,7 @@ export async function runVisionWindow(
   const clientDeps: VisionClientDeps = { apiKey: ve.geminiApiKey, env: deps.env };
 
   try {
-    const end = Math.min(opts.processCount, opts.from + opts.count);
-    let pending: number[] = [];
-    for (let i = opts.from; i < end; i++) pending.push(i);
+    let pending: number[] = [...opts.pages];
 
     for (let sweepIdx = 1; sweepIdx <= ve.maxSweeps; sweepIdx++) {
       if (pending.length === 0) break;
@@ -220,7 +233,7 @@ export async function runVisionWindow(
       if (carry.pageCapExceeded !== null) break;
       if (sweepIdx > 1) {
         console.info(
-          `vision_enrich sweep ${sweepIdx}/${ve.maxSweeps}: 누락 ${pending.length} 페이지 ` +
+          `${label} sweep ${sweepIdx}/${ve.maxSweeps}: 누락 ${pending.length} 페이지 ` +
             `재시도 [${pending.map((p) => p + 1).join(", ")}] (file=${opts.fileName})`,
         );
       }
@@ -240,9 +253,9 @@ export async function runVisionWindow(
           );
           if (!status.allowed) {
             carry.budgetExceeded = status;
-            // 원본은 1 차 sweep 에서 `len(pending_pages)` = processCount 를 쓴다.
-            const remain = sweepIdx === 1 ? opts.processCount : pending.length;
-            const msg = `vision_enrich: budget cap 도달 — ${status.reason} ` +
+            // 원본은 1 차 sweep 에서 `len(pending_pages)` = 문서 전체 잔여를 쓴다.
+            const remain = sweepIdx === 1 ? opts.pendingTotal : pending.length;
+            const msg = `${label}: budget cap 도달 — ${status.reason} ` +
               `(남은 페이지 ${remain} skip)`;
             warnings.push(msg);
             console.warn(`${msg} (file=${opts.fileName})`);
@@ -259,9 +272,9 @@ export async function runVisionWindow(
         if (!pageCapStatus.allowed) {
           carry.pageCapExceeded = pageCapStatus;
           const remain = sweepIdx === 1
-            ? opts.processCount - pageNum
+            ? opts.pendingTotal - (opts.pendingIndexBase + opts.pages.indexOf(pageNum))
             : pending.length - pending.indexOf(pageNum);
-          const msg = `vision_enrich: page cap 도달 — ${pageCapStatus.reason} ` +
+          const msg = `${label}: page cap 도달 — ${pageCapStatus.reason} ` +
             `(남은 페이지 ${remain} skip)`;
           warnings.push(msg);
           console.warn(`${msg} (file=${opts.fileName})`);
@@ -273,7 +286,10 @@ export async function runVisionWindow(
           if (ve.needScoreEnabled && !pageNeedsVision(doc, pageNum, opts.fileName)) {
             if (sweepIdx === 1) carry.skippedByNeedScore.push(pageNum + 1);
             carry.completed += 1;
-            await updateStageProgress(deps.client, opts.jobId, carry.completed, opts.processCount);
+            if (opts.progressTotal) {
+              await updateStageProgress(
+                deps.client, opts.jobId, carry.completed, opts.progressTotal);
+            }
             continue;
           }
 
@@ -347,18 +363,21 @@ export async function runVisionWindow(
           if (pageResult.raw_text) rawParts.push(pageResult.raw_text);
           warnings.push(...pageResult.warnings);
           carry.completed += 1;
-          await updateStageProgress(deps.client, opts.jobId, carry.completed, opts.processCount);
+          if (opts.progressTotal) {
+            await updateStageProgress(
+              deps.client, opts.jobId, carry.completed, opts.progressTotal);
+          }
         } catch (e) {
           // 페이지 하나가 죽어도 문서는 살린다.
           failedInSweep.push(pageNum);
           if (sweepIdx === ve.maxSweeps) {
             warnings.push(
-              `vision_enrich: page ${pageNum + 1} 실패 ` +
+              `${label}: page ${pageNum + 1} 실패 ` +
                 `(sweep ${sweepIdx}/${ve.maxSweeps} 최종): ${e}`,
             );
           }
           console.warn(
-            `vision_enrich page ${pageNum + 1} 실패 (sweep ${sweepIdx}/${ve.maxSweeps}): ` +
+            `${label} page ${pageNum + 1} 실패 (sweep ${sweepIdx}/${ve.maxSweeps}): ` +
               `${e} (file=${opts.fileName})`,
           );
         }
@@ -367,7 +386,7 @@ export async function runVisionWindow(
     }
 
     if (pending.length > 0) {
-      const msg = `vision_enrich: ${ve.maxSweeps} sweep 후에도 누락: ` +
+      const msg = `${label}: ${ve.maxSweeps} sweep 후에도 누락: ` +
         `[${pending.map((p) => p + 1).join(", ")}]`;
       warnings.push(msg);
       console.error(`${msg} (file=${opts.fileName})`);

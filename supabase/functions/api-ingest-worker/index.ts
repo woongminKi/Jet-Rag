@@ -29,6 +29,7 @@ import { makeEmbedHandler } from "../_shared/ingest/handlers/embed.ts";
 import { makeExtractHandler } from "../_shared/ingest/handlers/extract.ts";
 import { makeLoadHandler } from "../_shared/ingest/handlers/load.ts";
 import { makeVisionHandler } from "../_shared/ingest/handlers/vision.ts";
+import { makeVisionMissingHandler } from "../_shared/ingest/handlers/vision_missing.ts";
 
 const FUNCTION_PREFIX = "/api-ingest-worker";
 
@@ -46,6 +47,9 @@ function buildHandlers(
   return {
     extract: makeExtractHandler({ client, bucket: settings.supabaseStorageBucket }),
     vision: makeVisionHandler({ client, bucket: settings.supabaseStorageBucket }),
+    vision_missing: makeVisionMissingHandler({
+      client, bucket: settings.supabaseStorageBucket,
+    }),
     chunk: makeChunkHandler({ client }),
     load: makeLoadHandler({ client }),
     embed: makeEmbedHandler({ client, token: Deno.env.get("DEEPINFRA_API_TOKEN") ?? "" }),

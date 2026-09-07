@@ -72,6 +72,8 @@ const MIGRATED_METHOD_PATHS = new Set([
   "GET /documents/{doc_id}/status",
   "GET /documents/active",
   "GET /documents/batch-status",
+  "POST /documents/{doc_id}/reingest",
+  "POST /documents/{doc_id}/reingest-missing",
 ]);
 
 Deno.test("프록시가 Edge 로 보내는 원본 라우트는 전부 이관돼 있어야 한다", async () => {
@@ -126,10 +128,14 @@ Deno.test("`/documents` — 이관한 것만 Edge, 나머지는 Railway", () => 
   assertEquals(resolveTarget("/documents/active", "GET"), "api-documents");
   assertEquals(resolveTarget("/documents/batch-status", "GET"), "api-documents");
 
-  // **아직 Railway** — 쓰기 3 종. GET 전용 규칙이라 자연히 안 걸린다.
+  // 2026-09-07 전환 — 재인제스트 2 종.
+  assertEquals(resolveTarget("/documents/abc/reingest", "POST"), "api-documents");
+  assertEquals(resolveTarget("/documents/abc/reingest-missing", "POST"), "api-documents");
+  // 경로만 맞고 메서드가 다르면 안 넘긴다 — Edge 가 405 를 내야 하는데 프록시가
+  // 먼저 삼키면 Railway 로도 안 가고 Edge 로도 안 간다.
+  assertEquals(resolveTarget("/documents/abc/reingest", "GET"), null);
+  // **아직 Railway** — URL 업로드. GET 전용 규칙이라 자연히 안 걸린다.
   assertEquals(resolveTarget("/documents/url", "POST"), null);
-  assertEquals(resolveTarget("/documents/abc/reingest", "POST"), null);
-  assertEquals(resolveTarget("/documents/abc/reingest-missing", "POST"), null);
   // 쓰기 메서드는 상세 경로라도 안 넘긴다(삭제 등이 생기면 Railway 로).
   assertEquals(resolveTarget("/documents/abc", "DELETE"), null);
   assertEquals(resolveTarget("/documentsfoo", "POST"), null);
