@@ -110,6 +110,57 @@ interface StructuredTextLike {
 }
 
 /**
+ * PyMuPDF `JM_font_name` — **정확히 6 자 + `+`** 인 서브셋 접두사만 뗀다.
+ *
+ * 이게 span 경계를 정한다. 처음엔 네이티브 `font.pointer` 로 비교했는데, 같은 글꼴의
+ * **다른 서브셋 인스턴스**(`BCDLEE+MalgunGothic` / `BCDEEE+MalgunGothic`)가 다른
+ * 포인터라 한 줄이 잘게 쪼개졌다. PyMuPDF 는 접두사를 뗀 이름으로 비교해 하나로 묶는다.
+ *
+ * 실측(sample-report p12): `< 요약 6/8 > ` 가 PyMuPDF 1 span / 포팅 4 span 이었고,
+ * `table_like_score` 가 0.143 → 0.657 로 부풀어 **needs_vision 판정이 뒤집혔다.**
+ */
+export function pyFontName(raw: string): string {
+  // `strchr` 로 **첫** `+` 를 찾고 그게 6 번째일 때만 뗀다 — 앞에 다른 `+` 가 있으면 안 뗀다.
+  return raw.indexOf("+") === 6 ? raw.slice(7) : raw;
+}
+
+/** PyMuPDF `TEXT_FONT_*` 비트. */
+const FLAG_SUPERSCRIPT = 1;
+const FLAG_ITALIC = 2;
+const FLAG_SERIF = 4;
+const FLAG_MONOSPACED = 8;
+const FLAG_BOLD = 16;
+
+interface MupdfFont {
+  pointer?: number;
+  getName?(): string;
+  isBold?(): boolean;
+  isItalic?(): boolean;
+  isSerif?(): boolean;
+  isMono?(): boolean;
+}
+
+/** 폰트 속성은 글자마다 안 바뀐다 — 네이티브 호출을 포인터로 메모한다. */
+function fontStyleOf(
+  font: MupdfFont | null,
+  cache: Map<unknown, { name: string; flags: number }>,
+): { name: string; flags: number } {
+  const key = font?.pointer ?? font;
+  let v = cache.get(key);
+  if (v === undefined) {
+    v = {
+      name: pyFontName(String(font?.getName?.() ?? "")),
+      flags: (font?.isItalic?.() ? FLAG_ITALIC : 0) +
+        (font?.isSerif?.() ? FLAG_SERIF : 0) +
+        (font?.isMono?.() ? FLAG_MONOSPACED : 0) +
+        (font?.isBold?.() ? FLAG_BOLD : 0),
+    };
+    cache.set(key, v);
+  }
+  return v;
+}
+
+/**
  * @param st    `page.toStructuredText(STEXT_OPTS)` 결과
  * @param bounds `page.getBounds()` → `[x0, y0, x1, y1]`
  */
@@ -119,16 +170,17 @@ export function toPageDict(st: StructuredTextLike, bounds: number[]): PdfPageDic
   let curBlock: PdfBlock | null = null;
   let curLine: PdfLine | null = null;
   let curSpan: PdfSpan | null = null;
-  let curFont: unknown = null;
-  let curSize = -1;
-  let curColor = "";
+  let curStyle = "";
+  /** 위첨자 판정 기준선 — 줄의 **첫 글자** origin.y (PyMuPDF `line->first_char`). */
+  let lineFirstOriginY: number | null = null;
+  /** 가로쓰기 왼→오 줄에서만 위첨자를 본다(PyMuPDF `detect_super_script`). */
+  let lineHorizontal = true;
+  const fontCache = new Map<unknown, { name: string; flags: number }>();
 
   const flushSpan = () => {
     if (curSpan && curLine) curLine.spans.push(curSpan);
     curSpan = null;
-    curFont = null;
-    curSize = -1;
-    curColor = "";
+    curStyle = "";
   };
 
   st.walk({
@@ -139,9 +191,12 @@ export function toPageDict(st: StructuredTextLike, bounds: number[]): PdfPageDic
     endTextBlock() {
       curBlock = null;
     },
-    beginLine(bbox: ArrayLike<number>) {
+    beginLine(bbox: ArrayLike<number>, wmode?: number, direction?: ArrayLike<number>) {
       curLine = { bbox: rect(bbox), spans: [] };
       curBlock?.lines?.push(curLine);
+      lineFirstOriginY = null;
+      lineHorizontal = (wmode ?? 0) === 0 &&
+        (direction === undefined || (direction[0] === 1 && direction[1] === 0));
     },
     endLine() {
       flushSpan();
@@ -149,7 +204,7 @@ export function toPageDict(st: StructuredTextLike, bounds: number[]): PdfPageDic
     },
     onChar(
       c: string,
-      _origin: ArrayLike<number>,
+      origin: ArrayLike<number>,
       font: unknown,
       size: number,
       quad: Quad,
@@ -157,19 +212,29 @@ export function toPageDict(st: StructuredTextLike, bounds: number[]): PdfPageDic
     ) {
       if (!curLine) return;
       const bbox = quadToBBox(quad);
-      // **객체 동일성으로 비교하면 안 된다** — mupdf.js 는 글자마다 새 JS 래퍼를 만들어 넘긴다.
-      // 그대로 `!==` 로 재면 모든 글자가 span 경계가 되어 span 수 = 글자 수가 된다(실측 1,543).
-      // 네이티브 폰트 핸들인 `pointer` 값이 실제 동일성이다.
-      const fontId = (font as { pointer?: number } | null)?.pointer ?? font;
-      // PyMuPDF 는 색이 바뀌어도 span 을 가른다. font·size 만 보면 span 수가 어긋난다
-      // (실측: sample-report p0 7→9, 삼성 p100 105→97).
-      const colorId = color ? `${color[0]},${color[1]},${color[2]}` : "";
-      if (!curSpan || fontId !== curFont || size !== curSize || colorId !== curColor) {
+      const originY = origin?.[1] ?? 0;
+      if (lineFirstOriginY === null) lineFirstOriginY = originY;
+
+      // PyMuPDF 는 (폰트 이름, size, color, flags) 가 하나라도 바뀌면 span 을 가른다
+      // (`JM_make_spanlist`). 넷 다 봐야 한다 — 하나만 빠져도 span 경계가 어긋나고,
+      // 그건 `table_like_score` 처럼 span 수를 세는 신호를 통째로 왜곡한다.
+      const style = fontStyleOf(font as MupdfFont | null, fontCache);
+      // 위첨자는 글자마다 다르다 — 폰트 캐시에 넣으면 안 된다.
+      const superscript = lineHorizontal && originY < lineFirstOriginY - size * 0.1
+        ? FLAG_SUPERSCRIPT
+        : 0;
+      // MuPDF 의 `fz_stext_char.color` 는 sRGB 정수다. 실수 배열로 비교하면 반올림 차이로
+      // 같은 색이 갈릴 수 있다 — PyMuPDF 와 같은 정수로 바꿔서 본다.
+      const colorId = color
+        ? ((Math.round(color[0] * 255) << 16) | (Math.round(color[1] * 255) << 8) |
+          Math.round(color[2] * 255))
+        : 0;
+      const styleKey = `${style.name}|${size}|${colorId}|${style.flags + superscript}`;
+
+      if (!curSpan || styleKey !== curStyle) {
         flushSpan();
         curSpan = { text: c, size, bbox };
-        curFont = fontId;
-        curSize = size;
-        curColor = colorId;
+        curStyle = styleKey;
       } else {
         curSpan.text += c;
         curSpan.bbox = union(curSpan.bbox, bbox);

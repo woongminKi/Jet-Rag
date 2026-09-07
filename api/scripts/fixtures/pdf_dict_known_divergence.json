@@ -1,0 +1,11 @@
+{
+  "_설명": "toPageDict(mupdf.js) 와 PyMuPDF get_text('dict') 의 남은 차이. verify_pdf_dict_parity.py 가 이 값과 대조한다.",
+  "_원인": "PyMuPDF 는 span 을 (size, flags, char_flags, argb, font, bidi) 로 가른다. 그중 char_flags 의 FZ_STEXT_SYNTHETIC_LARGE(512, MuPDF 가 넓은 간격을 공백으로 채워 넣었다는 표시) 와 bidi 를 mupdf.js 1.27.0 의 walk API 가 노출하지 않는다. onChar 인자는 (c, origin, font, size, quad, color) 6 개뿐이다.",
+  "_재현_시도": "문자 폭으로 대신 판정할 수 있는지 18,780 개 공백을 재 봤다 — SYNTHETIC_LARGE 는 폭/size 0.300~0.790, 일반 공백은 0.000~1.334 로 겹친다. 임계 0.30 에서 일반 공백 9,305/12,444 가 오분류된다. 폭으로는 못 가른다.",
+  "_영향": "vision_need_score 의 table_like_score 가 span 수를 세므로 판정이 갈릴 수 있다. 실측 151 페이지 중 1 페이지(보건의료 p12)에서 needs_vision 이 py=True / ts=False 로 갈린다. 그 페이지는 vision 캡션이 안 붙는다(비용 ~$0.0008 절약, 캡션 1 건 누락).",
+  "_이전값": "span 을 네이티브 font.pointer 로 가르던 때는 뒤집힘 7/151, span 불일치 3,625 였다. 정규화 폰트명(JM_font_name)+flags+argb 로 바꿔 1/151, 2,029 가 됐다.",
+  "sample_pages": 151,
+  "span_mismatch": 2029,
+  "vision_flips": 1,
+  "block_diff_pages": 1
+}
