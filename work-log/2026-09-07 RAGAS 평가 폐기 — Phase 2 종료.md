@@ -3831,13 +3831,49 @@ Edge 응답 확인: `/ingest/email` 401(secret 불일치 시) · `/payments/subs
 
 성공하면 `documents` 에 `source_channel='email'` 행이 생긴다.
 
-### 55.5 Railway 종료 체크리스트
+### 55.5 마이그 029 적용 완료 — **secret 사슬이 전 구간 검증됐다**
+
+```
+cron.job                 jobid 3 · billing-run · '0 18 * * *' · active=true
+vault.secrets            billing_cron_secret · billing_run_url (14:38 생성)
+billing_run_tick()       → 325 (요청 id, 예외 없음)
+net._http_response 325   → **503 {"detail":"결제 기능이 비활성 상태입니다…"}**
+```
+
+**이 503 이 판정의 핵심이다.** 503 에도 두 종류가 있다:
+
+| 응답 | 뜻 |
+|---|---|
+| `503 "billing cron 이 비활성"` | Edge 에 `JETRAG_BILLING_CRON_SECRET` 이 없다 |
+| `401 "cron secret 불일치"` | Vault 값 ≠ Edge secret |
+| **`503 "결제 기능이 비활성"`** | **cron 게이트를 통과한 뒤** 카카오페이 키에서 멈췄다 |
+
+세 번째가 나왔다 — 즉 **Vault → pg_cron → `net.http_post` → Edge → cron 게이트**가
+전부 맞물렸다. 카카오페이 키만 없어서 결제가 안 켜진 것이고, 그건 Railway 도 같다.
+
+한 번에 되진 않았다. STEP 1(Vault)을 건너뛰고 STEP 2 를 먼저 돌려서
+`billing_run_tick()` 이 `P0001: Vault 에 … 이 없다` 로 멈췄다 — **§50 에서 "조용히
+넘어가지 않는다" 로 설계한 그 자리**다. 조용히 넘어갔다면 매일 아무 일도 안 일어나는데
+이유를 못 찾았을 것이다.
+
+> 곁다리 확인: 같은 조회에서 마이그 028 의 인제스트 drain 응답
+> (`{"read":2,"ok":2,"rounds":3}` · 200)이 함께 보였다. Vault + `net.http_post` 패턴이
+> 이 프로젝트에서 실제로 돌고 있다는 독립 신호다.
+
+### 55.6 Railway 종료 체크리스트
 
 ```
 1. secret 3개 설정                       ✅ (사용자, 2026-09-07)
 2. 프록시 배포 → 드리프트 0                ✅
-3. billing cron 마이그 029 적용            ⬜ Vault 2건 + SQL Editor (사용자)
+3. billing cron 마이그 029 적용            ✅ §55.5
 4. monitor-search-slo API base            ✅ §49
-5. 실제 메일 E2E                          ⬜ §55.4
-6. LEGACY_ORIGIN 비우기                   ⬜ 3·5 이후
+5. 실제 메일 E2E                          ⬜ §55.4 — **남은 유일한 검증**
+6. LEGACY_ORIGIN 비우기                   ⬜ 5 이후
 ```
+
+### 55.7 아직 증명 안 된 것과 그 이유
+
+- **이메일 secret 이 Worker 와 같은가** — 점검기는 설정 여부만 안다. 실제 메일 1 통이
+  유일한 확인이다(§55.4).
+- **Fernet 키가 Railway 와 같은가** — 지금은 `billing_key` 암호문이 **0 건**이라 확인할
+  대상이 없다. 결제가 켜지고 첫 구독이 생긴 뒤에야 의미가 생긴다.
