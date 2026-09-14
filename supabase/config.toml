@@ -413,17 +413,6 @@ enabled = true
 # JSON string passed through to pg-delta SQL formatting.
 # format_options = "{\"keywordCase\":\"upper\",\"indent\":2,\"maxWidth\":80,\"commaStyle\":\"trailing\"}"
 
-[functions.spike]
-enabled = true
-verify_jwt = false
-import_map = "./functions/spike/deno.json"
-# Uncomment to specify a custom file path to the entrypoint.
-# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
-entrypoint = "./functions/spike/index.ts"
-# Specifies static files to be bundled with the function. Supports glob patterns.
-# For example, if you want to serve static HTML pages in your function:
-# static_files = [ "./functions/spike/*.html" ]
-
 [functions.api-account]
 enabled = true
 # 게이트웨이가 Authorization JWT 를 먼저 검증하면 쿠키만 보내는 브라우저 요청이 함수 코드에

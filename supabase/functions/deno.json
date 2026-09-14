@@ -10,8 +10,5 @@
   },
   "fmt": {
     "lineWidth": 110
-  },
-  "exclude": [
-    "spike"
-  ]
+  }
 }
