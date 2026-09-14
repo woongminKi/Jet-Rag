@@ -179,11 +179,11 @@ console.log(`
      POST /billing/run 도달 → 503(결제 게이트 대기). 즉 경로는 살아 있고 키만 남았다.
   2. .github/workflows/monitor-search-slo.yml — **2026-09-07 해소.**
      API base 를 프록시 도메인 기본값으로 박았다(공개 URL 이라 secret 이 아니다).
-     secret 은 더 이상 읽지 않는다. **남은 확인 1건**: repo *variable* JET_RAG_API_BASE 가
-     Railway 주소로 설정돼 있으면 그쪽이 이긴다 — Settings → Variables 에서 한 번 볼 것
-  3. api/scripts/verify_documents_read_parity.py
-     원본과 Edge 를 비교하는 대조 스크립트다. Railway 를 **삭제하면 비교 대상이 없어져**
-     더 못 돈다 — 이관이 끝나면 역할도 끝나므로 정상이다. 삭제 시 같이 정리할 것
+     secret 은 더 이상 읽지 않는다. repo *variable* JET_RAG_API_BASE 는 **2026-09-14 확인:
+     0건** — 9/9~9/13 실행 5건 로그 전부 프록시 주소를 썼다.
+  3. api/scripts/verify_documents_read_parity.py — **2026-09-14 삭제.**
+     Railway 응답과 직접 대조하던 스크립트라 비교 대상이 사라지면 역할도 끝난다.
+     422 본문 fixture(fixtures/documents_422_measured.json)는 남겨 뒀다.
   4. FastAPI 자체 문서(/docs · /redoc · /openapi.json · /) — 이미 404 다
   5. 프런트(Vercel) — **의존 아님.** 배포 번들 실측(2026-09-08): jetrag-api.woong-s.com
      만 참조하고 railway 주소는 0건

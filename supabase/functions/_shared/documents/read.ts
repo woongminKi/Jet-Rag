@@ -95,8 +95,8 @@ const NOT_FOUND: ReadResult = { status: 404, body: { detail: "문서를 찾을 �
  * FastAPI(pydantic v2) 의 422 본문을 그대로 낸다.
  *
  * 문구·필드를 지어내면 안 된다 — 프런트가 `detail[].loc` 이나 `type` 을 보고 분기할 수
- * 있다. Railway 응답을 실측해 `fixtures/documents_422_measured.json` 에 떠 뒀고
- * `verify_documents_read_parity.py` 가 그걸로 대조한다.
+ * 있다. Railway 응답을 실측해 `fixtures/documents_422_measured.json` 에 떠 뒀다
+ * (대조 스크립트 `verify_documents_read_parity.py` 는 Railway 종료와 함께 2026-09-14 삭제).
  *
  * **오류가 여러 개면 전부 담는다** — `?limit=0&offset=-1` 은 항목 2 개다(실측).
  */
