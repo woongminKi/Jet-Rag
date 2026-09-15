@@ -1,43 +1,32 @@
 -- ============================================================
--- 034_hnsw_iterative_scan.sql — dense 후보 부족 수정 (2026-09-15 실측)
+-- 034_hnsw_iterative_scan.sql — **적용하지 않음 (2026-09-15 실측 기록)**
 -- ============================================================
--- 배경
---   search_dense_only / search_hybrid_rrf 는 HNSW 후보(hnsw.ef_search 기본 40)에서
---   (flags->>'filtered_reason') IS NULL 로 40.9% 를 걸러낸 뒤 LIMIT 50 을 채운다.
---   그래서 dense 후보가 25~41개만 온다(실측, 실제 벡터 2종·합성 1종). 브루트포스 top-50 대비
---   재현율 19~41/50.
+-- 이 파일은 실행하지 말 것. 아래 설정을 운영에 넣었다가 되돌린 기록이다.
 --
--- 수정
---   pgvector 0.8 의 iterative scan 을 켠다. LIMIT 을 못 채우면 그래프를 더 훑는다.
---   실측(실제 벡터): ef 40 + relaxed_order → 50/50, 순위도 strict 와 동일, 3.6ms/1,192 buffers.
---   ef_search=100 은 여유분 — 첫 반복에서 50 을 채워 iterative 경로에 아예 안 들어간다.
---   (ef 100 에서 relaxed_order 와 off 의 계획·버퍼가 완전히 같음: 1788/1788, 1345/1345.)
+-- 목적이었던 것
+--   dense 후보 부족: HNSW 후보(hnsw.ef_search 기본 40)에서 (flags->>'filtered_reason') IS NULL 로
+--   40.9% 가 걸러져 top_k 50 요청에 25~41개만 온다(실제 벡터 기준 브루트포스 대비 41/50).
 --
--- 왜 함수별 SET 이 아니라 DB 수준인가
---   ALTER FUNCTION ... SET 은 pg_proc.proconfig 를 채우고, PostgreSQL 은 proconfig 가 있는
---   SQL 함수를 **인라인하지 않는다**. 인라인이 막히면 LIMIT top_k 가 Param 으로 남아 planner 가
---   Seq Scan + 전체 정렬(194MB detoast, 15s)을 고른다 — 2026-09-15 벤치가 벡터를 서브쿼리로
---   넘겨 인라인을 막았을 때 그 경로를 실제로 밟았다. DB 수준 GUC 는 인라인에 영향이 없다.
+-- 시도 → 결과 (운영 API 실측, 2026-09-15 17:20~17:40 KST)
+--   1. ALTER DATABASE SET hnsw.iterative_scan='relaxed_order' + hnsw.ef_search=100
+--      - 권한: 같은 세션에서 벡터 연산으로 vector.so 를 먼저 로드해야 42501 이 안 난다.
+--      - DB 직접 호출(LIMIT 리터럴)은 50/50, 20ms 로 좋았다.
+--      - 그러나 API: hybrid 는 dense 후보 26→49 로 좋아지고 0.24s 인데, **dense 전용 모드가 1.0s → 10~14s**.
+--        Edge 가 PostgREST 로 top_k 를 바인드 파라미터로 넘겨 generic plan 이 LIMIT 을 모른 채
+--        HNSW 경로 비용(ef·iterative 로 상승)을 Seq Scan 보다 높게 봐 계획이 뒤집힌다.
+--   2. iterative_scan 만 되돌리고 ef_search=100 유지 → dense 전용 여전히 10s (hits 76).
+--   3. plan_cache_mode=force_custom_plan 추가 → dense 전용 10s 그대로, hybrid 는 1.7~3.1s 로 악화,
+--      풀 연결마다 설정이 섞여 후보 수가 흔들림(25↔49).
+--   4. 전부 RESET → dense 0.9s, hybrid 1.0s (034 이전 기준선). **이 상태로 둔다.**
 --
--- 주의
---   - 새 연결부터 적용된다(PostgREST 커넥션 풀은 재접속 시).
---   - `show hnsw.ef_search` 는 벡터 연산 전엔 42704 를 낸다(vector.so 미로드). 검증은 함수 호출로.
---   - hnsw.max_scan_tuples 기본 20,000 < 미필터 청크 21,920 — 코퍼스가 커지면 상한을 올릴 것.
+-- 결론
+--   DB 수준 GUC 로는 못 푼다. 근본 원인은 "LIMIT 이 Param 인 SQL 함수 + pgvector 비용 모델" 이라
+--   코드 쪽 후속이 필요하다. 후보: ① Edge 가 쓰는 top_k 값(50/100/200)별로 LIMIT 리터럴 함수를 두기
+--   ② ablation 전용 dense 모드 폐기 ③ 함수 내부에서 top_k 를 CASE 로 상수화. 골든셋(120행 top-1 77.5%)
+--   재측정과 함께 별도 작업으로.
 --
--- 적용: supabase db query --linked -f api/migrations/034_hnsw_iterative_scan.sql  (한 파일 = 한 세션이라 위 로드 줄이 유효)
--- 검증(새 연결): SELECT count(*) FROM search_dense_only(<실제 청크 벡터>, 60, 50, '<owner>') → 50,
---   SELECT setconfig FROM pg_db_role_setting WHERE setdatabase=(SELECT oid FROM pg_database WHERE datname='postgres')
---   → {hnsw.iterative_scan=relaxed_order, hnsw.ef_search=100}. 2026-09-15 적용·확인(V1 41→50행, V2 39→50행).
+-- 참고: 벤치에서 벡터를 서브쿼리로 넘기면 함수 인라인이 막혀(contain_subplans) 같은 Seq Scan 경로를
+--   밟는다 — 측정할 땐 벡터를 리터럴로 넣을 것. ALTER FUNCTION ... SET 도 proconfig 때문에 인라인을
+--   막으므로 금지.
 -- ============================================================
-
--- **같은 세션에서 vector.so 를 먼저 로드해야 한다.** 로드 전엔 hnsw.* 가 플레이스홀더 GUC 라
--- 비-superuser(postgres)의 ALTER DATABASE/ROLE SET 이 42501(permission denied) 로 거부된다
--- (2026-09-15 실측: 아래 한 줄 없이 두 번 실패, 넣고 성공).
-SELECT '[1,2]'::vector <-> '[1,2]'::vector AS load_vector_so;
-
-ALTER DATABASE postgres SET hnsw.iterative_scan = 'relaxed_order';
-ALTER DATABASE postgres SET hnsw.ef_search = 100;
-
--- 롤백
---   ALTER DATABASE postgres RESET hnsw.iterative_scan;
---   ALTER DATABASE postgres RESET hnsw.ef_search;
+-- (실행할 SQL 없음)
