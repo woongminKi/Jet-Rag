@@ -71,9 +71,9 @@ egress 250GB · **Edge Function 호출 200만 건**이 포함된다 (공식 가�
 백엔드가 Edge Functions 로 옮겨 왔으므로 이 호출 한도가 새 관측 대상이다.
 
 > **비용 이력**: 이관 전은 Railway $5 + Supabase Free 로 ~$5~6/월이었다.
-> 2026-09-08 Supabase 를 Pro 로 올리면서 ~$26/월이 됐다. **Railway $5 는 서비스를
-> 삭제해야 실제로 빠진다** — 프록시가 안 부를 뿐 아직 돌고 있다
-> (`work-log/2026-09-08 Railway 제거 완료 — 종합 핸드오프.md` §7.1).
+> 2026-09-08 Supabase 를 Pro 로 올리면서 ~$26/월이 됐다. **Railway 서비스는
+> 2026-09-15 삭제 완료** — `jet-rag-production.up.railway.app` 404 확인. Railway 과금 종료.
+> (`work-log/2026-09-14 목적 대비 점검 + 이관 마무리 착수.md` §4.1).
 
 **2026-09-08 — 백엔드가 Railway FastAPI 에서 Supabase Edge Functions 로 이관 완료.**
 `jetrag-api.woong-s.com` 은 그대로지만 그 뒤가 바뀌었다. Cloudflare Worker 가 경로를
