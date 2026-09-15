@@ -167,8 +167,15 @@ export interface ChunkFilterResult {
  * 원본 `run_chunk_filter_stage` — 마킹한 새 배열을 돌려준다. 입력은 안 건드린다.
  *
  * DB 갱신은 하지 않는다. `load` 가 `flags` 를 그대로 실어 보낸다.
+ *
+ * `hfTexts` 를 주면 그걸 쓴다. `load` 가 part 하나만 들고 도는데 `header_footer` 는
+ * **문서 전체** 반복 횟수라 그 part 안에서는 셀 수 없기 때문이다 — `chunk` 의 마지막
+ * 창이 문서 전체로 판정한 목록을 넘겨준다. 안 주면 예전처럼 입력에서 직접 센다.
  */
-export function runChunkFilterStage(chunks: ChunkRecord[]): ChunkFilterResult {
+export function runChunkFilterStage(
+  chunks: ChunkRecord[],
+  hfTexts?: Set<string>,
+): ChunkFilterResult {
   const counts: Record<string, number> = {
     table_noise: 0,
     header_footer: 0,
@@ -177,7 +184,7 @@ export function runChunkFilterStage(chunks: ChunkRecord[]): ChunkFilterResult {
   };
   if (chunks.length === 0) return { chunks, counts, filterRatio: 0.0 };
 
-  const headerFooterTexts = detectHeaderFooterTexts(chunks);
+  const headerFooterTexts = hfTexts ?? detectHeaderFooterTexts(chunks);
   const out: ChunkRecord[] = [];
   let marked = 0;
   for (const chunk of chunks) {
