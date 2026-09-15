@@ -25,6 +25,9 @@ JOB_ID="${1:-}"
 THRESHOLD_MS="${2:-5000}"
 INTERVAL="${3:-60}"
 QUEUE_IDLE_ROUNDS=3
+# 임계 초과가 **연속 2회**여야 내린다. 실제 장애(I/O 예산 소진)는 수십 분 지속되지만, embed 64개 UPDATE(HNSW 삽입)와
+# 프로브가 겹치면 1회성 1~6s 스파이크가 난다(2026-09-16 03:01 6,114ms 1회로 오작동 — 직후 DB 는 21ms 웜·690ms 콜드 정상).
+TRIP_ROUNDS="${WATCHDOG_TRIP_ROUNDS:-2}"
 ONCE="${WATCHDOG_ONCE:-}"   # WATCHDOG_ONCE=1 이면 한 번 재고 종료(스크립트 자체 점검용)
 OWNER_SQL="(select user_id from documents where deleted_at is null order by created_at limit 1)"
 
@@ -46,6 +49,7 @@ fi
 V="$(cat "$TMP/vec.txt")"
 
 idle=0
+over=0
 while true; do
   JOB_EXPR="null"
   if [ -n "$JOB_ID" ]; then
@@ -80,9 +84,15 @@ while true; do
   job="$(echo "$out" | jq -r '.job')"
   echo "$ts search_ms=$ms n=$(echo "$out" | jq -r '.n') queue=$q job=$job unfiltered_null=$(echo "$out" | jq -r '.unfiltered_null')"
   if [ "$ms" -gt "$THRESHOLD_MS" ]; then
-    supabase db query --linked "select cron.unschedule('ingest-drain')" >/dev/null 2>&1
-    echo "$ts WATCHDOG: cron ingest-drain unscheduled (search_ms=$ms > $THRESHOLD_MS)"
-    exit 1
+    over=$((over + 1))
+    echo "$ts 임계 초과 $over/$TRIP_ROUNDS (search_ms=$ms > $THRESHOLD_MS)"
+    if [ "$over" -ge "$TRIP_ROUNDS" ]; then
+      supabase db query --linked "select cron.unschedule('ingest-drain')" >/dev/null 2>&1
+      echo "$ts WATCHDOG: cron ingest-drain unscheduled (search_ms=$ms > $THRESHOLD_MS, ${over}회 연속)"
+      exit 1
+    fi
+  else
+    over=0
   fi
   if [ "$q" = "0" ] && { [ -z "$JOB_ID" ] || [[ "$job" == succeeded/* || "$job" == failed/* ]]; }; then
     idle=$((idle + 1))
