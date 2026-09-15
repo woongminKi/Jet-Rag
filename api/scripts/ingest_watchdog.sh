@@ -48,6 +48,19 @@ if [ ! -s "$TMP/vec.txt" ] || [ "$(cat "$TMP/vec.txt")" = "null" ]; then
 fi
 V="$(cat "$TMP/vec.txt")"
 
+# 큐를 내린다 — **내려갔는지 확인할 때까지** 반복한다. DB 가 무응답이면 unschedule 자체가 실패하는데, 그걸 성공으로
+# 믿고 종료하면 cron 이 계속 embed 태스크를 던져 장애를 연장한다(2026-09-16 05:25~05:44 실제로 그랬다: 태스크 3개 더 실행).
+stop_queue() {
+  for attempt in $(seq 1 30); do
+    supabase db query --linked "select cron.unschedule('ingest-drain')" >/dev/null 2>&1
+    left="$(supabase db query --linked "select count(*) as n from cron.job where jobname='ingest-drain'" 2>/dev/null | jq -r '.rows[0].n' 2>/dev/null)"
+    if [ "$left" = "0" ]; then echo "$(date +%T) ingest-drain 내림 확인 (시도 $attempt)"; return 0; fi
+    sleep 20
+  done
+  echo "$(date +%T) ingest-drain 을 내리지 못했다 — DB 무응답 30회. 대시보드에서 수동으로 내릴 것"
+  return 1
+}
+
 idle=0
 over=0
 while true; do
@@ -75,7 +88,7 @@ while true; do
       exit 2
     fi
     echo "$ts 응답 없음 → 큐 정지 ($(printf '%s' "$raw" | tail -c 160 | tr '\n' ' '))"
-    supabase db query --linked "select cron.unschedule('ingest-drain')" >/dev/null 2>&1
+    stop_queue
     echo "$ts WATCHDOG: cron ingest-drain unscheduled (no response)"
     exit 1
   fi
@@ -87,7 +100,7 @@ while true; do
     over=$((over + 1))
     echo "$ts 임계 초과 $over/$TRIP_ROUNDS (search_ms=$ms > $THRESHOLD_MS)"
     if [ "$over" -ge "$TRIP_ROUNDS" ]; then
-      supabase db query --linked "select cron.unschedule('ingest-drain')" >/dev/null 2>&1
+      stop_queue
       echo "$ts WATCHDOG: cron ingest-drain unscheduled (search_ms=$ms > $THRESHOLD_MS, ${over}회 연속)"
       exit 1
     fi
