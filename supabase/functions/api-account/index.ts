@@ -38,6 +38,7 @@ import {
   requestToken,
   requireAdmin,
   requireAuthenticatedUser,
+  requireSessionUser,
 } from "../_shared/current_user.ts";
 import { jsonResponse, methodNotAllowed, notFound, toResponse } from "../_shared/errors.ts";
 import { createServiceClient } from "../_shared/db.ts";
@@ -49,6 +50,7 @@ import {
   buildSubscription,
   MeHttpError,
 } from "../_shared/me/pipeline.ts";
+import { createDevice, listDevices, revokeDevice } from "../_shared/me/devices.ts";
 import {
   buildFeedbackStats,
   buildQueriesStats,
@@ -152,23 +154,29 @@ Deno.serve(async (req: Request) => {
       // 인증을 거치지 않고 404·405 가 된다. 인증을 먼저 하면 익명에게 전부 401 이 나가
       // 원본과 갈린다(실측으로 잡았다: `GET /me/email-ingest/rotate` → 원본 405, 초기
       // 구현 401).
-      const ME_ROUTES: Record<string, string> = {
-        "/me/plan": "GET",
-        "/me/subscription": "GET",
-        "/me/email-ingest": "GET",
-        "/me/email-ingest/rotate": "POST",
+      const ME_ROUTES: Record<string, string[]> = {
+        "/me/plan": ["GET"],
+        "/me/subscription": ["GET"],
+        "/me/email-ingest": ["GET"],
+        "/me/email-ingest/rotate": ["POST"],
+        "/me/devices": ["GET", "POST"],
       };
-      const allowed = ME_ROUTES[path];
+      const deviceDel = path.match(/^\/me\/devices\/([^/]+)$/);
+      const allowed = deviceDel ? ["DELETE"] : ME_ROUTES[path];
       if (allowed === undefined) {
         response = notFound();
-      } else if (req.method !== allowed) {
+      } else if (!allowed.includes(req.method)) {
         response = methodNotAllowed();
       } else {
         // 여기서부터 인증 필수 — 익명 fallback 이 owner 컨텍스트라, 이 게이트가 없으면
         // 익명 방문자가 owner 의 주소를 발급·회전시킬 수 있다.
-        const user = requireAuthenticatedUser(await getCurrentUser(req, settings));
+        const client = createServiceClient(settings);
+        // 기기 토큰도 여기까지는 온다 — `/me/*` 는 전부 세션 전용이라 403 으로 막는다.
+        const user = requireSessionUser(
+          requireAuthenticatedUser(await getCurrentUser(req, settings, { deviceClient: client })),
+        );
         const deps = {
-          client: createServiceClient(settings),
+          client,
           emailIngestDomain: settings.emailIngestDomain,
         };
         try {
@@ -178,10 +186,22 @@ Deno.serve(async (req: Request) => {
             response = jsonResponse(await buildSubscription(user.userId, deps));
           } else if (path === "/me/email-ingest") {
             response = jsonResponse(await buildEmailIngest(user.userId, user.email, deps));
-          } else {
+          } else if (path === "/me/email-ingest/rotate") {
+            response = jsonResponse(await buildEmailIngestRotate(user.userId, user.email, deps));
+          } else if (deviceDel) {
             response = jsonResponse(
-              await buildEmailIngestRotate(user.userId, user.email, deps),
+              await revokeDevice(client, user.userId, decodeURIComponent(deviceDel[1])),
             );
+          } else if (req.method === "GET") {
+            response = jsonResponse({ devices: await listDevices(client, user.userId) });
+          } else {
+            let body: Record<string, unknown> = {};
+            try {
+              body = await req.json() as Record<string, unknown>;
+            } catch {
+              throw new MeHttpError(422, "JSON 본문이 필요합니다.");
+            }
+            response = jsonResponse(await createDevice(client, user.userId, body["name"]), 201);
           }
         } catch (e) {
           if (e instanceof MeHttpError) {

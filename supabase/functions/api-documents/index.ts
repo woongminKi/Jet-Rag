@@ -31,6 +31,7 @@ import { loadSettings } from "../_shared/config.ts";
 import { applyCorsHeaders, preflightResponse } from "../_shared/cors.ts";
 import { createServiceClient } from "../_shared/db.ts";
 import { getCurrentUser, requireAuthenticatedUser } from "../_shared/current_user.ts";
+import { deviceScopeAllows } from "../_shared/device_token.ts";
 import { jsonResponse, methodNotAllowed, notFound, toResponse } from "../_shared/errors.ts";
 import { enforceRateLimit, METRIC_DOCS, RateLimitError } from "../_shared/rate_limit.ts";
 import { handleUpload } from "../_shared/documents/upload.ts";
@@ -66,7 +67,15 @@ Deno.serve(async (req: Request) => {
     const url = new URL(req.url);
     const client = createServiceClient(settings);
     // 읽기·쓰기 공통으로 호출자를 먼저 정한다. 토큰이 없으면 owner 컨텍스트다.
-    const caller = await getCurrentUser(req, settings);
+    const caller = await getCurrentUser(req, settings, { deviceClient: client });
+    // 기기 토큰은 화이트리스트 라우트만. 나머지는 403 — 새어도 읽기·삭제가 안 된다.
+    if (caller.authKind === "device" && !deviceScopeAllows(caller.scopes ?? [], req.method, path)) {
+      return applyCorsHeaders(
+        req,
+        jsonResponse({ detail: "기기 토큰의 권한 범위를 벗어난 요청입니다." }, 403),
+        settings,
+      );
+    }
 
     // ---- 이메일 인제스트 webhook ----
     // JWT 가 아니라 공유 secret 으로 인증한다 — 발신자가 Cloudflare Email Worker 다.

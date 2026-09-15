@@ -20,13 +20,20 @@
  * `jwt.ts` 의 세분화된 메시지("토큰이 만료되었습니다." 등)는 여기서 삼켜지고 401 detail 은
  * 항상 "인증이 필요합니다." 다. 원본과 같다 — 어떤 토큰이 왜 틀렸는지 공격자에게 알려주지 않는다.
  *
+ * ## 기기 토큰은 네 번째 분기다 (2026-09-15)
+ * `Bearer jrd_...` 는 JWT 가 아니라 `device_tokens` 조회로 푼다. 다만 **`deviceClient` 를
+ * 넘긴 함수에서만** 그렇다 — 안 넘기면 형식이 안 맞는 JWT 라 401 이다. 검색·답변·결제
+ * 함수가 기기 토큰을 거부하는 건 이 "안 넘김"이 근거다(코드 추가가 아니라 구조).
+ *
  * ## 쿠키 파싱은 이 계층의 새 책임이다
  * Python 은 Starlette 이 `Cookie` 헤더를 파싱해 `request.cookies` 로 준다. Edge 에는 그게
  * 없어 직접 파싱하는데, 그 규칙이 어긋나면 세션이 조용히 안 잡힌다.
  * `cookieParser` 는 Starlette 의 `cookie_parser` + `http.cookies._unquote` 를 그대로 옮겼다.
  */
 
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { deriveProjectRef, extractAccessToken } from "./cookie_token.ts";
+import { isDeviceTokenFormat, lookupDeviceToken, touchDeviceToken } from "./device_token.ts";
 import { type JwtSettings, JWTValidationError, verifyJwt } from "./jwt.ts";
 
 const BEARER_PREFIX = "Bearer ";
@@ -44,6 +51,11 @@ export interface CurrentUser {
   email: string | null;
   /** false = 익명 데모 방문자 (owner read-only). 쓰기 게이트가 막아야 한다. */
   isAuthenticated: boolean;
+  /** `session`(JWT·쿠키) 또는 `device`(기기 토큰). 익명은 `session`. 기본값은 session. */
+  authKind?: "session" | "device";
+  /** 기기 토큰일 때만. */
+  scopes?: string[];
+  deviceId?: string;
 }
 
 /** HTTP 상태와 detail 을 담은 인증/권한 실패. `errors.ts` 가 Response 로 바꾼다. */
@@ -161,10 +173,25 @@ export function requestToken(req: Request, settings: AuthSettings): string | nul
 
 /* ------------------------------------------------------------------ 3-way 분기 */
 
-export async function getCurrentUser(req: Request, settings: AuthSettings): Promise<CurrentUser> {
+export interface CurrentUserOpts {
+  /** 기기 토큰을 받는 함수만 넘긴다. 안 넘기면 `jrd_` 토큰은 무효 JWT 로 취급돼 401 이다. */
+  deviceClient?: SupabaseClient;
+  now?: () => number;
+}
+
+export async function getCurrentUser(
+  req: Request,
+  settings: AuthSettings,
+  opts: CurrentUserOpts = {},
+): Promise<CurrentUser> {
   if (!settings.authEnabled) {
     // 로컬 dev 무중단 — 기존 단일 사용자 동작 보존. 쓰기까지 허용된다.
-    return { userId: settings.defaultUserId, email: null, isAuthenticated: true };
+    return {
+      userId: settings.defaultUserId,
+      email: null,
+      isAuthenticated: true,
+      authKind: "session",
+    };
   }
 
   const token = extractBearerToken(req) ?? extractCookieToken(req, settings);
@@ -173,12 +200,35 @@ export async function getCurrentUser(req: Request, settings: AuthSettings): Prom
       userId: settings.ownerUserId || settings.defaultUserId,
       email: null,
       isAuthenticated: false,
+      authKind: "session",
+    };
+  }
+
+  // ---- 기기 토큰 (2026-09-15) — JWT 검증보다 먼저, 형식으로 가른다 ----
+  if (opts.deviceClient && isDeviceTokenFormat(token)) {
+    const row = await lookupDeviceToken(opts.deviceClient, token);
+    if (row === null) {
+      throw new AuthError(401, "인증이 필요합니다.", { "WWW-Authenticate": "Bearer" });
+    }
+    await touchDeviceToken(opts.deviceClient, row, (opts.now ?? Date.now)());
+    return {
+      userId: row.user_id,
+      email: null,
+      isAuthenticated: true,
+      authKind: "device",
+      scopes: row.scopes,
+      deviceId: row.id,
     };
   }
 
   try {
     const verified = await verifyJwt(token, settings);
-    return { userId: verified.userId, email: verified.email, isAuthenticated: true };
+    return {
+      userId: verified.userId,
+      email: verified.email,
+      isAuthenticated: true,
+      authKind: "session",
+    };
   } catch (e) {
     if (e instanceof JWTValidationError) {
       // 세부 사유는 밖으로 내보내지 않는다 — 원본과 같다.
@@ -197,6 +247,14 @@ export async function getCurrentUser(req: Request, settings: AuthSettings): Prom
 export function requireAuthenticatedUser(user: CurrentUser): CurrentUser {
   if (!user.isAuthenticated) {
     throw new AuthError(401, "로그인이 필요합니다.", { "WWW-Authenticate": "Bearer" });
+  }
+  return user;
+}
+
+/** 기기 토큰 호출자를 막는 게이트 — 기기 관리·결제처럼 세션만 허용하는 곳. */
+export function requireSessionUser(user: CurrentUser): CurrentUser {
+  if (user.authKind === "device") {
+    throw new AuthError(403, "기기 토큰으로는 이 작업을 할 수 없습니다.");
   }
   return user;
 }

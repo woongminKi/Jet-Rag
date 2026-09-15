@@ -118,7 +118,12 @@ Deno.test("extractBearerToken — 형식과 공백", () => {
 Deno.test("authEnabled=false 면 토큰과 무관하게 default 사용자 + 인증됨", async () => {
   const s = settings({ authEnabled: false });
   const u = await getCurrentUser(request(), s);
-  assertEquals(u, { userId: DEFAULT_USER, email: null, isAuthenticated: true });
+  assertEquals(u, {
+    userId: DEFAULT_USER,
+    email: null,
+    isAuthenticated: true,
+    authKind: "session",
+  });
 
   // 깨진 토큰이 있어도 이 분기에서는 검증 자체를 하지 않는다.
   const u2 = await getCurrentUser(request({ Authorization: "Bearer garbage" }), s);
@@ -128,7 +133,7 @@ Deno.test("authEnabled=false 면 토큰과 무관하게 default 사용자 + 인�
 
 Deno.test("토큰이 없으면 익명 데모 — owner 컨텍스트지만 isAuthenticated=false", async () => {
   const u = await getCurrentUser(request(), settings());
-  assertEquals(u, { userId: OWNER, email: null, isAuthenticated: false });
+  assertEquals(u, { userId: OWNER, email: null, isAuthenticated: false, authKind: "session" });
 });
 
 Deno.test("owner 미설정이면 익명 fallback 이 default 사용자로 간다", async () => {
@@ -142,7 +147,12 @@ Deno.test("유효한 Bearer 토큰이면 본인 컨텍스트", async () => {
     request({ Authorization: `Bearer ${await token({ email: "a@b.com" })}` }),
     settings(),
   );
-  assertEquals(u, { userId: USER, email: "a@b.com", isAuthenticated: true });
+  assertEquals(u, {
+    userId: USER,
+    email: "a@b.com",
+    isAuthenticated: true,
+    authKind: "session",
+  });
 });
 
 Deno.test("쿠키만 있어도 인증된다 (credentials: 'include' 경로)", async () => {
@@ -265,4 +275,17 @@ Deno.test("requireAdmin — 익명은 owner UUID 를 갖고 있어도 403", () =
     AuthError,
   );
   assertEquals(e.status, 403);
+});
+
+Deno.test("기기 토큰 — deviceClient 없이는 401 (JWT 로 취급)", async () => {
+  const req = new Request("http://x/documents", {
+    headers: { Authorization: `Bearer jrd_${"a".repeat(43)}` },
+  });
+  let status = 0;
+  try {
+    await getCurrentUser(req, settings());
+  } catch (e) {
+    status = (e as { status: number }).status;
+  }
+  assertEquals(status, 401);
 });

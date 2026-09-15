@@ -107,6 +107,40 @@ export async function apiPost<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** JSON 본문 POST. `apiPost` 는 본문이 없는 엔드포인트용이라 따로 둔다. */
+export async function apiPostJson<T>(path: string, body: unknown): Promise<T> {
+  const authInit = await buildAuthInit();
+  const res = await fetch(`${BASE_URL}${path}`, {
+    ...authInit,
+    method: 'POST',
+    body: JSON.stringify(body),
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      ...(authInit.headers ?? {}),
+    },
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, await safeReadDetail(res));
+  }
+  return res.json() as Promise<T>;
+}
+
+export async function apiDelete<T>(path: string): Promise<T> {
+  const authInit = await buildAuthInit();
+  const res = await fetch(`${BASE_URL}${path}`, {
+    ...authInit,
+    method: 'DELETE',
+    headers: { Accept: 'application/json', ...(authInit.headers ?? {}) },
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, await safeReadDetail(res));
+  }
+  return res.json() as Promise<T>;
+}
+
 async function safeReadDetail(res: Response): Promise<string> {
   try {
     const body = await res.json();
