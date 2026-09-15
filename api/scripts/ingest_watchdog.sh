@@ -107,7 +107,8 @@ while true; do
   else
     over=0
   fi
-  if [ "$q" = "0" ] && { [ -z "$JOB_ID" ] || [[ "$job" == succeeded/* || "$job" == failed/* ]]; }; then
+  # 잡의 종료 상태는 completed / failed (2026-09-16 실측 — succeeded 가 아니다. 그 이름으로 기다리면 영원히 안 끝난다).
+  if [ "$q" = "0" ] && { [ -z "$JOB_ID" ] || [[ "$job" == completed/* || "$job" == failed/* ]]; }; then
     idle=$((idle + 1))
     if [ "$idle" -ge "$QUEUE_IDLE_ROUNDS" ]; then
       echo "$ts 큐 0 · 잡 종료 — 감시 종료"
