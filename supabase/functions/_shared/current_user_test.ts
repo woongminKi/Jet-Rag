@@ -14,10 +14,13 @@ import {
   type AuthSettings,
   cookieParser,
   type CurrentUser,
+  type CurrentUserBase,
   extractBearerToken,
   getCurrentUser,
   requireAdmin,
   requireAuthenticatedUser,
+  requireSessionUser,
+  touchDeviceUser,
 } from "./current_user.ts";
 
 const SECRET = "test-secret-at-least-32-bytes-long!!";
@@ -237,8 +240,21 @@ Deno.test("SUPABASE_URL 로 ref 를 못 뽑으면 쿠키 경로가 죽고 익명
 
 /* ------------------------------------------------------------------ 게이트 */
 
-function user(over: Partial<CurrentUser> = {}): CurrentUser {
-  return { userId: USER, email: null, isAuthenticated: true, ...over };
+function user(over: Partial<CurrentUserBase> = {}): CurrentUser {
+  return { userId: USER, email: null, isAuthenticated: true, authKind: "session", ...over };
+}
+
+function deviceUser(over: Partial<CurrentUserBase> = {}): CurrentUser {
+  return {
+    userId: USER,
+    email: null,
+    isAuthenticated: true,
+    authKind: "device",
+    scopes: ["ingest"],
+    deviceId: "d1",
+    deviceLastUsedAt: null,
+    ...over,
+  };
 }
 
 Deno.test("requireAuthenticatedUser — 익명은 401", () => {
@@ -275,6 +291,123 @@ Deno.test("requireAdmin — 익명은 owner UUID 를 갖고 있어도 403", () =
     AuthError,
   );
   assertEquals(e.status, 403);
+});
+
+/* ------------------------------------------------------------------ 기기 토큰 */
+
+const DEVICE_TOKEN = `jrd_${"a".repeat(43)}`;
+
+interface FakeRow {
+  id: string;
+  user_id: string;
+  name: string;
+  scopes: string[];
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
+/** `lookupDeviceToken` 이 쓰는 최소 체인만 흉내낸다. */
+function fakeDeviceClient(rows: FakeRow[]) {
+  const updates: Record<string, unknown>[] = [];
+  const client = {
+    from: () => ({
+      select: () => ({
+        eq: () => ({ limit: () => Promise.resolve({ data: rows, error: null }) }),
+      }),
+      update: (row: Record<string, unknown>) => {
+        updates.push(row);
+        return { eq: () => Promise.resolve({ error: null }) };
+      },
+    }),
+  };
+  // deno-lint-ignore no-explicit-any
+  return { client: client as any, updates };
+}
+
+function deviceRow(over: Partial<FakeRow> = {}): FakeRow {
+  return {
+    id: "d1",
+    user_id: USER,
+    name: "회사 노트북",
+    scopes: ["ingest"],
+    last_used_at: null,
+    revoked_at: null,
+    ...over,
+  };
+}
+
+Deno.test("기기 토큰 — deviceClient 가 있으면 device 컨텍스트로 푼다", async () => {
+  const f = fakeDeviceClient([deviceRow({ last_used_at: "2026-09-15T00:00:00Z" })]);
+  const u = await getCurrentUser(
+    request({ Authorization: `Bearer ${DEVICE_TOKEN}` }),
+    settings(),
+    { deviceClient: f.client },
+  );
+  assertEquals(u, {
+    userId: USER,
+    email: null,
+    isAuthenticated: true,
+    authKind: "device",
+    scopes: ["ingest"],
+    deviceId: "d1",
+    deviceLastUsedAt: "2026-09-15T00:00:00Z",
+  });
+  // **인증 시점에는 last_used_at 을 쓰지 않는다** — 스코프 게이트 통과 후에 호출부가 올린다.
+  assertEquals(f.updates.length, 0);
+});
+
+Deno.test("기기 토큰 — 폐기된 토큰은 401 + WWW-Authenticate", async () => {
+  const f = fakeDeviceClient([deviceRow({ revoked_at: "2026-09-14T00:00:00Z" })]);
+  const e = await assertRejects(
+    () =>
+      getCurrentUser(request({ Authorization: `Bearer ${DEVICE_TOKEN}` }), settings(), {
+        deviceClient: f.client,
+      }),
+    AuthError,
+  );
+  assertEquals(e.status, 401);
+  assertEquals(e.detail, "인증이 필요합니다.");
+  assertEquals(e.headers["WWW-Authenticate"], "Bearer");
+});
+
+Deno.test("기기 토큰 — 없는 토큰도 같은 401 (폐기와 구분하지 않는다)", async () => {
+  const f = fakeDeviceClient([]);
+  const e = await assertRejects(
+    () =>
+      getCurrentUser(request({ Authorization: `Bearer ${DEVICE_TOKEN}` }), settings(), {
+        deviceClient: f.client,
+      }),
+    AuthError,
+  );
+  assertEquals(e.status, 401);
+});
+
+Deno.test("touchDeviceUser — 세션 호출자는 아무것도 쓰지 않는다", async () => {
+  const f = fakeDeviceClient([]);
+  await touchDeviceUser(f.client, user(), Date.parse("2026-09-15T00:00:00Z"));
+  assertEquals(f.updates.length, 0);
+});
+
+Deno.test("touchDeviceUser — 1분 안이면 건너뛰고, 넘으면 갱신한다", async () => {
+  const base = Date.parse("2026-09-15T00:00:00Z");
+  const u = deviceUser() as CurrentUser & { deviceLastUsedAt: string | null };
+  u.deviceLastUsedAt = new Date(base).toISOString();
+
+  const skip = fakeDeviceClient([]);
+  await touchDeviceUser(skip.client, u, base + 59_000);
+  assertEquals(skip.updates.length, 0);
+
+  const hit = fakeDeviceClient([]);
+  await touchDeviceUser(hit.client, u, base + 61_000);
+  assertEquals(hit.updates.length, 1);
+  assertEquals(hit.updates[0]["last_used_at"], new Date(base + 61_000).toISOString());
+});
+
+Deno.test("requireSessionUser — 기기 토큰은 403, 세션은 통과", () => {
+  assertEquals(requireSessionUser(user()).userId, USER);
+  const e = assertThrows(() => requireSessionUser(deviceUser()), AuthError);
+  assertEquals(e.status, 403);
+  assertEquals(e.detail, "기기 토큰으로는 이 작업을 할 수 없습니다.");
 });
 
 Deno.test("기기 토큰 — deviceClient 없이는 401 (JWT 로 취급)", async () => {

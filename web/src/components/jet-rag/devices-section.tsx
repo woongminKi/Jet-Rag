@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { apiDelete, apiGet, apiPostJson } from '@/lib/api/client';
+import { ApiError, apiDelete, apiGet, apiPostJson } from '@/lib/api/client';
 
 interface Device {
   id: string;
@@ -11,6 +11,14 @@ interface Device {
   created_at: string;
   last_used_at: string | null;
   revoked_at: string | null;
+}
+
+/**
+ * 4xx 는 서버가 쓴 한국어 detail 을 그대로 보여준다 — "1~60자여야 합니다", "최대 20개"처럼
+ * 사용자가 바로 고칠 수 있는 내용이다. 5xx 는 내부 사정이라 일반 문구로 덮는다.
+ */
+function messageOf(e: unknown, fallback: string): string {
+  return e instanceof ApiError && e.status < 500 ? e.detail : fallback;
 }
 
 function formatWhen(iso: string | null): string {
@@ -30,6 +38,7 @@ export function DevicesSection() {
   const [devices, setDevices] = useState<Device[] | null>(null);
   const [name, setName] = useState('');
   const [issued, setIssued] = useState<{ name: string; token: string } | null>(null);
+  const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -54,10 +63,11 @@ export function DevicesSection() {
         name: name.trim(),
       });
       setIssued({ name: d.name, token: d.token });
+      setCopied(false);
       setName('');
       await load();
-    } catch {
-      setError('기기 추가에 실패했습니다. 잠시 후 다시 시도해 주세요.');
+    } catch (e) {
+      setError(messageOf(e, '기기 추가에 실패했습니다. 잠시 후 다시 시도해 주세요.'));
     } finally {
       setBusy(false);
     }
@@ -71,11 +81,12 @@ export function DevicesSection() {
     )
       return;
     setBusy(true);
+    setError(null);
     try {
       await apiDelete(`/me/devices/${d.id}`);
       await load();
-    } catch {
-      setError('폐기에 실패했습니다.');
+    } catch (e) {
+      setError(messageOf(e, '폐기에 실패했습니다. 잠시 후 다시 시도해 주세요.'));
     } finally {
       setBusy(false);
     }
@@ -105,10 +116,17 @@ export function DevicesSection() {
             type="button"
             className="mt-2 rounded border px-3 py-1"
             onClick={() => {
-              void navigator.clipboard.writeText(issued.token);
+              // http 나 권한 거부 환경에서는 clipboard 자체가 없다 — 조용히 넘기면
+              // 사용자는 복사됐다고 믿고 창을 닫는다(토큰은 다시 못 본다).
+              void navigator.clipboard
+                ?.writeText(issued.token)
+                .then(() => setCopied(true))
+                .catch(() =>
+                  setError('복사에 실패했습니다. 아래 토큰을 직접 선택해 복사해 주세요.'),
+                );
             }}
           >
-            복사
+            {copied ? '복사됨' : '복사'}
           </button>
           <button
             type="button"

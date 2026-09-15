@@ -161,7 +161,12 @@ Deno.serve(async (req: Request) => {
         "/me/email-ingest/rotate": ["POST"],
         "/me/devices": ["GET", "POST"],
       };
-      const deviceDel = path.match(/^\/me\/devices\/([^/]+)$/);
+      // **UUID 모양만 받는다.** `[^/]+` 로 열어 두면 `/me/devices/abc` 가 라우트에 걸려
+      // Postgres 의 uuid 캐스팅 오류(22P02)가 500 으로 새어 나간다. 모양이 아니면
+      // 라우트가 아예 없는 것으로 보고 404 다.
+      const deviceDel = path.match(
+        /^\/me\/devices\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/,
+      );
       const allowed = deviceDel ? ["DELETE"] : ME_ROUTES[path];
       if (allowed === undefined) {
         response = notFound();
@@ -189,9 +194,8 @@ Deno.serve(async (req: Request) => {
           } else if (path === "/me/email-ingest/rotate") {
             response = jsonResponse(await buildEmailIngestRotate(user.userId, user.email, deps));
           } else if (deviceDel) {
-            response = jsonResponse(
-              await revokeDevice(client, user.userId, decodeURIComponent(deviceDel[1])),
-            );
+            // UUID 는 퍼센트 인코딩될 문자가 없다 — decode 하지 않는다.
+            response = jsonResponse(await revokeDevice(client, user.userId, deviceDel[1]));
           } else if (req.method === "GET") {
             response = jsonResponse({ devices: await listDevices(client, user.userId) });
           } else {

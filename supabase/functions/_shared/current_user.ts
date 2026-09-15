@@ -33,7 +33,12 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { deriveProjectRef, extractAccessToken } from "./cookie_token.ts";
-import { isDeviceTokenFormat, lookupDeviceToken, touchDeviceToken } from "./device_token.ts";
+import {
+  type DeviceTokenRow,
+  isDeviceTokenFormat,
+  lookupDeviceToken,
+  touchDeviceToken,
+} from "./device_token.ts";
 import { type JwtSettings, JWTValidationError, verifyJwt } from "./jwt.ts";
 
 const BEARER_PREFIX = "Bearer ";
@@ -45,18 +50,32 @@ export interface AuthSettings extends JwtSettings {
   ownerUserId: string | null;
 }
 
-/** 요청 호출자. `userId` 가 격리 키다 (RPC user_id_arg / documents.user_id 필터). */
-export interface CurrentUser {
+/** 요청 호출자의 공통 필드. `userId` 가 격리 키다 (RPC user_id_arg / documents.user_id 필터). */
+export interface CurrentUserBase {
   userId: string;
   email: string | null;
   /** false = 익명 데모 방문자 (owner read-only). 쓰기 게이트가 막아야 한다. */
   isAuthenticated: boolean;
-  /** `session`(JWT·쿠키) 또는 `device`(기기 토큰). 익명은 `session`. 기본값은 session. */
-  authKind?: "session" | "device";
-  /** 기기 토큰일 때만. */
-  scopes?: string[];
-  deviceId?: string;
 }
+
+/** 기기 토큰 호출자만 갖는 필드. */
+export interface DeviceAuth {
+  authKind: "device";
+  scopes: string[];
+  deviceId: string;
+  /** 갱신 throttle 판정에 필요하다 — `touchDeviceUser` 가 읽는다. */
+  deviceLastUsedAt: string | null;
+}
+
+/**
+ * 요청 호출자.
+ *
+ * `authKind` 는 **선택 필드가 아니라 판별자**다. 선택으로 두면 `scopes` 도 선택이 되고,
+ * 호출부가 `scopes ?? []` 같은 fallback 을 쓰게 된다 — 그 fallback 은 "스코프를 못 읽었을
+ * 때 전부 거절"과 "기기 토큰이 아니라 검사가 필요 없음"을 구분하지 못한다. 유니온으로
+ * 두면 `authKind === "device"` 로 좁힌 자리에서만 `scopes` 가 보인다.
+ */
+export type CurrentUser = CurrentUserBase & ({ authKind: "session" } | DeviceAuth);
 
 /** HTTP 상태와 detail 을 담은 인증/권한 실패. `errors.ts` 가 Response 로 바꾼다. */
 export class AuthError extends Error {
@@ -176,7 +195,6 @@ export function requestToken(req: Request, settings: AuthSettings): string | nul
 export interface CurrentUserOpts {
   /** 기기 토큰을 받는 함수만 넘긴다. 안 넘기면 `jrd_` 토큰은 무효 JWT 로 취급돼 401 이다. */
   deviceClient?: SupabaseClient;
-  now?: () => number;
 }
 
 export async function getCurrentUser(
@@ -210,7 +228,10 @@ export async function getCurrentUser(
     if (row === null) {
       throw new AuthError(401, "인증이 필요합니다.", { "WWW-Authenticate": "Bearer" });
     }
-    await touchDeviceToken(opts.deviceClient, row, (opts.now ?? Date.now)());
+    // **여기서 `last_used_at` 을 올리지 않는다.** 이 지점은 스코프 게이트보다 앞이라,
+    // 거절될 요청(`GET /documents` 같은)까지 "마지막 사용"으로 기록된다. 폐기 판단의
+    // 근거가 되는 값이라 거절된 접근으로 오염되면 안 된다. 게이트를 통과한 뒤 호출부가
+    // `touchDeviceUser` 를 부른다.
     return {
       userId: row.user_id,
       email: null,
@@ -218,6 +239,7 @@ export async function getCurrentUser(
       authKind: "device",
       scopes: row.scopes,
       deviceId: row.id,
+      deviceLastUsedAt: row.last_used_at,
     };
   }
 
@@ -257,6 +279,25 @@ export function requireSessionUser(user: CurrentUser): CurrentUser {
     throw new AuthError(403, "기기 토큰으로는 이 작업을 할 수 없습니다.");
   }
   return user;
+}
+
+/**
+ * 통과한 요청만 `last_used_at` 에 기록한다. 세션 호출자면 아무것도 하지 않는다.
+ *
+ * **스코프 게이트를 통과한 뒤에** 부른다 — 인증 시점에 부르면 403 으로 끊길 요청도
+ * "마지막 사용"이 되어, 사용자가 안 쓰는 기기를 골라 폐기하려 할 때 판단이 흐려진다.
+ */
+export async function touchDeviceUser(
+  client: SupabaseClient,
+  user: CurrentUser,
+  nowMs: number = Date.now(),
+): Promise<void> {
+  if (user.authKind !== "device") return;
+  const row: Pick<DeviceTokenRow, "id" | "last_used_at"> = {
+    id: user.deviceId,
+    last_used_at: user.deviceLastUsedAt,
+  };
+  await touchDeviceToken(client, row, nowMs);
 }
 
 /**

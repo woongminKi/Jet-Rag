@@ -83,7 +83,7 @@ Deno.test("정상 preflight — 200 + 고정 헤더", async () => {
   assertEquals(await res.text(), "OK");
   assertEquals(res.headers.get("Access-Control-Allow-Origin"), ORIGINS[0]);
   assertEquals(res.headers.get("Access-Control-Allow-Credentials"), "true");
-  assertEquals(res.headers.get("Access-Control-Allow-Methods"), "GET, POST");
+  assertEquals(res.headers.get("Access-Control-Allow-Methods"), "GET, POST, DELETE");
   assertEquals(res.headers.get("Access-Control-Max-Age"), "600");
   assertEquals(res.headers.get("Vary"), "Origin");
   // allow_headers=["*"] → 요청받은 목록을 그대로 되비춘다.
@@ -107,14 +107,14 @@ Deno.test("허용 밖 origin 은 400 이지만 CORS 헤더는 붙는다", async 
   assertEquals(await res.text(), "Disallowed CORS origin");
   assertEquals(res.headers.get("Access-Control-Allow-Origin"), null);
   // 실패해도 나머지 헤더는 온다 — 개발자 도구에 이유가 보이게.
-  assertEquals(res.headers.get("Access-Control-Allow-Methods"), "GET, POST");
+  assertEquals(res.headers.get("Access-Control-Allow-Methods"), "GET, POST, DELETE");
 });
 
 Deno.test("허용 밖 메서드는 400 — OPTIONS 는 목록에 없다", async () => {
   for (
     const [m, body] of [
-      ["DELETE", "Disallowed CORS method"],
       ["PUT", "Disallowed CORS method"],
+      ["PATCH", "Disallowed CORS method"],
       ["OPTIONS", "Disallowed CORS method"],
     ]
   ) {
@@ -127,9 +127,18 @@ Deno.test("허용 밖 메서드는 400 — OPTIONS 는 목록에 없다", async 
   }
 });
 
+Deno.test("DELETE preflight 는 통과한다 — `/me/devices/{id}` 폐기가 이것에 달려 있다", async () => {
+  const res = preflightResponse(
+    req("OPTIONS", { "Origin": ORIGINS[0], "Access-Control-Request-Method": "DELETE" }),
+    settings,
+  )!;
+  assertEquals(res.status, 200);
+  assertEquals(await res.text(), "OK");
+});
+
 Deno.test("origin·method 둘 다 틀리면 실패 사유가 순서대로 나온다", async () => {
   const res = preflightResponse(
-    req("OPTIONS", { "Origin": "https://evil.com", "Access-Control-Request-Method": "DELETE" }),
+    req("OPTIONS", { "Origin": "https://evil.com", "Access-Control-Request-Method": "PUT" }),
     settings,
   )!;
   assertEquals(res.status, 400);

@@ -73,20 +73,29 @@ export async function lookupDeviceToken(
 
 const LAST_USED_THROTTLE_MS = 60_000;
 
-/** `last_used_at` 을 분당 1회만 갱신한다 — 요청마다 쓰면 업로드 폭주 때 쓰기가 두 배다. */
+/**
+ * `last_used_at` 을 분당 1회만 갱신한다 — 요청마다 쓰면 업로드 폭주 때 쓰기가 두 배다.
+ *
+ * 실패해도 요청을 깨지 않는다(표시용 값이다). 다만 **조용히 넘기지는 않는다** —
+ * PostgREST 는 실패를 throw 가 아니라 `{ error }` 로 돌려주므로, try/catch 만 두면
+ * 모든 갱신이 실패해도 로그가 한 줄도 안 남는다. 두 경로를 다 본다.
+ */
 export async function touchDeviceToken(
   client: SupabaseClient,
-  row: DeviceTokenRow,
+  row: Pick<DeviceTokenRow, "id" | "last_used_at">,
   nowMs: number,
 ): Promise<void> {
   const last = row.last_used_at ? Date.parse(row.last_used_at) : 0;
   if (nowMs - last < LAST_USED_THROTTLE_MS) return;
   try {
-    await client.from("device_tokens")
+    const { error } = await client.from("device_tokens")
       .update({ last_used_at: new Date(nowMs).toISOString() })
       .eq("id", row.id);
+    if (error) {
+      console.warn(`device_tokens last_used_at 갱신 실패 (id=${row.id}): ${error.message}`);
+    }
   } catch (e) {
-    console.warn(`device_tokens last_used_at 갱신 실패 (id=${row.id}):`, e);
+    console.warn(`device_tokens last_used_at 갱신 예외 (id=${row.id}):`, e);
   }
 }
 

@@ -32,6 +32,7 @@ import { applyCorsHeaders, preflightResponse } from "../_shared/cors.ts";
 import { createServiceClient } from "../_shared/db.ts";
 import { getCurrentUser, requireAuthenticatedUser } from "../_shared/current_user.ts";
 import { deviceScopeAllows } from "../_shared/device_token.ts";
+import { touchDeviceUser } from "../_shared/current_user.ts";
 import { jsonResponse, methodNotAllowed, notFound, toResponse } from "../_shared/errors.ts";
 import { enforceRateLimit, METRIC_DOCS, RateLimitError } from "../_shared/rate_limit.ts";
 import { handleUpload } from "../_shared/documents/upload.ts";
@@ -69,12 +70,16 @@ Deno.serve(async (req: Request) => {
     // 읽기·쓰기 공통으로 호출자를 먼저 정한다. 토큰이 없으면 owner 컨텍스트다.
     const caller = await getCurrentUser(req, settings, { deviceClient: client });
     // 기기 토큰은 화이트리스트 라우트만. 나머지는 403 — 새어도 읽기·삭제가 안 된다.
-    if (caller.authKind === "device" && !deviceScopeAllows(caller.scopes ?? [], req.method, path)) {
-      return applyCorsHeaders(
-        req,
-        jsonResponse({ detail: "기기 토큰의 권한 범위를 벗어난 요청입니다." }, 403),
-        settings,
-      );
+    if (caller.authKind === "device") {
+      if (!deviceScopeAllows(caller.scopes, req.method, path)) {
+        return applyCorsHeaders(
+          req,
+          jsonResponse({ detail: "기기 토큰의 권한 범위를 벗어난 요청입니다." }, 403),
+          settings,
+        );
+      }
+      // 게이트를 통과한 요청만 "사용"으로 친다. 분당 1회로 throttle 되어 있다.
+      await touchDeviceUser(client, caller);
     }
 
     // ---- 이메일 인제스트 webhook ----

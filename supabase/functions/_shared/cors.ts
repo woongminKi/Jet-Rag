@@ -16,8 +16,8 @@
  *   `OPTIONS` 만 오면 일반 응답 취급이다.
  * - origin 매칭은 `fullmatch` 다. `re.search` 로 착각하면 `https://evil.com/x.vercel.app`
  *   같은 값이 통과한다.
- * - `allow_methods` 에 `OPTIONS` 가 **없다**(GET, POST 뿐). preflight 가 요청한 메서드가
- *   목록 밖이면 400 이다.
+ * - `allow_methods` 에 `OPTIONS` 가 **없다**. preflight 가 요청한 메서드가 목록 밖이면 400 이다.
+ *   목록에 `DELETE` 가 있는 건 **의도한 원본 이탈**이다 — 아래 `ALLOW_METHODS` 주석 참조.
  * - `allow_headers=["*"]` 이라 preflight 는 요청받은 헤더 목록을 **그대로 되비춘다**.
  * - 실패해도 400 응답에 CORS 헤더를 붙여 보낸다 — 브라우저가 이유를 보여주게 하려는 것.
  * - 일반 응답에서 `Vary` 는 **덮어쓰지 않고 덧붙인다**(`add_vary_header`).
@@ -32,8 +32,17 @@ export interface CorsSettings {
   corsOrigins: string[];
 }
 
-/** `app/main.py` 의 `allow_methods`. `OPTIONS` 가 없는 게 의도다. */
-const ALLOW_METHODS = ["GET", "POST"];
+/**
+ * `app/main.py` 의 `allow_methods`. `OPTIONS` 가 없는 게 의도다.
+ *
+ * **`DELETE` 는 원본에 없다 — 의도한 이탈이다(2026-09-15).** Python 의 `allow_methods` 는
+ * `["GET", "POST"]` 였는데, 그때는 DELETE 를 쓰는 라우트가 하나도 없었기 때문이다.
+ * `DELETE /me/devices/{id}`(기기 토큰 폐기)는 **Python 원본이 존재하지 않는** 신규 라우트라
+ * 대조할 기준이 없다. 여기에 `DELETE` 를 안 넣으면 브라우저 preflight 가 400
+ * "Disallowed CORS method" 로 끊겨 **폐기 버튼이 운영에서 조용히 죽는다**
+ * (서버 로그에는 아무것도 안 남고 네트워크 탭에만 보인다).
+ */
+const ALLOW_METHODS = ["GET", "POST", "DELETE"];
 
 /** Starlette 기본값. */
 const MAX_AGE = "600";

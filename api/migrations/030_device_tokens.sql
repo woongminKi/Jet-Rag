@@ -16,6 +16,15 @@
 -- RLS
 --   본인 행 SELECT 만. 쓰기는 service_role(Edge) 만.
 --
+--   **정책이 "없다"는 것이 방어다.** `authenticated` 롤에 INSERT/UPDATE/DELETE 정책을
+--   하나도 안 만든 것이 의도다 — RLS 가 켜진 테이블에서 해당 명령의 정책이 없으면 전부
+--   거절되므로, anon key 를 쥔 브라우저는 토큰을 스스로 만들거나(무한 발급) 남의 행을
+--   폐기 해제할 수 없다. `service_role` 정책은 형식상 둔 것이고 실제로는 RLS 를 우회한다.
+--   따라서 발급·폐기의 소유자 검사는 Edge 코드(`_shared/me/devices.ts` 의 user_id 필터)가
+--   유일한 방어선이다 — 거기서 `.eq("user_id", ...)` 를 빼면 즉시 뚫린다.
+--   SELECT 정책조차 `token_hash` 를 가려주지 않는다(컬럼 단위 권한이 아니다). 다만 해시라
+--   원문 복원이 불가능하다는 것이 근거다.
+--
 -- 적용 절차
 --   Supabase Studio → SQL Editor → 본 파일 paste → Run.
 --

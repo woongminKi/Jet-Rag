@@ -41,6 +41,10 @@ export async function createDevice(
   if (!name || name.length > NAME_MAX) {
     throw new MeHttpError(422, `name 은 1~${NAME_MAX}자여야 합니다.`);
   }
+  // **check-then-insert 다 — 동시 요청이면 상한을 넘을 수 있다.** 같은 사용자가 발급을
+  // 정확히 동시에 두 번 보내면 둘 다 19개를 보고 통과해 21개가 된다. 고치려면 유니크
+  // 제약이나 잠금이 필요한데, 넘쳐도 **본인 계정 안에서만** 몇 개 더 생기는 것이고
+  // 스코프는 그대로라 피해가 없다. 비용(마이그·잠금) 대비 이득이 없어 열어 둔다.
   const active = (await listDevices(client, userId)).filter((d) => !d.revoked_at);
   if (active.length >= DEVICES_MAX) {
     throw new MeHttpError(409, `기기는 최대 ${DEVICES_MAX}개까지 연결할 수 있습니다.`);
