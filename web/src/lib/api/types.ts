@@ -44,6 +44,8 @@ export type JobStatusValue =
   | 'running'
   | 'completed'
   | 'failed'
+  // 월 Vision 페이지 한도로 보류(마이그 031). terminal 이 아니다 — 다음 달에 이어서 처리된다.
+  | 'deferred_quota'
   | 'cancelled';
 
 export type StageValue =

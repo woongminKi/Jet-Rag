@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { CheckCircle2, FileIcon, Loader2, RefreshCw, XCircle } from 'lucide-react';
+import { CheckCircle2, Clock, FileIcon, Loader2, RefreshCw, XCircle } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -168,6 +168,13 @@ export function UploadItem({
                   {job.error_msg}
                 </p>
               )}
+              {/* 보류는 실패가 아니다 — 사유(한도 도달·재개 시점)를 읽을 수 있어야
+                  "그냥 멈췄다" 로 보이지 않는다. 실패와 같은 자리, 다른 색. */}
+              {job?.status === 'deferred_quota' && job.error_msg && (
+                <p className="break-words rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">
+                  {job.error_msg}
+                </p>
+              )}
               {retryError && (
                 <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
                   {retryError}
@@ -205,6 +212,12 @@ function StatusBadge({ status, timedOut }: { status: string; timedOut: boolean }
     return (
       <Badge variant="destructive" className="gap-1">
         <XCircle className="h-3 w-3" /> 실패
+      </Badge>
+    );
+  if (status === 'deferred_quota')
+    return (
+      <Badge variant="outline" className="gap-1 border-warning/40 text-warning">
+        <Clock className="h-3 w-3" /> 한도 대기 중
       </Badge>
     );
   if (timedOut) return <Badge variant="outline">지연</Badge>;

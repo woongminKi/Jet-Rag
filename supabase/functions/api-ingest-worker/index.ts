@@ -25,7 +25,7 @@ import { createServiceClient } from "../_shared/db.ts";
 import { jsonResponse, methodNotAllowed, notFound, toResponse } from "../_shared/errors.ts";
 import { drainLoop, type TaskHandler } from "../_shared/ingest/worker.ts";
 import { makeQuotaGate } from "../_shared/ingest/quota_gate.ts";
-import { getEffectivePlan } from "../_shared/me/quota.ts";
+import { getEffectivePlan, type PlanLimits } from "../_shared/me/quota.ts";
 import { makeChunkHandler } from "../_shared/ingest/handlers/chunk.ts";
 import { makeEmbedHandler } from "../_shared/ingest/handlers/embed.ts";
 import { makeExtractHandler } from "../_shared/ingest/handlers/extract.ts";
@@ -118,6 +118,8 @@ Deno.serve(async (req: Request) => {
     const batch = Number(url.searchParams.get("batch") ?? "1");
     const budget = Number(url.searchParams.get("budget") ?? "");
     const client = createServiceClient(settings);
+    /** 이 드레인 요청 안에서만 사는 플랜 캐시 — 같은 사용자의 태스크가 연달아 도는 게 정상이다. */
+    const planCache = new Map<string, Promise<PlanLimits | null>>();
     // 예산이 남는 동안 반복한다. 작업이 순차 의존이라 batch 를 키워도 소용이 없다 —
     // 다음 작업은 직전 작업이 끝나야 큐에 들어간다.
     const result = await drainLoop({
@@ -127,7 +129,15 @@ Deno.serve(async (req: Request) => {
       gate: makeQuotaGate({
         client,
         settings,
-        getPlan: (uid) => getEffectivePlan(client, uid),
+        // 플랜 조회는 select 2 회(subscriptions + plans)라 태스크마다 부르면 비싸다.
+        // 캐시 수명은 이 요청 하나 = cron 한 틱이다. 그 안에서 플랜이 바뀌어도 다음 틱에 반영된다.
+        getPlan: (uid) => {
+          const hit = planCache.get(uid);
+          if (hit) return hit;
+          const p = getEffectivePlan(client, uid);
+          planCache.set(uid, p);
+          return p;
+        },
       }),
       batch: Number.isFinite(batch) && batch > 0 ? Math.min(batch, 10) : 1,
       budgetMs: Number.isFinite(budget) && budget > 0 ? Math.min(budget, 20_000) : undefined,

@@ -9,16 +9,21 @@
 import { assertEquals } from "@std/assert";
 import { makeQuotaGate, VISION_STAGES } from "./quota_gate.ts";
 
-function fake(opts: { docType: string; used: number; limit: number; plan?: string }) {
+function fake(
+  opts: { docType: string; used: number; limit: number; plan?: string },
+  counts?: { selects: number },
+) {
   const client = {
     from: () => ({
       select: () => ({
         eq: () => ({
-          limit: () =>
-            Promise.resolve({
+          limit: () => {
+            if (counts) counts.selects++;
+            return Promise.resolve({
               data: [{ user_id: "u1", doc_type: opts.docType }],
               error: null,
-            }),
+            });
+          },
         }),
       }),
     }),
@@ -109,4 +114,16 @@ Deno.test("owner 는 quota 면제", async () => {
     nowMs: () => 0,
   });
   assertEquals(await gate({ job_id: "j", doc_id: "d", stage: "vision" }), { defer: false });
+});
+
+Deno.test("같은 문서의 태스크가 연달아 와도 documents 조회는 1회다", async () => {
+  // PDF 한 장씩 도는 게 정상 패턴이라, 캐시가 없으면 페이지 수만큼 select 가 붙는다.
+  const counts = { selects: 0 };
+  const gate = fake({ docType: "pdf", used: 0, limit: 100 }, counts);
+  await gate({ job_id: "j", doc_id: "d1", stage: "vision", from: 0 });
+  await gate({ job_id: "j", doc_id: "d1", stage: "vision", from: 4 });
+  assertEquals(counts.selects, 1);
+  // 다른 문서는 따로 센다.
+  await gate({ job_id: "j", doc_id: "d2", stage: "vision" });
+  assertEquals(counts.selects, 2);
 });

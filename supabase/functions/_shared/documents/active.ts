@@ -25,7 +25,9 @@ import { parseIntParam, type ReadResult, type ValidationItem } from "./read.ts";
 /** 원본 상수. */
 const ACTIVE_DOC_DEFAULT_HOURS = 24;
 const ACTIVE_DOC_MAX_HOURS = 168; // 7일
-const ACTIVE_DOC_STATUSES = new Set(["queued", "running", "failed"]);
+// `deferred_quota` 는 **진행 중**이다 — 다음 달에 이어서 처리된다. 목록에서 빼면
+// 사용자가 사유(`error_msg`)를 읽을 곳이 없어 "그냥 멈췄다" 로 보인다.
+const ACTIVE_DOC_STATUSES = new Set(["queued", "running", "failed", "deferred_quota"]);
 const BATCH_STATUS_MAX_IDS = 50;
 
 /** `_INGEST_JOBS_BASE_COLUMNS` + stage_progress. */

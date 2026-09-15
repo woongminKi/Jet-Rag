@@ -9,7 +9,16 @@
 
 import { assertEquals } from "@std/assert";
 
-import { enforceUploadBurst, minuteFloorIso, RateLimitError, UPLOAD_BURST_PER_MINUTE } from "./rate_limit.ts";
+import {
+  enforceRateLimit,
+  enforceUploadBurst,
+  METRIC_ANSWERS,
+  minuteFloorIso,
+  RateLimitError,
+  type RateLimitSettings,
+  UPLOAD_BURST_PER_MINUTE,
+} from "./rate_limit.ts";
+import { quotaActiveFor } from "./me/quota.ts";
 
 interface Call {
   fn: string;
@@ -82,4 +91,78 @@ Deno.test("RPC 인자는 user_id 와 분 절삭 시각이다", async () => {
     fn: "increment_upload_burst",
     args: { p_user_key: "u1", p_minute: "2026-09-15T01:23:00.000Z" },
   }]);
+});
+
+/** 플랜 한도 1회인 pro 사용자 + 카운터가 이미 2 인 상태 — quota 가 걸리면 402 다. */
+// deno-lint-ignore no-explicit-any
+function quotaClient(): any {
+  // deno-lint-ignore no-explicit-any
+  const q = (rows: unknown): any => {
+    // deno-lint-ignore no-explicit-any
+    const o: any = {
+      eq: () => o,
+      limit: () => o,
+      select: () => o,
+      then: (res: (v: unknown) => void) => res({ data: rows, error: null }),
+    };
+    return o;
+  };
+  return {
+    rpc: () => Promise.resolve({ data: 2, error: null }),
+    from(table: string) {
+      if (table === "subscriptions") {
+        return { select: () => q([{ plan_code: "pro", status: "active" }]) };
+      }
+      if (table === "plans") {
+        return {
+          select: () =>
+            q([{
+              code: "pro",
+              answers_per_day: 1,
+              storage_bytes_limit: 1,
+              vision_pages_per_month: 1,
+            }]),
+        };
+      }
+      return { select: () => q([]) };
+    },
+  };
+}
+
+const BASE: RateLimitSettings = {
+  authEnabled: true,
+  quotaEnforcementEnabled: true,
+  ownerUserId: "owner",
+  rateLimitAnswersPerDay: 0,
+};
+
+async function statusOf(settings: RateLimitSettings, userId = "u1"): Promise<number | null> {
+  try {
+    await enforceRateLimit(
+      METRIC_ANSWERS,
+      new Request("https://x/answer"),
+      { userId, isAuthenticated: true },
+      settings,
+      { client: quotaClient(), now: () => 0 },
+    );
+    return null;
+  } catch (e) {
+    return e instanceof RateLimitError ? e.status : -1;
+  }
+}
+
+Deno.test("enforceRateLimit 의 quota 판정은 quotaActiveFor 와 한 몸이다", async () => {
+  // 켜져 있으면 402. 끄는 방법 셋(authEnabled·quotaEnforcementEnabled·owner)은 전부 통과여야 한다.
+  assertEquals(await statusOf(BASE), 402);
+  assertEquals(await statusOf({ ...BASE, authEnabled: false }), null);
+  assertEquals(await statusOf({ ...BASE, quotaEnforcementEnabled: false }), null);
+  assertEquals(await statusOf(BASE, "owner"), null);
+
+  // 같은 입력에 대해 판정 함수와 결론이 어긋나면 안 된다.
+  const u = { userId: "u1", isAuthenticated: true };
+  assertEquals(quotaActiveFor(u, BASE), true);
+  assertEquals(quotaActiveFor(u, { ...BASE, authEnabled: false }), false);
+  assertEquals(quotaActiveFor(u, { ...BASE, quotaEnforcementEnabled: false }), false);
+  assertEquals(quotaActiveFor({ userId: "owner", isAuthenticated: true }, BASE), false);
+  assertEquals(quotaActiveFor({ userId: "u1", isAuthenticated: false }, BASE), false);
 });

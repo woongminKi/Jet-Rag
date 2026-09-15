@@ -14,14 +14,18 @@
 --   4. RPC storage_bytes_used(uuid) · vision_pages_used_since(uuid, timestamptz).
 --   5. upload_burst 표 + increment_upload_burst — 분당 업로드 남용 방지.
 --   6. vision_quota_release() + cron 'vision-quota-release' 매일 00:00 KST(=15:00 UTC):
---      deferred_quota 잡을 큐에 되돌린다. 아직 한도 초과면 워커 게이트가 다시 보류한다(싸다).
+--      deferred_quota 잡을 큐에 되돌린다. 단 **달이 바뀐 날에만** — 한도가 월 단위라
+--      같은 달에 풀면 워커 게이트가 그대로 다시 보류한다.
+--   7. upload_burst_sweep() + cron 'upload-burst-sweep' 매시 정각: 하루 지난 burst 행 정리.
 --
 -- 적용 절차: Supabase Studio → SQL Editor → paste → Run.
 -- 검증 SQL:
 --   SELECT code, storage_bytes_limit, vision_pages_per_month FROM plans;
 --   SELECT public.storage_bytes_used('<owner uuid>');
 --   SELECT public.vision_pages_used_since('<owner uuid>', date_trunc('month', now()));
---   SELECT jobname, schedule FROM cron.job WHERE jobname = 'vision-quota-release';
+--   SELECT jobname, schedule FROM cron.job WHERE jobname IN ('vision-quota-release','upload-burst-sweep');
+--   SELECT public.vision_quota_release();   -- 월초가 아니면 언제나 0 이다(설계대로)
+--   SELECT public.upload_burst_sweep();     -- 0 (하루 지난 행 없음)
 -- ============================================================
 
 -- 1. plans
@@ -33,9 +37,13 @@ UPDATE plans SET storage_bytes_limit = 10737418240, vision_pages_per_month = 100
 ALTER TABLE plans DROP COLUMN IF EXISTS max_documents;
 
 -- 2. source_channel
+-- NOT VALID 로 붙인 뒤 따로 VALIDATE 한다 — 바로 붙이면 전체 스캔 동안 ACCESS EXCLUSIVE 락이
+-- 걸려 업로드·조회가 멈춘다. VALIDATE 는 더 약한 락(SHARE UPDATE EXCLUSIVE)이라 읽기·쓰기가 계속된다.
 ALTER TABLE documents DROP CONSTRAINT IF EXISTS documents_source_channel_check;
 ALTER TABLE documents ADD CONSTRAINT documents_source_channel_check CHECK (source_channel IN
-    ('drag-drop','os-share','clipboard','url','camera','api','email','pc-agent','ios-shortcut','android-agent'));
+    ('drag-drop','os-share','clipboard','url','camera','api','email','pc-agent','ios-shortcut','android-agent'))
+    NOT VALID;
+ALTER TABLE documents VALIDATE CONSTRAINT documents_source_channel_check;
 
 -- 3. ingest_jobs
 ALTER TABLE ingest_jobs DROP CONSTRAINT IF EXISTS ingest_jobs_status_check;
@@ -85,21 +93,46 @@ END; $$;
 REVOKE ALL ON FUNCTION public.increment_upload_burst(TEXT, TIMESTAMPTZ) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.increment_upload_burst(TEXT, TIMESTAMPTZ) TO service_role;
 
--- 6. 보류 잡 재투입 + 하루치 burst 정리
+-- 6. 보류 잡 재투입 — **달이 바뀐 날에만** 한다
+-- 한도는 월 단위다. 매일 되돌리면 그날 안에 워커 게이트가 다시 보류하므로 헛돈다
+-- (잡 UPDATE 2회 + 큐 왕복이 사용자 수만큼). 그래서 KST 기준 어제와 오늘의 '월' 이
+-- 다를 때만 실제로 푼다. cron 은 매일 돌지만 월초 하루만 일을 한다.
+--
+-- 남은 과제: 플랜을 업그레이드한 사용자는 **다음 달 1일까지** 보류가 안 풀린다.
+-- 즉시 해제는 결제 성공 훅에서 같은 함수를 부르는 쪽이 맞다 — 후속 작업으로 둔다.
 CREATE OR REPLACE FUNCTION public.vision_quota_release()
 RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE r RECORD; n INTEGER := 0;
 BEGIN
+  IF date_trunc('month', now() AT TIME ZONE 'Asia/Seoul')
+     = date_trunc('month', (now() - interval '1 day') AT TIME ZONE 'Asia/Seoul') THEN
+    RETURN 0;  -- 아직 같은 달 — 풀어도 곧바로 다시 보류된다.
+  END IF;
   FOR r IN SELECT id, deferred_task FROM ingest_jobs
             WHERE status = 'deferred_quota' AND deferred_task IS NOT NULL LOOP
     PERFORM public.ingest_queue_send(r.deferred_task, 0);
-    UPDATE ingest_jobs SET status = 'queued', deferred_task = NULL, error_msg = NULL WHERE id = r.id;
+    -- current_stage·started_at 도 비운다 — 안 비우면 보류 당시 단계가 남아 진행률·ETA 가 어긋난다.
+    UPDATE ingest_jobs
+       SET status = 'queued', deferred_task = NULL, error_msg = NULL,
+           current_stage = NULL, started_at = NULL
+     WHERE id = r.id;
     n := n + 1;
   END LOOP;
-  DELETE FROM upload_burst WHERE minute < now() - interval '1 day';
   RETURN n;
 END; $$;
 REVOKE ALL ON FUNCTION public.vision_quota_release() FROM PUBLIC, anon, authenticated;
+
+-- 6-2. burst 표 청소는 따로 — 월 1회 함수에 얹으면 한 달 치가 쌓인다.
+CREATE OR REPLACE FUNCTION public.upload_burst_sweep()
+RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE n INTEGER;
+BEGIN
+  WITH d AS (
+    DELETE FROM upload_burst WHERE minute < now() - interval '1 day' RETURNING 1
+  ) SELECT count(*)::INTEGER INTO n FROM d;
+  RETURN n;
+END; $$;
+REVOKE ALL ON FUNCTION public.upload_burst_sweep() FROM PUBLIC, anon, authenticated;
 
 SELECT cron.unschedule('vision-quota-release')
  WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'vision-quota-release');
@@ -107,10 +140,18 @@ SELECT cron.schedule('vision-quota-release', '0 15 * * *', $cron$
   SELECT public.vision_quota_release();
 $cron$);
 
+SELECT cron.unschedule('upload-burst-sweep')
+ WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'upload-burst-sweep');
+SELECT cron.schedule('upload-burst-sweep', '0 * * * *', $cron$
+  SELECT public.upload_burst_sweep();
+$cron$);
+
 -- ============================================================
 -- 롤백
 --   SELECT cron.unschedule('vision-quota-release');
---   DROP FUNCTION IF EXISTS public.vision_quota_release(), public.increment_upload_burst(TEXT, TIMESTAMPTZ),
+--   SELECT cron.unschedule('upload-burst-sweep');
+--   DROP FUNCTION IF EXISTS public.vision_quota_release(), public.upload_burst_sweep(),
+--     public.increment_upload_burst(TEXT, TIMESTAMPTZ),
 --     public.vision_pages_used_since(UUID, TIMESTAMPTZ), public.storage_bytes_used(UUID);
 --   DROP TABLE IF EXISTS upload_burst;
 --   ALTER TABLE ingest_jobs DROP COLUMN IF EXISTS deferred_task;  (status CHECK 는 001 값으로 되돌림)

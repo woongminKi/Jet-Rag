@@ -103,16 +103,25 @@ export interface DrainResult {
 const DEFAULT_VT_SECONDS = 600;
 const DEFAULT_BATCH = 1;
 
-/** 잡 상태를 갱신한다. 실패해도 드레인은 멈추지 않는다 — 큐 정리가 우선이다. */
+/**
+ * 잡 상태를 갱신한다. 실패해도 드레인은 멈추지 않는다 — 큐 정리가 우선이다.
+ *
+ * **기록 성공 여부를 돌려준다.** PostgREST 는 던지지 않고 `{ error }` 로 알린다 —
+ * 그걸 무시하면 "기록된 줄 알고 메시지를 지우는" 경로가 생긴다. 보류(`deferred_quota`)
+ * 처럼 **기록이 곧 복구 수단**인 자리에서는 호출부가 이 값을 보고 지울지 정해야 한다.
+ */
 async function touchJob(
   client: SupabaseClient,
   jobId: string,
   patch: Record<string, unknown>,
-): Promise<void> {
+): Promise<boolean> {
   try {
-    await client.from("ingest_jobs").update(patch).eq("id", jobId);
+    const { error } = await client.from("ingest_jobs").update(patch).eq("id", jobId);
+    if (error) throw new Error(error.message);
+    return true;
   } catch (e) {
     console.warn(`ingest_jobs 갱신 실패 (job=${jobId}):`, e);
+    return false;
   }
 }
 
@@ -235,17 +244,32 @@ export async function drainOnce(deps: WorkerDeps): Promise<DrainResult> {
       continue;
     }
 
-    // 사용자별 월 Vision 페이지 게이트 — 보류는 실패가 아니다. 메시지는 지우고 페이로드를 잡에 남긴다.
+    // 사용자별 월 Vision 페이지 게이트 — 보류는 실패가 아니다. 페이로드를 잡에 남기고 메시지는 지운다.
     if (deps.gate) {
-      const g = await deps.gate(task);
-      if (g.defer) {
-        await deps.client.rpc("ingest_queue_delete", { message_id: msg.msg_id });
-        await touchJob(deps.client, task.job_id, {
+      let verdict: { defer: false } | { defer: true; reason: string } = { defer: false };
+      try {
+        verdict = await deps.gate(task);
+      } catch (e) {
+        // 계량이 흔들린다고 인제스트를 멈추지 않는다 — 나머지 경로와 같은 fail-open 이다.
+        console.warn(`quota gate 예외 — 통과 (job=${task.job_id}, stage=${stage}):`, e);
+      }
+      if (verdict.defer) {
+        // **기록이 먼저다.** 메시지를 먼저 지우면 기록이 실패했을 때 작업이 흔적 없이
+        // 사라진다(마이그 031 미적용 시 CHECK·컬럼 부재로 실제로 실패한다). 기록이
+        // 안 되면 메시지를 남겨 vt 만료 후 다시 오게 한다.
+        const recorded = await touchJob(deps.client, task.job_id, {
           status: "deferred_quota",
           deferred_task: task,
-          error_msg: g.reason,
+          error_msg: verdict.reason,
           last_heartbeat_at: nowIso(),
         });
+        if (!recorded) {
+          console.error(`deferred_quota 기록 실패 — 메시지 보존 (job=${task.job_id})`);
+          out.retried++;
+          out.errors.push({ msg_id: msg.msg_id, stage, error: "deferred_quota 기록 실패 — 보존" });
+          continue;
+        }
+        await deps.client.rpc("ingest_queue_delete", { message_id: msg.msg_id });
         out.deferred++;
         continue;
       }

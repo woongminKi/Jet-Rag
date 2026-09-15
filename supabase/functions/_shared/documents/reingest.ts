@@ -128,6 +128,29 @@ async function assertNoRunningJob(
   }
 }
 
+/**
+ * 보류(`deferred_quota`) 잡을 닫는다. **새 잡을 만들기 전에** 부른다.
+ *
+ * 보류 잡은 `deferred_task` 에 큐 페이로드를 들고 있고, 매일 00:00 KST cron
+ * (`vision_quota_release`)이 그걸 큐에 되돌린다. 재인제스트로 새 잡을 만든 뒤에도 옛 잡이
+ * 보류인 채로 남아 있으면 **다음 달에 죽은 페이로드가 되살아나** 같은 문서를 한 번 더 돌린다
+ * (chunk_idx 가 겹쳐 청크가 섞인다 — `assertNoRunningJob` 이 막으려던 그 상황이다).
+ *
+ * `assertNoRunningJob` 은 queued·running 만 막으므로 보류는 여기까지 온다. 그게 맞다 —
+ * 한도에 걸려 멈춘 문서를 사용자가 다시 시도하는 것은 정상이고, 그때 옛 잡을 닫으면 된다.
+ */
+async function cancelDeferredJobs(client: SupabaseClient, docId: string): Promise<void> {
+  const { error } = await client
+    .from("ingest_jobs")
+    .update({ status: "cancelled", deferred_task: null })
+    .eq("doc_id", docId)
+    .eq("status", "deferred_quota");
+  // 실패해도 재인제스트는 진행한다 — 막으면 사용자가 손쓸 방법이 없다. 대신 시끄럽게 남긴다.
+  if (error) {
+    console.error(`보류 잡 취소 실패 — 중복 처리 위험 (doc=${docId}): ${error.message}`);
+  }
+}
+
 async function createJob(client: SupabaseClient, docId: string): Promise<string> {
   const { data, error } = await client
     .from("ingest_jobs")
@@ -217,6 +240,7 @@ export async function reingestDocument(
       .eq("id", docId);
     if (error) throw new Error(`flags 갱신 실패: ${error.message}`);
 
+    await cancelDeferredJobs(deps.client, docId);
     const jobId = await createJob(deps.client, docId);
     await enqueue(deps.client, { job_id: jobId, doc_id: docId, stage: "extract" });
 
@@ -276,6 +300,7 @@ export async function reingestMissingVision(
       if (error) throw new Error(`flags 갱신 실패: ${error.message}`);
     }
 
+    await cancelDeferredJobs(deps.client, docId);
     const jobId = await createJob(deps.client, docId);
     await enqueue(deps.client, {
       job_id: jobId,

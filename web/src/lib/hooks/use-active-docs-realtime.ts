@@ -22,6 +22,8 @@ import { getBrowserSupabase } from '@/lib/supabase/client';
 
 const FALLBACK_POLL_MS = 15000;
 const SAFETY_RESYNC_MS = 60000; // Realtime 가 missing event 등 발생 시 ground truth 보정
+// deferred_quota 는 **여기 없다** — terminal 이 아니라 대기다. 아래 upsert 분기로 떨어져
+// 목록에 남고, 사용자는 배지와 사유를 계속 본다.
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
 export interface ActiveDocsState {

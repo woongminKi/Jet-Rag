@@ -193,9 +193,10 @@ export async function persistDocument(
         reason: "storage_limit",
         used: check.usedBytes,
         limit: check.limitBytes,
+        // **문서 삭제 엔드포인트가 없다.** 지우라고 안내하면 할 수 없는 일을 시키는 것이다.
         detail: `저장 용량 한도를 초과했습니다 (${formatBytes(check.usedBytes)} / ${
           formatBytes(check.limitBytes)
-        }). 문서를 삭제하거나 Pro 로 업그레이드해 주세요.`,
+        }). Pro 로 업그레이드하면 더 큰 용량을 이용할 수 있습니다.`,
       };
     }
   }

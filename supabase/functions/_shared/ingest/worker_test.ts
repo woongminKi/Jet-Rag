@@ -14,8 +14,13 @@ interface Call {
   args: Record<string, unknown>;
 }
 
-/** `rpc` 와 `from().update().eq()` 만 흉내내는 최소 가짜. 호출을 전부 기록한다. */
-function fakeClient(messages: QueueMessage[]) {
+/**
+ * `rpc` 와 `from().update().eq()` 만 흉내내는 최소 가짜. 호출을 전부 기록한다.
+ *
+ * `updateError` 를 주면 잡 갱신이 PostgREST 식으로 **던지지 않고 `{ error }`** 를 돌려준다 —
+ * 마이그 미적용(CHECK·컬럼 부재) 상황을 그대로 재현한다.
+ */
+function fakeClient(messages: QueueMessage[], updateError?: string) {
   const calls: Call[] = [];
   const updates: Record<string, unknown>[] = [];
   const client = {
@@ -28,7 +33,12 @@ function fakeClient(messages: QueueMessage[]) {
       return {
         update(patch: Record<string, unknown>) {
           updates.push(patch);
-          return { eq: () => Promise.resolve({ data: null, error: null }) };
+          return {
+            eq: () =>
+              Promise.resolve(
+                updateError ? { data: null, error: { message: updateError } } : { data: null, error: null },
+              ),
+          };
         },
       };
     },
@@ -303,4 +313,47 @@ Deno.test("게이트가 통과시키면 평소대로 돈다", async () => {
     gate: () => Promise.resolve({ defer: false }),
   });
   assertEquals([ran, r.ok, r.deferred], [1, 1, 0]);
+});
+
+Deno.test("보류 기록이 실패하면 **메시지를 지우지 않는다** — 작업이 사라지면 복구가 없다", async () => {
+  // 마이그 031 미적용 상태가 정확히 이 모양이다: status CHECK 가 deferred_quota 를 거부한다.
+  const { client, calls } = fakeClient(
+    [msg({ message: { job_id: "j1", doc_id: "d1", stage: "vision" } })],
+    "violates check constraint",
+  );
+  let ran = 0;
+  const r = await drainOnce({
+    // deno-lint-ignore no-explicit-any
+    client: client as any,
+    handlers: {
+      vision: () => {
+        ran++;
+        return Promise.resolve();
+      },
+    },
+    gate: () => Promise.resolve({ defer: true, reason: "한도" }),
+  });
+  assertEquals(ran, 0);
+  assertEquals(r.deferred, 0);
+  assertEquals(r.retried, 1);
+  // 지웠다면 페이로드가 어디에도 안 남는다 — cron 도 되돌릴 수 없다.
+  assertEquals(calls.some((c) => c.fn === "ingest_queue_delete"), false);
+  assertEquals(calls.some((c) => c.fn === "ingest_queue_archive"), false);
+});
+
+Deno.test("게이트가 던지면 fail-open — 핸들러는 그대로 돈다", async () => {
+  const { client } = fakeClient([msg()]);
+  let ran = 0;
+  const r = await drainOnce({
+    // deno-lint-ignore no-explicit-any
+    client: client as any,
+    handlers: {
+      extract: () => {
+        ran++;
+        return Promise.resolve();
+      },
+    },
+    gate: () => Promise.reject(new Error("계량 조회 폭발")),
+  });
+  assertEquals([ran, r.ok, r.deferred, r.retried], [1, 1, 0, 0]);
 });

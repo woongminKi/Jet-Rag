@@ -25,7 +25,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { getEffectivePlan } from "./me/quota.ts";
+import { getEffectivePlan, quotaActiveFor } from "./me/quota.ts";
 
 export const METRIC_ANSWERS = "answers";
 
@@ -93,9 +93,9 @@ export async function enforceRateLimit(
   if (!settings.authEnabled) return; // 로컬 dev — 원본 동작 보존.
 
   const abuseCap = capForMetric(metric, settings);
-  const quotaActive = settings.quotaEnforcementEnabled &&
-    user.isAuthenticated &&
-    user.userId !== (settings.ownerUserId ?? "");
+  // 플랜 quota 판정은 `me/quota.ts` 가 단일 소스다 — 용량 검사·워커 게이트와 같은 규칙이어야
+  // 한 사용자가 경로마다 다른 대접을 받지 않는다.
+  const quotaActive = quotaActiveFor(user, settings);
   if (abuseCap <= 0 && !quotaActive) return; // 완전 무제한.
 
   const userKey = buildUserKey(user, req);

@@ -166,7 +166,12 @@ export interface QuotaSettings {
   ownerUserId: string | null;
 }
 
-/** 플랜 quota 가 이 사용자에게 걸리는가 — `rate_limit.ts` 의 `quotaActive` 와 같은 규칙. */
+/**
+ * 플랜 quota 가 이 사용자에게 걸리는가 — **판정의 단일 소스**다.
+ *
+ * `rate_limit.ts`(답변 일일 한도)·`makeStorageCheck`(용량)·`ingest/quota_gate.ts`(월 Vision
+ * 페이지)가 전부 이 함수를 쓴다. 규칙이 갈라지면 같은 사용자가 경로마다 다른 대접을 받는다.
+ */
 export function quotaActiveFor(
   user: { userId: string; isAuthenticated: boolean },
   s: QuotaSettings,

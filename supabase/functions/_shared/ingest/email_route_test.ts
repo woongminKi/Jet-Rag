@@ -12,8 +12,15 @@ import { parseToken, senderAllowed } from "./email_ingest.ts";
 
 const SECRET = "s3cr3t";
 
+interface FakeOpts {
+  /** `storage_bytes_used` 가 돌려줄 값. 미지정이면 0(=여유 있음). */
+  storageUsed?: number;
+  /** 실제로 파일이 만들어졌는지 — 용량 초과면 둘 다 0 이어야 한다. */
+  trace?: { uploads: number; inserts: number };
+}
+
 // deno-lint-ignore no-explicit-any
-function fakeClient(): any {
+function fakeClient(opts: FakeOpts = {}): any {
   // deno-lint-ignore no-explicit-any
   const q = (rows: unknown): any => {
     // deno-lint-ignore no-explicit-any
@@ -28,13 +35,32 @@ function fakeClient(): any {
     return o;
   };
   return {
-    rpc: () => Promise.resolve({ data: null, error: null }),
-    storage: { from: () => ({ upload: () => Promise.resolve({ error: null }) }) },
+    rpc: (fn: string) =>
+      Promise.resolve({
+        data: fn === "storage_bytes_used" ? (opts.storageUsed ?? 0) : null,
+        error: null,
+      }),
+    storage: {
+      from: () => ({
+        upload: () => {
+          if (opts.trace) opts.trace.uploads++;
+          return Promise.resolve({ error: null });
+        },
+      }),
+    },
     from(table: string) {
       if (table === "email_ingest_addresses") {
         return { select: () => q([{ user_id: "u1", token: "abcd1234", owner_email: "a@b.com" }]) };
       }
-      if (table === "documents") return { select: () => q([]), insert: () => q({ id: "d1" }) };
+      if (table === "documents") {
+        return {
+          select: () => q([]),
+          insert: () => {
+            if (opts.trace) opts.trace.inserts++;
+            return q({ id: "d1" });
+          },
+        };
+      }
       if (table === "ingest_jobs") return { insert: () => q({ id: "j1" }) };
       if (table === "subscriptions") return { select: () => q([{ plan_code: "pro", status: "active" }]) };
       if (table === "plans") {
@@ -53,10 +79,10 @@ function fakeClient(): any {
   };
 }
 
-function post(body: unknown, secret = SECRET) {
+function post(body: unknown, secret = SECRET, opts: FakeOpts = {}) {
   return handleEmailWebhook(
     {
-      client: fakeClient(),
+      client: fakeClient(opts),
       bucket: "documents",
       // quota 를 켠 채로 돈다 — 용량 검사(`makeStorageCheck`)까지 실제로 태운다.
       settings: {
@@ -135,4 +161,39 @@ Deno.test("토큰·발신자 규칙 — Python `isalnum()`/`strip()` 과 같다"
   assertEquals(senderAllowed("a@b.com", null), false); // owner_email 없으면 거절
   assertEquals(senderAllowed("a@b.com", ""), false);
   assertEquals(senderAllowed("x@y.com", "a@b.com"), false);
+});
+
+Deno.test("용량 한도를 넘으면 첨부는 skipped — 파일도 행도 만들지 않는다", async () => {
+  const to = "u-abcd1234@in.x";
+  const ok = {
+    filename: "a.pdf",
+    content_type: "application/pdf",
+    content_base64: btoa("%PDF-1.4\n" + "x".repeat(40)),
+  };
+
+  // 여유가 있으면 평소대로 받는다 — 대조군이 없으면 "원래 안 되는 것" 과 구분이 안 된다.
+  const under = { uploads: 0, inserts: 0 };
+  const okRes = await post({ to, from: "a@b.com", attachments: [ok] }, SECRET, {
+    storageUsed: 0,
+    trace: under,
+  });
+  assertEquals(okRes.status, 200);
+  assertEquals((okRes.body.results as { status: string }[])[0].status, "accepted");
+  assertEquals([under.uploads, under.inserts], [1, 1]);
+
+  // 플랜 한도(10GB)를 이미 다 쓴 상태.
+  const over = { uploads: 0, inserts: 0 };
+  const res = await post({ to, from: "a@b.com", attachments: [ok] }, SECRET, {
+    storageUsed: 10737418240,
+    trace: over,
+  });
+  // 거절은 200 + skipped 다 — 4xx 를 내면 Worker 가 재시도하거나 반송 메일이 간다.
+  assertEquals(res.status, 200);
+  assertEquals(res.body.results, [{
+    status: "skipped",
+    filename: "a.pdf",
+    reason: "저장 용량 한도 초과",
+  }]);
+  // 한도를 넘겼는데 파일이 올라가면 한도가 한도가 아니다.
+  assertEquals([over.uploads, over.inserts], [0, 0]);
 });
