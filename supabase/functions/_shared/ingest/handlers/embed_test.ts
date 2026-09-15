@@ -6,7 +6,7 @@
  */
 
 import { assertEquals, assertRejects } from "@std/assert";
-import { makeEmbedHandler } from "./embed.ts";
+import { makeEmbedHandler, roundForHalfvec } from "./embed.ts";
 import type { TaskPayload } from "../worker.ts";
 
 const TASK: TaskPayload = { job_id: "j1", doc_id: "d1", stage: "embed" };
@@ -15,7 +15,8 @@ const TASK: TaskPayload = { job_id: "j1", doc_id: "d1", stage: "embed" };
 type Row = string | { text: string; reason: string };
 
 /**
- * `chunks` 조회/갱신과 rpc 를 흉내낸다. `dense_vec` 을 채우면 다음 조회에서 빠진다.
+ * `chunks` 조회와 rpc 를 흉내낸다. `chunks_set_dense_vec` 로 채운 행은 다음 조회에서 빠진다.
+ * 단건 `update()` 는 **일부러 없다** — 핸들러가 그 경로로 돌아가면 여기서 TypeError 로 드러난다(사고 4).
  *
  * `is()` 로 건 필터를 **그대로 적용한다** — 필터를 세기만 하고 행은 다 돌려주면
  * "필터를 걸었다" 는 단언은 통과하면서 실제로 걸러지는지는 아무도 안 본다.
@@ -28,6 +29,10 @@ function fakeClient(rows: Row[]) {
   );
   const filled = new Map<string, number[]>();
   const sends: Record<string, unknown>[] = [];
+  /** `chunks_set_dense_vec` 호출 횟수 — ceil(행수 / EMBED_WRITE_SLICE) 회여야 한다. */
+  let setDenseCalls = 0;
+  /** 테스트 주입: rpc 가 돌려줄 갱신 행수를 강제한다(불일치 검출용). */
+  let forceWritten: number | null = null;
   let limitSeen: number | null = null;
   let orderedAsc: boolean | null = null;
   let isNullSeen = false;
@@ -73,19 +78,17 @@ function fakeClient(rows: Row[]) {
             .slice(0, n);
           return Promise.resolve({ data: out, error: null });
         },
-        update(patch: Record<string, unknown>) {
-          return {
-            eq(_c: string, id: string) {
-              filled.set(id, patch.dense_vec as number[]);
-              return Promise.resolve({ error: null });
-            },
-          };
-        },
       };
-      return { select: () => q, update: q.update };
+      return { select: () => q };
     },
     rpc(name: string, args: Record<string, unknown>) {
       if (name === "ingest_queue_send") sends.push(args.payload as Record<string, unknown>);
+      if (name === "chunks_set_dense_vec") {
+        setDenseCalls++;
+        const rows = args.p_rows as { id: string; vec: number[] }[];
+        for (const r of rows) filled.set(r.id, r.vec);
+        return Promise.resolve({ data: forceWritten ?? rows.length, error: null });
+      }
       return Promise.resolve({ data: 1, error: null });
     },
   };
@@ -94,6 +97,10 @@ function fakeClient(rows: Row[]) {
     client,
     filled,
     sends,
+    setDenseCalls: () => setDenseCalls,
+    forceWritten: (n: number) => {
+      forceWritten = n;
+    },
     limitSeen: () => limitSeen,
     orderedAsc: () => orderedAsc,
     isNullSeen: () => isNullSeen,
@@ -303,4 +310,45 @@ Deno.test("perTask 가 안 찬 건 남은 unfiltered 기준이다 — 필터된 
   await h(TASK, {} as never);
   assertEquals(f.filled.size, 1);
   assertEquals(f.sends, [{ job_id: "j1", doc_id: "d1", stage: "doc_embed" }]);
+});
+
+Deno.test("저장은 32행씩 rpc 로 묶는다 — 단건 UPDATE 로 돌아가지 않는다 (사고 4)", async () => {
+  // 청크 64개(태스크 한도), 제공자 배치 16 → 임베딩 호출 4번, 저장은 32행씩 2번.
+  const f = fakeClient(Array.from({ length: 64 }, (_, i) => `t${i}`));
+  const h = makeEmbedHandler({
+    // deno-lint-ignore no-explicit-any
+    client: f.client as any,
+    token: "T",
+    embed: (t) => Promise.resolve(vecFor(t)),
+  });
+  await h(TASK, {} as never);
+  assertEquals(f.setDenseCalls(), 2);
+  assertEquals(f.filled.size, 64);
+  assertEquals(f.filled.get("c9"), [2, 0, 0]);
+  // 10개면 1번.
+  const g = fakeClient(Array.from({ length: 10 }, (_, i) => `t${i}`));
+  // deno-lint-ignore no-explicit-any
+  await makeEmbedHandler({ client: g.client as any, token: "T", embed: (t) => Promise.resolve(vecFor(t)) })(
+    TASK,
+    {} as never,
+  );
+  assertEquals(g.setDenseCalls(), 1);
+});
+
+Deno.test("벡터는 소수 6자리로 잘라 보낸다 — halfvec 가 버리는 자릿수는 본문 낭비다", () => {
+  assertEquals(roundForHalfvec([0.123456789, -1.9999999, 2]), [0.123457, -2, 2]);
+});
+
+Deno.test("rpc 갱신 행수가 보낸 개수와 다르면 던진다 — 조용히 넘기지 않는다", async () => {
+  const f = fakeClient(["가", "나", "다"]);
+  f.forceWritten(2);
+  const h = makeEmbedHandler({
+    // deno-lint-ignore no-explicit-any
+    client: f.client as any,
+    token: "T",
+    embed: (t) => Promise.resolve(vecFor(t)),
+  });
+  await assertRejects(() => h(TASK, {} as never), Error, "wrote=2, expect=3");
+  // 실패한 태스크는 다음 단계를 걸지 않는다.
+  assertEquals(f.sends.length, 0);
 });

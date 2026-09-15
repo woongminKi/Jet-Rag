@@ -9,9 +9,10 @@ BGE-M3 HF 어댑터로 각 청크 텍스트를 임베딩해 **id 기준 단건 U
 아무도 읽지 않는다. 채우면 DeepInfra 호출 비용과 HNSW 인덱스 크기(실측 237MB)만 는다.
 마킹은 pipeline 상 `chunk_filter` → `load` → `embed` 순서라 여기서는 이미 확정 상태다.
 
-HF 호출은 배치 (BATCH_SIZE=16) 로 묶어 API 호출 수를 최소화하지만,
-DB 적재는 row 별 update — supabase upsert 가 보내지 않은 컬럼을 NULL 로 처리하는
-케이스에서 chunks.doc_id NOT NULL 위반이 관찰되어 명확한 update 로 통일.
+HF 호출은 배치 (BATCH_SIZE=16) 로 묶어 API 호출 수를 최소화한다.
+DB 적재는 **`chunks_set_dense_vec` RPC 로 32행씩**(마이그 037, 2026-09-16) — 예전엔 row 별 update 였는데
+커밋마다 WAL fsync 가 나서 Micro 의 I/O 예산을 태웠다(사고 4). upsert 가 아니라 UPDATE 라
+"보내지 않은 컬럼이 NULL 이 되는" 회귀도 없다. 반환값(갱신 행수)이 보낸 개수와 다르면 raise.
 
 실패 정책 (§10.10)
 - 3회 retry 는 어댑터 내부에서 처리. 최종 실패 시 예외 전파 → pipeline.fail_job.
@@ -22,6 +23,7 @@ DB 적재는 row 별 update — supabase upsert 가 보내지 않은 컬럼을 N
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from app.adapters.impl.bgem3_hf_embedding import get_bgem3_provider
 from app.db import get_supabase_client
@@ -31,6 +33,15 @@ logger = logging.getLogger(__name__)
 
 _STAGE = "embed"
 _BATCH_SIZE = 16
+# `chunks_set_dense_vec` 한 번에 보내는 행수. Edge(`EMBED_WRITE_SLICE`)와 같은 값. 이 경로는 문서의
+# NULL 청크를 전부 가져오므로(25k 도 가능) 무제한으로 보내면 RPC 본문이 수백 MB 가 된다.
+_WRITE_SLICE = 32
+
+
+def _round_for_halfvec(vec: list[float]) -> list[float]:
+    """halfvec(1024) 는 fp16 이라 유효숫자 ~3.3자리 — 소수 6자리 이상은 DB 캐스팅에서 버려진다.
+    float64 를 그대로 JSON 으로 보내면 값당 ~19자. 저장값 변화 없이 본문을 ~60% 줄인다."""
+    return [round(x, 6) for x in vec]
 
 
 def run_embed_stage(job_id: str, *, doc_id: str) -> int:
@@ -54,22 +65,22 @@ def run_embed_stage(job_id: str, *, doc_id: str) -> int:
             return 0
 
         provider = get_bgem3_provider()
-        total = 0
+        payload: list[dict[str, Any]] = []
         for i in range(0, len(rows), _BATCH_SIZE):
             batch = rows[i : i + _BATCH_SIZE]
             texts = [row["text"] for row in batch]
             embeddings = provider.embed_batch(texts)
-
-            for row, emb in zip(batch, embeddings):
-                (
-                    client.table("chunks")
-                    .update({"dense_vec": emb.dense})
-                    .eq("id", row["id"])
-                    .execute()
-                )
-            total += len(batch)
-            logger.info(
-                "embed: doc=%s 진행 %d/%d", doc_id, total, len(rows)
+            payload.extend(
+                {"id": row["id"], "vec": _round_for_halfvec(emb.dense)}
+                for row, emb in zip(batch, embeddings)
             )
+            logger.info("embed: doc=%s 임베딩 %d/%d", doc_id, len(payload), len(rows))
 
-        return total
+        for i in range(0, len(payload), _WRITE_SLICE):
+            chunk = payload[i : i + _WRITE_SLICE]
+            written = client.rpc("chunks_set_dense_vec", {"p_rows": chunk}).execute().data
+            if not isinstance(written, int) or written != len(chunk):
+                raise RuntimeError(
+                    f"dense_vec 저장 개수 불일치: wrote={written!r}, expect={len(chunk)} (doc={doc_id})"
+                )
+        return len(payload)

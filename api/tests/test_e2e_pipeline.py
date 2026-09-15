@@ -187,6 +187,10 @@ class _FakeTableQuery:
         return _FakeQueryResponse(inserted)
 
     def _exec_update(self, rows: list[dict[str, Any]]) -> _FakeQueryResponse:
+        # 사고 4 회귀 가드 — chunks.dense_vec 를 단건 UPDATE 로 쓰는 경로는 이제 없다(037).
+        # 돌아오면 여기서 시끄럽게 죽는다(TS 가짜 클라이언트는 update() 자체를 지웠다).
+        if self._name == "chunks" and "dense_vec" in (self._payload or {}):
+            raise AssertionError("chunks.dense_vec 단건 UPDATE 금지 — chunks_set_dense_vec RPC 를 써야 한다")
         assert isinstance(self._payload, dict)
         updated: list[dict[str, Any]] = []
         for r in rows:
@@ -312,6 +316,9 @@ class FakeSupabaseClient:
         }
         self._log_id_seq = 0
         self._chunk_id_seq = 0
+        # 테스트 주입: chunks_set_dense_vec 가 돌려줄 갱신 행수를 강제(불일치 검출용). None 이면 실제 계산.
+        self.force_dense_written: int | None = None
+        self.dense_rpc_calls = 0
 
     def table(self, name: str) -> _FakeTableQuery:
         return _FakeTableQuery(self, name)
@@ -346,8 +353,25 @@ class _FakeRpcCall:
     def execute(self) -> Any:
         if self._name == "get_chunks_stats_for_user":
             return self._chunks_stats_for_user()
+        if self._name == "chunks_set_dense_vec":
+            return self._chunks_set_dense_vec()
         # 미지원 RPC 는 실 production RPC 미적용과 동일하게 raise — graceful 분기 검증.
         raise RuntimeError(f"unknown rpc: {self._name}")
+
+    def _chunks_set_dense_vec(self) -> Any:
+        """마이그 037 — [{id, vec}] 를 한 번에 쓰고 갱신 행수를 돌려준다."""
+        from types import SimpleNamespace
+
+        rows = self._args.get("p_rows") or []
+        self._client.dense_rpc_calls += 1
+        by_id = {r["id"]: r["vec"] for r in rows}
+        written = 0
+        for chunk in self._client._tables.get("chunks") or []:
+            if chunk.get("id") in by_id:
+                chunk["dense_vec"] = by_id[chunk["id"]]
+                written += 1
+        forced = self._client.force_dense_written
+        return SimpleNamespace(data=written if forced is None else forced)
 
     def _chunks_stats_for_user(self) -> Any:
         from types import SimpleNamespace
@@ -1885,3 +1909,44 @@ class ExtractScanPdfReroutingTest(E2EBaseTest):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ====================================================================
+# 037 — embed 배치 쓰기 (사고 4 회귀)
+# ====================================================================
+
+
+class EmbedBatchWriteTest(E2EBaseTest):
+    """embed 는 `chunks_set_dense_vec` RPC 로 32행씩 쓴다. 단건 UPDATE 는 가짜 클라이언트가 막는다."""
+
+    def _seed(self, n: int) -> None:
+        _seed_job(self.fake_client, "job-emb", "d-emb")
+        _seed_document(self.fake_client, "d-emb")
+        for i in range(n):
+            self.fake_client._tables["chunks"].append({
+                "id": f"ce{i}", "doc_id": "d-emb", "chunk_idx": i,
+                "text": f"청크 {i} 본문", "dense_vec": None, "flags": {},
+            })
+
+    def test_writes_in_slices_of_32(self) -> None:
+        from app.ingest.stages.embed import run_embed_stage
+
+        self._seed(70)
+        done = run_embed_stage("job-emb", doc_id="d-emb")
+        self.assertEqual(done, 70)
+        # 32 + 32 + 6 → RPC 3회. 단건 UPDATE 였다면 가짜 클라이언트가 AssertionError 를 던졌다.
+        self.assertEqual(self.fake_client.dense_rpc_calls, 3)
+        rows = [r for r in self.fake_client._tables["chunks"] if r["doc_id"] == "d-emb"]
+        self.assertTrue(all(r["dense_vec"] is not None for r in rows))
+        self.assertEqual(len(rows[0]["dense_vec"]), 1024)
+        # 소수 6자리로 잘라 보낸다.
+        self.assertTrue(all(x == round(x, 6) for x in rows[0]["dense_vec"]))
+
+    def test_count_mismatch_raises(self) -> None:
+        from app.ingest.stages.embed import run_embed_stage
+
+        self._seed(3)
+        self.fake_client.force_dense_written = 2
+        with self.assertRaises(RuntimeError) as ctx:
+            run_embed_stage("job-emb", doc_id="d-emb")
+        self.assertIn("wrote=2, expect=3", str(ctx.exception))

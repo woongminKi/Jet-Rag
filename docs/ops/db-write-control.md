@@ -37,9 +37,9 @@ HNSW 인덱스가 237MB 로 shared_buffers(224MB)보다 컸다. 인덱스가 캐
 3. 시작 전에 `api/scripts/ingest_watchdog.sh <job_id>` 를 띄운다. 검색이 5s 를 **연속 2회** 넘거나 DB 가 응답하지 않으면
    스크립트가 `ingest-drain` 을 내리고, **내려갔는지 `cron.job` 으로 확인할 때까지** 재시도한다(무응답 중엔 unschedule 자체가 실패한다). 재개는 사람이 한다.
 4. 임베딩은 **매분 cron(`* * * * *`) + 태스크당 64개** 그대로 둔다(약 64벡터/분). 더 빠르게 돌리지 않는다.
-   **그러나 2026-09-16 실측: 이 설정으로도 2시간 45분 뒤 I/O 가 바닥났다**(9,810개 처리 후 38분 무응답, 사고 4).
-   원인은 태스크가 단건 UPDATE 64번을 각각 커밋해 WAL fsync 가 64번 나는 것. 대량 백로그(2,000행+)는 **배치 쓰기 RPC
-   (한 문장·한 트랜잭션)로 바꾼 뒤에만** 돌린다. cron 을 2분으로 늦추는 건 효과가 없었다(태스크 하나가 곧 버스트).
+   2026-09-16 실측: 단건 UPDATE 64번(= fsync 64번)이던 때는 이 설정으로도 2시간 45분 뒤 I/O 가 바닥났다(사고 4).
+   **마이그 037 부터 태스크는 `chunks_set_dense_vec` RPC 한 번(fsync 1회)으로 쓴다.** 그 전 코드로 되돌리지 않는다.
+   cron 을 2분으로 늦추는 건 효과가 없었다(태스크 하나가 곧 버스트) — 주기가 아니라 커밋 횟수가 변수다.
 5. **운영 문서를 측정 목적으로 재인제스트하지 않는다**(사고 1). 처리량 실측은 fixture 문서로.
 6. 재인제스트 `POST /documents/{id}/reingest` 는 청크 25k 문서에서 Edge 요청 상한에 걸려 500 이 난다(P1 후속: 동기 리셋의 큐 비동기화).
    그때까지 대형 문서 재인제스트는 `reingestDocument` 를 로컬 Deno 로 부른다(work-log 2026-09-15 §8 참조).
@@ -93,6 +93,9 @@ $job$);
 
 - `api/migrations/035_dense_vec_skip_filtered.sql` — 필터 벡터 비우기(배치 함수 `null_filtered_dense_vec`).
 - `api/migrations/036_dense_vec_halfvec.sql` — halfvec 전환(헤더에 실행 기록).
+- `api/migrations/037_chunks_set_dense_vec_batch.sql` — embed 배치 쓰기 RPC(fsync 64회 → 1회).
+- `api/migrations/034_hnsw_ef_search.sql` — `hnsw.ef_search=100`(적용됨) + 2026-09-15 실패 이력.
+- `api/scripts/hnsw_recall.sh` — HNSW 재현율·지연 측정(인덱스·설정 변경 전후 비교).
 - `api/scripts/ingest_watchdog.sh` — 감시견.
 - `api/scripts/golden_batch_smoke.py` — 검색 품질 회귀(120행, `JETRAG_API_BASE_URL=https://jetrag-api.woong-s.com`, `.env` 의 service key).
 - 메모리: `jetrag_edge_chunk_large_doc_hazard.md`.

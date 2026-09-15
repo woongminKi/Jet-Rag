@@ -18,10 +18,14 @@
  * 마킹은 **`load` 단계에서 끝난다**(`runChunkFilterStage`). `embed` 가 도는 시점에
  * `filtered_reason` 은 이미 확정이라 "나중에 마킹돼서 헛일한" 케이스는 없다.
  *
- * ## upsert 가 아니라 단건 UPDATE
- * 원본 주석 그대로다 — "supabase upsert 가 보내지 않은 컬럼을 NULL 로 처리하는
- * 케이스에서 `chunks.doc_id` NOT NULL 위반이 관찰되어 명확한 update 로 통일".
- * 배치 upsert 로 바꾸면 그 회귀가 되살아난다.
+ * ## 저장은 RPC 로 묶어서 — 태스크당 fsync 2회
+ * 처음엔 단건 UPDATE 를 64번 각각 커밋했다(원본의 "upsert 는 안 보낸 컬럼을 NULL 로 만든다"
+ * 회귀를 피하려고). 그게 2026-09-16 사고 4 의 원인이었다: `synchronous_commit=on` 이라
+ * 커밋마다 WAL fsync 가 나고, Micro 의 I/O 예산이 얕아지면 UPDATE 하나가 8s statement
+ * timeout 에 걸려 태스크가 실패 → 11분 뒤 재시도 → 그 사이 검색 15~61s.
+ * 지금은 `chunks_set_dense_vec(p_rows)`(마이그 037) 에 `[{id, vec}]` 를 32개씩 넘겨
+ * **한 문장·한 트랜잭션**으로 쓴다(태스크당 fsync 2회). upsert 가 아니라 UPDATE 라 다른 컬럼은 건드리지 않는다.
+ * 반환값(갱신 행수)이 보낸 개수와 다르면 던진다 — 그 사이 청크가 지워졌다는 뜻이다.
  *
  * ## 실패하면 남겨 둔다
  * 원본 정책(§10.10)대로 예외를 전파한다. `dense_vec` 이 NULL 로 남아도 **sparse
@@ -43,6 +47,21 @@ export const EMBED_BATCH_SIZE = 16;
  * wall clock 이라 배치 몇 번이 안전한지로 정한다. 64 = 배치 4 회.
  */
 export const EMBED_CHUNKS_PER_TASK = 64;
+
+/**
+ * `chunks_set_dense_vec` 한 번에 보내는 행수. 태스크(64)를 2번에 나눠 쓴다 — fsync 2회.
+ * 1번(64)으로 하면 RPC 하나가 실패할 때 임베딩 64개(DeepInfra 비용)를 다 버린다. 32 는 그 손실을
+ * 반으로 줄이면서 fsync 는 사고 4 의 64회 대비 1/32 이다. Python 원본도 같은 값을 쓴다.
+ */
+export const EMBED_WRITE_SLICE = 32;
+
+/**
+ * halfvec(1024) 는 유효숫자 ~3.3자리(fp16)라 그 이상은 DB 캐스팅에서 버려진다. float64 를 그대로
+ * JSON 으로 보내면 값당 ~19자(64행 = 1.24MB). 소수 6자리로 줄이면 저장값 변화 0, 본문 ~60% 감소.
+ */
+export function roundForHalfvec(v: number[]): number[] {
+  return v.map((x) => Math.round(x * 1e6) / 1e6);
+}
 
 export interface EmbedHandlerDeps {
   client: SupabaseClient;
@@ -86,6 +105,8 @@ export function makeEmbedHandler(deps: EmbedHandlerDeps): TaskHandler {
       return;
     }
 
+    // 임베딩은 제공자 배치 단위로 받되, 저장은 태스크 끝에 한 번만 한다.
+    const payload: { id: string; vec: number[] }[] = [];
     for (let i = 0; i < rows.length; i += batchSize) {
       const batch = rows.slice(i, i + batchSize);
       const vectors = await run(batch.map((r) => r.text), {
@@ -96,11 +117,21 @@ export function makeEmbedHandler(deps: EmbedHandlerDeps): TaskHandler {
         throw new Error(`임베딩 개수 불일치: got=${vectors.length}, expect=${batch.length}`);
       }
       for (let k = 0; k < batch.length; k++) {
-        const { error: upErr } = await deps.client
-          .from("chunks")
-          .update({ dense_vec: vectors[k] })
-          .eq("id", batch[k].id);
-        if (upErr) throw new Error(`dense_vec 저장 실패 (${batch[k].id}): ${upErr.message}`);
+        payload.push({ id: batch[k].id, vec: roundForHalfvec(vectors[k]) });
+      }
+    }
+
+    for (let i = 0; i < payload.length; i += EMBED_WRITE_SLICE) {
+      const slice = payload.slice(i, i + EMBED_WRITE_SLICE);
+      const { data: written, error: upErr } = await deps.client.rpc("chunks_set_dense_vec", {
+        p_rows: slice,
+      });
+      if (upErr) throw new Error(`dense_vec 저장 실패 (${slice.length}건): ${upErr.message}`);
+      if (typeof written !== "number") {
+        throw new Error(`dense_vec 저장 응답이 숫자가 아니다: ${JSON.stringify(written)}`);
+      }
+      if (written !== slice.length) {
+        throw new Error(`dense_vec 저장 개수 불일치: wrote=${written}, expect=${slice.length}`);
       }
     }
 
