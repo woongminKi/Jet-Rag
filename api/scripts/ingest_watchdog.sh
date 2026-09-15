@@ -25,6 +25,7 @@ JOB_ID="${1:-}"
 THRESHOLD_MS="${2:-5000}"
 INTERVAL="${3:-60}"
 QUEUE_IDLE_ROUNDS=3
+ONCE="${WATCHDOG_ONCE:-}"   # WATCHDOG_ONCE=1 이면 한 번 재고 종료(스크립트 자체 점검용)
 OWNER_SQL="(select user_id from documents where deleted_at is null order by created_at limit 1)"
 
 if [ ! -d supabase/.temp ]; then
@@ -48,17 +49,28 @@ idle=0
 while true; do
   JOB_EXPR="null"
   if [ -n "$JOB_ID" ]; then
-    JOB_EXPR="(select status||'/'||coalesce(stage,'') from ingest_jobs where id='$JOB_ID')"
+    JOB_EXPR="(select status||'/'||coalesce(current_stage,'') from ingest_jobs where id='$JOB_ID')"
   fi
   SQL="select (select count(*) from pgmq.q_ingest_tasks) as queue_len,
               $JOB_EXPR as job,
               (select count(*) from chunks where dense_vec is null and (flags->>'filtered_reason') is null) as unfiltered_null,
               (select count(*) from search_dense_only('$V'::vector, 60, 50, $OWNER_SQL)) as n,
               (extract(epoch from (clock_timestamp() - statement_timestamp())) * 1000)::int as ms"
-  out="$(timeout 40 supabase db query --linked "$SQL" 2>/dev/null | jq -c '.rows[0]' 2>/dev/null)"
+  # macOS 에는 GNU `timeout` 이 없다(첫 실행에서 command not found → "응답 없음" 오판, 2026-09-16).
+  # 관리 API 자체가 statement_timeout 120s 로 끊어 주므로 별도 타임아웃 없이 부른다.
+  # stdout 은 JSON, stderr 는 "Initialising login role..." 같은 진행 문구와 오류 — 섞으면 jq 가 깨진다.
+  raw="$(supabase db query --linked "$SQL" 2>"$TMP/err")"
+  out="$(printf '%s' "$raw" | jq -c '.rows[0]' 2>/dev/null)"
+  raw="$raw $(cat "$TMP/err")"
   ts="$(date +%T)"
   if [ -z "$out" ] || [ "$out" = "null" ]; then
-    echo "$ts 응답 없음 → 큐 정지"
+    # SQL 오류(42xxx 등)는 DB 장애가 아니라 이 스크립트의 버그다 — 큐를 내리지 말고 오류를 보이고 멈춘다.
+    # (2026-09-16 첫 실행: 존재하지 않는 컬럼을 참조해 "응답 없음" 으로 오판, 큐를 두 번 내렸다.)
+    if printf '%s' "$raw" | grep -q "ERROR:"; then
+      echo "$ts SQL 오류 — 스크립트 점검 필요: $(printf '%s' "$raw" | grep -o 'ERROR:[^\\]*' | head -1)"
+      exit 2
+    fi
+    echo "$ts 응답 없음 → 큐 정지 ($(printf '%s' "$raw" | tail -c 160 | tr '\n' ' '))"
     supabase db query --linked "select cron.unschedule('ingest-drain')" >/dev/null 2>&1
     echo "$ts WATCHDOG: cron ingest-drain unscheduled (no response)"
     exit 1
@@ -81,5 +93,6 @@ while true; do
   else
     idle=0
   fi
+  [ -n "$ONCE" ] && exit 0
   sleep "$INTERVAL"
 done
