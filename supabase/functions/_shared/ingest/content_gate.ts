@@ -119,8 +119,13 @@ export function detectPii(text: string): [number, number][] {
   return out;
 }
 
-/** 코드포인트 순 비교 — JS 기본 정렬은 UTF-16 단위라 astral 에서 갈린다. */
-function cpCompare(a: string, b: string): number {
+/**
+ * 코드포인트 순 비교 — JS 기본 정렬은 UTF-16 단위라 astral 에서 갈린다.
+ *
+ * 창 분할(`chunk_window.ts`)이 창마다 나온 `watermark_hits` 를 합쳐 다시 정렬한다 —
+ * 정렬 규칙이 갈리면 문서 flags 가 단일 창일 때와 달라진다. 그래서 export 한다.
+ */
+export function cpCompare(a: string, b: string): number {
   const ai = [...a];
   const bi = [...b];
   for (let i = 0; i < Math.min(ai.length, bi.length); i++) {

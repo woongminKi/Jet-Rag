@@ -9,6 +9,7 @@
     "fflate": "npm:fflate@0.8.3"
   },
   "fmt": {
-    "lineWidth": 110
+    "lineWidth": 110,
+    "exclude": ["_shared/ingest/fixtures"]
   }
 }
