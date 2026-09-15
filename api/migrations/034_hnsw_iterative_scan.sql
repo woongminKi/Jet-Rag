@@ -24,9 +24,16 @@
 --   - `show hnsw.ef_search` 는 벡터 연산 전엔 42704 를 낸다(vector.so 미로드). 검증은 함수 호출로.
 --   - hnsw.max_scan_tuples 기본 20,000 < 미필터 청크 21,920 — 코퍼스가 커지면 상한을 올릴 것.
 --
--- 적용: supabase db query --linked -f api/migrations/034_hnsw_iterative_scan.sql
--- 검증: 실제 청크 벡터로 SELECT count(*) FROM search_dense_only(v, 60, 50, '<owner>') → 50
+-- 적용: supabase db query --linked -f api/migrations/034_hnsw_iterative_scan.sql  (한 파일 = 한 세션이라 위 로드 줄이 유효)
+-- 검증(새 연결): SELECT count(*) FROM search_dense_only(<실제 청크 벡터>, 60, 50, '<owner>') → 50,
+--   SELECT setconfig FROM pg_db_role_setting WHERE setdatabase=(SELECT oid FROM pg_database WHERE datname='postgres')
+--   → {hnsw.iterative_scan=relaxed_order, hnsw.ef_search=100}. 2026-09-15 적용·확인(V1 41→50행, V2 39→50행).
 -- ============================================================
+
+-- **같은 세션에서 vector.so 를 먼저 로드해야 한다.** 로드 전엔 hnsw.* 가 플레이스홀더 GUC 라
+-- 비-superuser(postgres)의 ALTER DATABASE/ROLE SET 이 42501(permission denied) 로 거부된다
+-- (2026-09-15 실측: 아래 한 줄 없이 두 번 실패, 넣고 성공).
+SELECT '[1,2]'::vector <-> '[1,2]'::vector AS load_vector_so;
 
 ALTER DATABASE postgres SET hnsw.iterative_scan = 'relaxed_order';
 ALTER DATABASE postgres SET hnsw.ef_search = 100;
