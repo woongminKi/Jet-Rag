@@ -39,9 +39,12 @@ Deno.test("watcher — 실제 watchFs: 새 파일이 콜백으로 온다", async
   const seen: string[] = [];
   let resolve: () => void = () => {};
   const got = new Promise<void>((r) => (resolve = r));
+  // 맥 FSEvents 는 감시 루트 **폴더 자체**의 create/modify 를 파일 이벤트보다 먼저 흘린다
+  // (2026-09-15 실측: create(폴더) → modify(폴더) → create(파일) → modify(파일)).
+  // 첫 경로에 resolve 하면 폴더 경로를 받고 끝나 버려 테스트가 깜빡인다 — 찾는 파일에만 resolve 한다.
   const loop = watchLoop([root], (p) => {
     seen.push(p);
-    resolve();
+    if (p.endsWith("새문서.pdf")) resolve();
   }, { debounceMs: 30, signal: ac.signal });
 
   // watchFs 가 붙을 시간을 준다.

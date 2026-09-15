@@ -8,6 +8,11 @@
  *
  * ## remove 를 보지 않는다
  * 삭제 동기화는 범위 밖이다(스펙 §1). 로컬에서 지워도 Jet-Rag 문서는 남는다.
+ *
+ * ## 콜백은 **폴더 경로도 받는다**
+ * 맥 FSEvents 는 감시 루트 폴더 자체의 create/modify 를 파일 이벤트보다 먼저 흘린다
+ * (2026-09-15 실측). 여기서 거르려면 stat 이 필요해 순수함을 잃으므로, 거르는 쪽은
+ * 호출자다 — `run.ts` 의 `ingest` 가 `st.isFile` 로 닫는다.
  */
 
 import { isTempName } from "./gate.ts";
