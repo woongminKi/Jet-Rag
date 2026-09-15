@@ -24,7 +24,23 @@
 --     `query_dense::halfvec(1024)` 로 캐스팅 — Edge 호출 코드 변경 0.
 --   - `documents.doc_embedding vector(1024)` 는 14행이라 그대로 둔다.
 --
--- 적용: supabase db query --linked -f api/migrations/036_dense_vec_halfvec.sql
+-- 적용 (2026-09-16 01:46 KST, 실행 완료)
+--   `supabase db query --linked -f` 는 **statement_timeout 120s** 가 걸린다(실측: pg_sleep(150) 이 57014 로 취소).
+--   그래서 테이블 재작성+인덱스 빌드는 pg_cron 일회성 잡으로 돌렸다 — DB 안에서 실행되므로 HTTP·타임아웃과 무관:
+--     select cron.schedule('halfvec-migrate-036', '* * * * *', $job$
+--       SET statement_timeout = 0; SET maintenance_work_mem = '128MB';
+--       DO $do$ BEGIN
+--         EXECUTE 'LOCK TABLE public.chunks IN ACCESS EXCLUSIVE MODE';   -- 1분 뒤 2번째 실행이 뜨면 여기서 막혔다가 건너뛴다
+--         IF (컬럼 타입) = 'vector(1024)' THEN <아래 1·2·3절의 EXECUTE> END IF;
+--       END $do$;
+--       <아래 4절 함수 2개>; ANALYZE chunks;
+--       SELECT cron.unschedule('halfvec-migrate-036') WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname='halfvec-migrate-036');
+--     $job$);
+--   결과: 01:46:00 시작 → 01:46:37 성공 (**37초**). 이 파일을 그대로 apply 하는 것과 같은 상태.
+--   실측: 인덱스 265MB → **25MB**, chunks 총 506MB → **75MB**(재작성이 삭제 잔해도 회수), 힙 20MB, 벡터 9,669.
+--   정확 top-50(enable_indexscan=off) 이 fp16 전환 전후 3개 질의 모두 50/50 일치 → 양자화 손실 없음.
+--   HNSW 기본(ef_search 40) 재현율: 전환 전 5·21·39/50(죽은 엔트리가 ef 예산을 먹음) → 후 15·40·41/50.
+--   골든셋 120행 hybrid: top-1 81.7%→82.5%, top-3 89.2%→90.0%, p95 1,438ms→421ms.
 -- 검증
 --   SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid='chunks'::regclass AND attname='dense_vec';  -- halfvec(1024)
 --   SELECT pg_size_pretty(pg_relation_size('idx_chunks_dense'));   -- ≈ 60~70MB
