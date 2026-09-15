@@ -30,9 +30,8 @@
 import { loadSettings } from "../_shared/config.ts";
 import { applyCorsHeaders, preflightResponse } from "../_shared/cors.ts";
 import { createServiceClient } from "../_shared/db.ts";
-import { getCurrentUser, requireAuthenticatedUser } from "../_shared/current_user.ts";
+import { getCurrentUser, requireAuthenticatedUser, touchDeviceUser } from "../_shared/current_user.ts";
 import { deviceScopeAllows } from "../_shared/device_token.ts";
-import { touchDeviceUser } from "../_shared/current_user.ts";
 import { jsonResponse, methodNotAllowed, notFound, toResponse } from "../_shared/errors.ts";
 import { enforceRateLimit, METRIC_DOCS, RateLimitError } from "../_shared/rate_limit.ts";
 import { handleUpload } from "../_shared/documents/upload.ts";
