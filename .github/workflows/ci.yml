@@ -98,6 +98,18 @@ jobs:
         working-directory: workers/api-proxy
         run: deno test --allow-net
 
+      # agent 는 supabase/functions 의 input_gate.ts 를 직접 import 한다.
+      # 서버가 확장자 표를 바꾸면 agent 테스트가 먼저 깨져야 한다 — 그래서 같은 잡에 둔다.
+      - name: agent · fmt
+        working-directory: agent
+        run: deno fmt --check
+      - name: agent · lint
+        working-directory: agent
+        run: deno lint
+      - name: agent · test
+        working-directory: agent
+        run: deno test --allow-read --allow-write --allow-env --allow-net
+
   edge-parity:
     name: edge · Python 동등성 대조
     runs-on: ubuntu-latest

@@ -1,5 +1,6 @@
 import { assertEquals } from "@std/assert";
-import { kakaoCandidates, parseArgs, renderStatus } from "./cli.ts";
+import { kakaoCandidates, main, parseArgs, renderStatus } from "./cli.ts";
+import { VERSION } from "./version.ts";
 
 Deno.test("cli — 인자 파싱", () => {
   assertEquals(parseArgs(["run"]), { command: "run", flags: {}, positionals: [] });
@@ -65,4 +66,17 @@ Deno.test("cli — 서버 통신 기록이 없으면 '없음'", () => {
     watchDirs: [],
   });
   assertEquals(out.includes("없음"), true);
+});
+
+Deno.test("cli — --version 은 version 명령과 같게 동작한다 (도움말로 새지 않는다)", async () => {
+  const printed: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => printed.push(a.join(" "));
+  try {
+    assertEquals(await main(["--version"]), 0);
+    assertEquals(await main(["version"]), 0);
+  } finally {
+    console.log = orig;
+  }
+  assertEquals(printed, [VERSION, VERSION]);
 });

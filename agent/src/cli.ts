@@ -276,6 +276,12 @@ async function cmdInstall(remove: boolean): Promise<number> {
 
 export async function main(argv: string[]): Promise<number> {
   const { command, flags } = parseArgs(argv);
+  // `--version` 은 CLI 관습이다. 플래그로 들어와도 version 명령과 같이 동작해야 한다
+  // (안 그러면 도움말만 나와서 버전을 못 읽는다).
+  if (command === "help" && flags.version === true) {
+    console.log(VERSION);
+    return 0;
+  }
   switch (command) {
     case "init":
       return await cmdInit(flags);

@@ -90,6 +90,61 @@ egress 250GB · **Edge Function 호출 200만 건**이 포함된다 (공식 가�
 - KPI #10 production P95 검색 응답 **1.705s** (게이트 2.5s 의 32% 여유, 60 warm 호출 · 2026-05-19 Railway 측정)
 - DeepInfra ↔ HF Inference Providers 어댑터 swap R@10 회귀 **0.0000** (115/115 row top-5 ordering 100% 일치, W-0 cosine 0.999984 보증)
 
+## PC 에이전트 (폴더 감시 자동 수집)
+
+PC의 지정 폴더(다운로드·카카오톡 저장 폴더 등)에 새 문서가 들어오면 자동으로 Jet-Rag에 올린다.
+맥·윈도우용 단일 실행 파일이고 따로 설치할 것이 없다.
+
+### 설치
+
+1. 웹 **설정 → 연결된 기기**에서 기기 토큰을 발급한다 (`jrd_…`, 발급 화면에서 한 번만 보인다).
+2. [Releases](https://github.com/woongminKi/Jet-Rag/releases)에서 내 OS용 파일을 받는다.
+   - 맥 (Apple Silicon): `jetrag-agent-macos-arm64`
+   - 맥 (Intel): `jetrag-agent-macos-x64`
+   - 윈도우: `jetrag-agent-windows-x64.exe`
+3. 터미널(윈도우는 PowerShell)에서 실행한다.
+
+```bash
+chmod +x ./jetrag-agent-macos-arm64   # 맥만
+./jetrag-agent-macos-arm64 init
+./jetrag-agent-macos-arm64 install
+```
+
+`init` 은 최근 90일 안에 이미 폴더에 있던 문서를 세어 **"대상 137개, 412MB. 시작할까요?"** 로 물어본다.
+백로그는 새로 들어오는 파일보다 뒤에서 천천히 올라간다.
+
+### 명령
+
+| 명령 | 하는 일 |
+|---|---|
+| `init` | 설정 만들기 (기기 토큰, 감시 폴더, 백로그 기간) |
+| `run` | 감시 시작 (터미널을 닫으면 멈춘다) |
+| `status` | 대기·처리중·완료·실패·제외 개수와 최근 문제 5건 |
+| `logs --lines 100` | `~/.jetrag/agent.log` 보기 |
+| `install` / `uninstall` | 로그인 시 자동 시작 등록/해제 |
+
+설정과 원장은 `~/.jetrag/` (윈도우는 `%USERPROFILE%\.jetrag\`)에 있다.
+`config.json` 에는 기기 토큰이 평문으로 들어 있어 맥·리눅스에서는 `0600` 으로 저장한다.
+윈도우는 파일 권한을 따로 걸지 않으므로, 공용 PC라면 설치하지 않는 편이 낫다.
+
+### 처음 실행할 때 경고가 뜨는 이유
+
+코드서명·공증을 하지 않았다. 그래서:
+
+- **맥**: "개발자를 확인할 수 없어 열 수 없습니다" → **시스템 설정 → 개인정보 보호 및 보안** 맨 아래
+  "확인 없이 열기"를 누른다. 또는 `xattr -d com.apple.quarantine ./jetrag-agent-macos-arm64`.
+- **윈도우**: SmartScreen "Windows의 PC 보호" → **추가 정보 → 실행**.
+
+맥은 첫 실행 때 `~/Downloads` 접근 권한(TCC)을 물을 수 있다. 거부하면 폴더 감시가 조용히 아무것도 하지 않는다.
+
+### 무엇을 올리고 무엇을 안 올리는가
+
+- **올린다**: `.pdf .hwp .hwpx .docx .pptx .jpg .jpeg .png .heic .txt .md` — 50MB 이하
+- **안 올린다**: 그 외 확장자, 50MB 초과, 숨김 파일, 다운로드 중인 임시 파일(`.crdownload` `.part` `~$…`)
+- **지정한 폴더만 본다.** 디스크 전체를 훑지 않는다.
+- 로컬에서 파일을 지워도 Jet-Rag 문서는 남는다(삭제 동기화 없음).
+- 같은 파일을 다시 넣으면 sha256이 같아 **다시 올리지 않는다**.
+
 ## 아키텍처
 
 ### 고수준 (Edge 이관 후, 2026-09-08 기준)
@@ -502,6 +557,7 @@ Jet-Rag/
 │   ├── api-proxy/       # 경로 → 함수 라우팅 (routes.js 가 전환 스위치였다)
 │   └── email-ingest/    # @in.woong-s.com catch-all → POST /ingest/email
 ├── web/                 # Next.js 프론트엔드 (Vercel)
+├── agent/               # PC 폴더 감시 에이전트 (Deno, 단일 바이너리 3종)
 ├── api/
 │   ├── migrations/      # **현역** — Supabase SQL 마이그레이션 29개
 │   ├── scripts/         # **현역** — verify_*_parity.py 14종 (이관 대조 하네스)
@@ -693,6 +749,8 @@ Deno 에서 도는 현재 구현이다. 괄호 안은 이관 전 Python 원본.
 - **web · tsc + lint** — pnpm tsc --noEmit + ESLint
 - **edge · deno fmt/lint/test** — `supabase/functions` (`--allow-env --allow-net --allow-read`)
 - **proxy · deno fmt/lint/test** — `workers/api-proxy` (`--allow-net`)
+- **agent · deno fmt/lint/test** — `agent` (`--allow-read --allow-write --allow-env --allow-net`). `input_gate.ts` 를
+  직접 import 하므로 서버가 확장자 표를 바꾸면 여기가 먼저 깨진다 — 그래서 edge 와 같은 잡에 있다
 - **이관 대조 하네스 14종** — `api/scripts/verify_*_parity.py` 를 각각 별도 step 으로 실행
 - **golden_batch_smoke gate** — `--mode all --require-top1-min` (W21 도입)
 
@@ -700,6 +758,10 @@ GitHub 에서 자동 실행. fork 시 별도 secrets 불필요 (단위 테스트
 
 > `deno fmt --check` 가 CI 게이트다. 로컬에서 `deno fmt` 를 안 돌리고 push 하면 깨진다 —
 > "원래 깨져 있었다" 고 넘기기 전에 세션 시작 커밋과 대조할 것.
+
+`.github/workflows/agent-release.yml` — 태그 `agent-v*` 에서만 돈다. 테스트 통과 후 `deno compile` 로
+맥 arm64/x64·윈도우 x64 바이너리 3종 + `SHA256SUMS.txt` 를 GitHub Release 에 올린다. main 푸시마다
+75~83MB 짜리 3개를 만들 이유가 없어 태그 전용이다.
 
 `monitor_search_slo.py` 같은 라이브 모니터는 별도 workflow `monitor-search-slo.yml` 로 분리:
 

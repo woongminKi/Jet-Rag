@@ -1,0 +1,54 @@
+name: agent release
+
+# 태그로만 돈다. main 푸시마다 60MB 바이너리 3개를 만들 이유가 없다.
+on:
+  push:
+    tags:
+      - "agent-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: compile 3종 + Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      # 릴리스 바이너리를 만들기 전에 테스트를 통과시킨다.
+      - name: test
+        working-directory: agent
+        run: deno test --allow-read --allow-write --allow-env --allow-net
+
+      # 크로스 컴파일은 첫 호출에서 대상 런타임을 받아온다(DENO_DIR 캐시).
+      - name: compile
+        working-directory: agent
+        run: |
+          deno task build:mac-arm
+          deno task build:mac-x64
+          deno task build:win-x64
+          ls -la dist/
+
+      - name: checksums
+        working-directory: agent/dist
+        run: sha256sum jetrag-agent-* > SHA256SUMS.txt
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            agent/dist/jetrag-agent-macos-arm64
+            agent/dist/jetrag-agent-macos-x64
+            agent/dist/jetrag-agent-windows-x64.exe
+            agent/dist/SHA256SUMS.txt
+          body: |
+            Jet-Rag PC 에이전트 ${{ github.ref_name }}
+
+            코드서명·공증을 하지 않았습니다. 처음 실행할 때 경고가 뜹니다 —
+            README 의 "처음 실행할 때 경고가 뜨는 이유" 절을 보세요.

@@ -92,3 +92,6 @@ api/scripts/fixtures/images/
 # 컷오버 secret 실제 값 (템플릿만 커밋한다)
 cutover.env
 *.cutover.env
+
+# 에이전트 컴파일 산출물 (60~90MB × 3). 릴리스로만 배포한다.
+agent/dist/
