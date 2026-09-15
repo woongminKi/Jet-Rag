@@ -684,9 +684,12 @@ class GoldenPathTest(E2EBaseTest):
 
 
 class ChunkFilterMarkingTest(E2EBaseTest):
-    """S2 — table_noise + extreme_short + 정상 1건 → 정확히 마킹되어 적재."""
+    """S2 — table_noise + extreme_short + 정상 1건 → 정확히 마킹되어 적재.
 
-    def test_marked_chunks_persist_with_dense_vec(self) -> None:
+    마킹된 청크는 적재는 되지만 **임베딩되지 않는다**(dense_vec NULL 유지).
+    """
+
+    def test_marked_chunks_persist_without_dense_vec(self) -> None:
         from app.ingest.stages.chunk import run_chunk_stage
         from app.ingest.stages.chunk_filter import run_chunk_filter_stage
         from app.ingest.stages.embed import run_embed_stage
@@ -742,7 +745,8 @@ class ChunkFilterMarkingTest(E2EBaseTest):
         chunks_table = self.fake_client._tables["chunks"]
         self.assertEqual(len(chunks_table), 3, f"3개 청크 모두 적재 — got={len(chunks_table)}")
         self.assertEqual(loaded, 3)
-        self.assertEqual(embedded, 3)
+        # 마킹된 2건은 embed 가 건너뛴다 — 정상 1건만 임베딩된다.
+        self.assertEqual(embedded, 1, f"미필터 1건만 임베딩 기대 — got={embedded}")
 
         # 마킹 카운트.
         reasons = [
@@ -765,20 +769,32 @@ class ChunkFilterMarkingTest(E2EBaseTest):
             f"정상 1건 기대 — got={none_count}, reasons={reasons}",
         )
 
-        # 정책 핵심 — 마킹된 chunk 도 dense_vec 채워짐.
-        # search_hybrid_rrf 가 WHERE flags->>'filtered_reason' IS NULL 로 자동 제외하므로,
-        # 임베딩은 일관되게 진행 (재인제스트 시 마킹 변경되어도 vec 살아있음).
+        # 정책 핵심 (2026-09-15 변경) — 마킹된 chunk 는 dense_vec 을 **안 채운다**.
+        # search_hybrid_rrf / search_dense_only 가 WHERE flags->>'filtered_reason' IS NULL
+        # 로 자동 제외하므로 그 벡터는 아무도 읽지 않는다. 채우면 DeepInfra 비용과
+        # HNSW 인덱스 크기만 는다. 마킹을 되돌리면 그때 embed 가 채운다.
         for row in chunks_table:
+            reason = (row.get("flags") or {}).get("filtered_reason")
             dense = row.get("dense_vec")
-            self.assertIsNotNone(
-                dense,
-                f"마킹 chunk 도 dense_vec 채워야 함: "
-                f"flags={row.get('flags')} chunk_idx={row.get('chunk_idx')}",
-            )
-            self.assertEqual(len(dense), 1024)
+            if reason is None:
+                self.assertIsNotNone(
+                    dense,
+                    f"미필터 chunk 는 dense_vec 필요: chunk_idx={row.get('chunk_idx')}",
+                )
+                self.assertEqual(len(dense), 1024)
+            else:
+                self.assertIsNone(
+                    dense,
+                    f"마킹 chunk 는 dense_vec NULL 이어야 함: "
+                    f"reason={reason} chunk_idx={row.get('chunk_idx')}",
+                )
 
-        # embed_batch 호출 1회 (3 < 16).
+        # embed_batch 호출 1회 (미필터 1건 < 16). 마킹된 텍스트는 제공자에 안 간다.
         self.assertEqual(len(self.fake_provider.embed_batch_calls), 1)
+        sent = [t for call in self.fake_provider.embed_batch_calls for t in call]
+        self.assertEqual(len(sent), 1, f"제공자에 1건만 가야 함 — got={sent}")
+        self.assertNotIn(extreme_short_text, sent)
+        self.assertNotIn(table_noise_text, sent)
 
 
 # ====================================================================

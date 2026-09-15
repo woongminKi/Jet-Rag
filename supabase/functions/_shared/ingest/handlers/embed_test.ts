@@ -11,14 +11,28 @@ import type { TaskPayload } from "../worker.ts";
 
 const TASK: TaskPayload = { job_id: "j1", doc_id: "d1", stage: "embed" };
 
-/** `chunks` 조회/갱신과 rpc 를 흉내낸다. `dense_vec` 을 채우면 다음 조회에서 빠진다. */
-function fakeClient(texts: string[]) {
-  const pending = texts.map((t, i) => ({ id: `c${i}`, text: t }));
+/** 청크 하나. `reason` 이 있으면 `flags.filtered_reason` 이 붙은 행이다. */
+type Row = string | { text: string; reason: string };
+
+/**
+ * `chunks` 조회/갱신과 rpc 를 흉내낸다. `dense_vec` 을 채우면 다음 조회에서 빠진다.
+ *
+ * `is()` 로 건 필터를 **그대로 적용한다** — 필터를 세기만 하고 행은 다 돌려주면
+ * "필터를 걸었다" 는 단언은 통과하면서 실제로 걸러지는지는 아무도 안 본다.
+ */
+function fakeClient(rows: Row[]) {
+  const pending = rows.map((r, i) =>
+    typeof r === "string"
+      ? { id: `c${i}`, text: r, reason: null as string | null }
+      : { id: `c${i}`, text: r.text, reason: r.reason }
+  );
   const filled = new Map<string, number[]>();
   const sends: Record<string, unknown>[] = [];
   let limitSeen: number | null = null;
   let orderedAsc: boolean | null = null;
   let isNullSeen = false;
+  /** `.is(col, null)` 로 걸린 컬럼들 — 호출 순서 그대로. */
+  const isFilters: string[] = [];
 
   const jobUpdates: Record<string, unknown>[] = [];
 
@@ -41,6 +55,7 @@ function fakeClient(texts: string[]) {
           return q;
         },
         is(col: string, v: unknown) {
+          if (v === null) isFilters.push(col);
           if (col === "dense_vec" && v === null) isNullSeen = true;
           return q;
         },
@@ -50,8 +65,13 @@ function fakeClient(texts: string[]) {
         },
         limit(n: number) {
           limitSeen = n;
-          const rows = pending.filter((r) => !filled.has(r.id)).slice(0, n);
-          return Promise.resolve({ data: rows, error: null });
+          const skipFiltered = isFilters.includes("flags->>filtered_reason");
+          const out = pending
+            .filter((r) => !filled.has(r.id))
+            .filter((r) => !skipFiltered || r.reason === null)
+            .map((r) => ({ id: r.id, text: r.text }))
+            .slice(0, n);
+          return Promise.resolve({ data: out, error: null });
         },
         update(patch: Record<string, unknown>) {
           return {
@@ -77,6 +97,7 @@ function fakeClient(texts: string[]) {
     limitSeen: () => limitSeen,
     orderedAsc: () => orderedAsc,
     isNullSeen: () => isNullSeen,
+    isFilters: () => isFilters,
   };
 }
 
@@ -216,4 +237,70 @@ Deno.test("아직 남았으면 embed 를 다시 넣는다", async () => {
   await h(TASK, {} as never);
   assertEquals(f.jobUpdates, []);
   assertEquals(f.sends, [{ job_id: "j1", doc_id: "d1", stage: "embed" }]);
+});
+
+Deno.test("filtered_reason 이 붙은 청크는 조회에서 뺀다 — 제공자에 안 간다", async () => {
+  // 검색 RPC 가 `(flags->>'filtered_reason') IS NULL` 만 보므로 마킹된 청크의
+  // `dense_vec` 은 아무도 안 읽는다. 채우면 DeepInfra 비용과 HNSW 인덱스만 는다.
+  const f = fakeClient([
+    { text: "머리말", reason: "header_footer" },
+    "본문 가",
+    { text: "2,800", reason: "extreme_short" },
+    "본문 나",
+  ]);
+  const sent: string[][] = [];
+  const h = makeEmbedHandler({
+    // deno-lint-ignore no-explicit-any
+    client: f.client as any,
+    token: "T",
+    embed: (t) => (sent.push(t), Promise.resolve(vecFor(t))),
+  });
+  await h(TASK, {} as never);
+
+  // 조회에 두 필터가 다 걸렸다.
+  assertEquals(f.isFilters(), ["dense_vec", "flags->>filtered_reason"]);
+  // 제공자에 간 텍스트에 마킹된 것이 하나도 없다.
+  assertEquals(sent, [["본문 가", "본문 나"]]);
+  // 마킹된 청크의 dense_vec 은 NULL 로 남는다.
+  assertEquals([...f.filled.keys()].sort(), ["c1", "c3"]);
+});
+
+Deno.test("남은 게 전부 filtered 면 루프가 끝난다 — doc_embed 로 넘어간다", async () => {
+  // 필터 없이 세면 `dense_vec IS NULL` 이 영원히 참이라 embed 가 자기를 무한히
+  // 다시 큐에 넣는다. 종료 조건이 필터와 같아야 한다.
+  const f = fakeClient([
+    { text: "머리말", reason: "header_footer" },
+    { text: "꼬리말", reason: "header_footer" },
+  ]);
+  let called = 0;
+  const h = makeEmbedHandler({
+    // deno-lint-ignore no-explicit-any
+    client: f.client as any,
+    token: "T",
+    chunksPerTask: 2,
+    embed: (t) => (called++, Promise.resolve(vecFor(t))),
+  });
+  await h(TASK, {} as never);
+  assertEquals(called, 0);
+  assertEquals(f.filled.size, 0);
+  assertEquals(f.sends, [{ job_id: "j1", doc_id: "d1", stage: "doc_embed" }]);
+});
+
+Deno.test("perTask 가 안 찬 건 남은 unfiltered 기준이다 — 필터된 행이 자리를 안 먹는다", async () => {
+  // 마킹된 행이 `limit` 을 채우면 "가득 찼다" 로 오판해 빈 embed 태스크가 한 번 더 돈다.
+  const f = fakeClient([
+    { text: "머리말", reason: "header_footer" },
+    "본문 가",
+    { text: "꼬리말", reason: "header_footer" },
+  ]);
+  const h = makeEmbedHandler({
+    // deno-lint-ignore no-explicit-any
+    client: f.client as any,
+    token: "T",
+    chunksPerTask: 3,
+    embed: (t) => Promise.resolve(vecFor(t)),
+  });
+  await h(TASK, {} as never);
+  assertEquals(f.filled.size, 1);
+  assertEquals(f.sends, [{ job_id: "j1", doc_id: "d1", stage: "doc_embed" }]);
 });

@@ -12,6 +12,8 @@
   파이프라인 실패 정리가 **청크를 다시 지운다**(2026-09-15 1차 시도에서 겪음).
 - `run_embed_stage` 는 PostgREST 기본 1,000행 상한으로 한 번에 1,000개만 채운다.
   `--embed-only <job_id>` 는 NULL 이 0 이 될 때까지 반복한다(약 460건/분).
+- 여기서 "NULL" 은 **`flags->>filtered_reason` 이 없는** 청크의 dense_vec NULL 이다.
+  필터된 청크는 `run_embed_stage` 가 건너뛰므로 계속 NULL 로 남는 게 정상이다.
 """
 from __future__ import annotations
 
@@ -30,9 +32,15 @@ from app.ingest.stages.embed import run_embed_stage  # noqa: E402
 
 
 def _count(sb, doc_id: str, *, null_only: bool) -> int:
+    """null_only=True 는 **run_embed_stage 가 실제로 채울 행**만 센다.
+
+    `run_embed_stage` 가 `flags->>filtered_reason IS NULL` 도 걸고 뽑기 때문에,
+    여기서 그 조건을 빼면 필터된 청크가 영원히 NULL 로 남아 `embed_rest` 의
+    루프가 max_rounds 까지 헛돈다(종료 조건이 조회 조건과 같아야 한다).
+    """
     q = sb.table("chunks").select("id", count="exact").eq("doc_id", doc_id)
     if null_only:
-        q = q.is_("dense_vec", "null")
+        q = q.is_("dense_vec", "null").is_("flags->>filtered_reason", "null")
     return q.limit(1).execute().count or 0
 
 

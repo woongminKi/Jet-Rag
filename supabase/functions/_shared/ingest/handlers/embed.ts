@@ -1,5 +1,5 @@
 /**
- * `embed` 작업 핸들러 — `dense_vec` 이 NULL 인 청크를 BGE-M3 로 채운다.
+ * `embed` 작업 핸들러 — `dense_vec` 이 NULL 인 **검색 대상** 청크를 BGE-M3 로 채운다.
  *
  * 원본은 `ingest/stages/embed.py` 다.
  *
@@ -8,6 +8,15 @@
  * 쪼개야 하는데, `dense_vec IS NULL` 은 **처리하면서 사라지는 조건**이라 offset 을
  * 들고 다니면 건너뛰는 청크가 생긴다. 그래서 매번 **NULL 인 앞쪽 N 개**를 집는다.
  * 자연히 멱등이고, 재시도해도 이미 채운 것을 다시 부르지 않는다.
+ *
+ * ## `filtered_reason` 이 붙은 청크는 건너뛴다
+ * `search_dense_only` · `search_hybrid_rrf` 는 `(flags->>'filtered_reason') IS NULL` 인
+ * 청크만 본다. 마킹된 청크의 `dense_vec` 은 **어떤 쿼리도 읽지 않는다** — 채우면
+ * DeepInfra 호출과 HNSW 인덱스 크기만 늘어난다. 그래서 조회에서 아예 뺀다.
+ * `dense_vec` 은 NULL 로 남고, 마킹을 되돌리면 그때 채워진다(조건이 다시 참이 된다).
+ *
+ * 마킹은 **`load` 단계에서 끝난다**(`runChunkFilterStage`). `embed` 가 도는 시점에
+ * `filtered_reason` 은 이미 확정이라 "나중에 마킹돼서 헛일한" 케이스는 없다.
  *
  * ## upsert 가 아니라 단건 UPDATE
  * 원본 주석 그대로다 — "supabase upsert 가 보내지 않은 컬럼을 NULL 로 처리하는
@@ -62,6 +71,10 @@ export function makeEmbedHandler(deps: EmbedHandlerDeps): TaskHandler {
       .select("id, text")
       .eq("doc_id", task.doc_id)
       .is("dense_vec", null)
+      // 필터된 청크는 검색이 절대 보지 않는다 — 임베딩하면 DeepInfra 비용과 HNSW
+      // 인덱스만 늘어난다(2026-09-15 실측: 전체 청크의 40.9%, 인덱스 237MB).
+      // PostgREST 로는 `flags->>filtered_reason=is.null` 로 나간다(실측 확인).
+      .is("flags->>filtered_reason", null)
       .order("chunk_idx", { ascending: true })
       .limit(perTask);
     if (error) throw new Error(`chunks 조회 실패: ${error.message}`);
