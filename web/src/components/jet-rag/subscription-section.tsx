@@ -93,7 +93,7 @@ export function SubscriptionSection() {
               상태: <strong>{statusLabel(sub.status)}</strong>
             </li>
             {isActive && <li>다음 결제일: {formatDate(sub.current_period_end)}</li>}
-            <li>Pro 요금: 월 6,900원 (문서 200개 · 답변 일 50회 · 이메일 인제스트)</li>
+            <li>Pro 요금: 월 6,900원 (저장 10GB · Vision 1,000페이지/월 · 답변 일 50회 · 이메일 인제스트)</li>
           </ul>
           {sub.status === 'past_due' && (
             <p className="mt-2 text-sm text-amber-600">

@@ -85,7 +85,6 @@ export interface Settings {
   quotaEnforcementEnabled: boolean;
   /** 익명 포함 전체에 걸리는 일일 남용 상한. `/answer` 게이트가 쓴다. */
   rateLimitAnswersPerDay: number;
-  rateLimitDocsPerDay: number;
   /** `gemini`(기본) 또는 `openai`. openai 어댑터는 원본에도 없다(NotImplementedError). */
   llmProvider: string;
   /** `/answer` 용 모델. `JETRAG_LLM_MODEL_ANSWER` 로 덮어쓴다. */
@@ -187,7 +186,6 @@ export function loadSettings(read: EnvReader = (k) => Deno.env.get(k)): Settings
     chunkUpsertBatchSize: Math.max(1, int(read, "JETRAG_CHUNK_UPSERT_BATCH_SIZE", 50)),
     quotaEnforcementEnabled: bool(read, "JETRAG_QUOTA_ENFORCEMENT_ENABLED", true),
     rateLimitAnswersPerDay: int(read, "JETRAG_RATE_LIMIT_ANSWERS_PER_DAY", 50),
-    rateLimitDocsPerDay: int(read, "JETRAG_RATE_LIMIT_DOCS_PER_DAY", 30),
     llmProvider: (read("JETRAG_LLM_PROVIDER") ?? "gemini").trim().toLowerCase(),
     // 원본 `_GEMINI_MODELS["answer"]` — 2.0 계열이 deprecated 돼 2.5 로 회복된 값이다.
     llmModelAnswer: read("JETRAG_LLM_MODEL_ANSWER") ?? "gemini-2.5-flash",

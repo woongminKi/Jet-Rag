@@ -7,6 +7,10 @@
  * `/search`·`/stats` 가 익명을 통과시키는 것과 다르다 — 여기를 열어 두면 익명 방문자가
  * owner 컨텍스트로 주소를 발급·회전시킬 수 있다.
  *
+ * ## `/me/plan` 의 모양은 2026-09-15 에 바뀌었다 (스펙 §4 S4)
+ * 문서 수 상한·보유 문서 수 대신 `storage`·`vision_pages`·`answers` 세 묶음이다.
+ * 옛 모양을 기대하는 Python 대조 하네스(`verify_me_quota_parity.py`)는 폐기 대상이다.
+ *
  * ## `/me/plan` 만 503 을 낼 수 있다
  * 플랜 조회가 실패하면(=`plans` 에 코드가 없거나 DB 장애) 빈 값을 보내지 않고 503 이다.
  * 나머지 셋은 fail-open 이라 free·none 으로 떨어진다.
@@ -14,7 +18,14 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { countActiveDocuments, getEffectivePlan, getSubscriptionView, getTodaysCount } from "./quota.ts";
+import {
+  getEffectivePlan,
+  getSubscriptionView,
+  getTodaysCount,
+  kstMonthStartIso,
+  storageUsedBytes,
+  visionPagesUsedMonth,
+} from "./quota.ts";
 import { type AddressRow, buildAddress, getOrCreateAddress, rotateAddress } from "./email_ingest.ts";
 
 export class MeHttpError extends Error {
@@ -45,11 +56,21 @@ export async function buildPlan(
   }
   return {
     plan_code: plan.code,
-    max_documents: plan.max_documents,
-    answers_per_day: plan.answers_per_day,
-    answers_used_today: await getTodaysCount(deps.client, userId, "answers", nowMs),
-    // 실패 시 `null` 인데 원본이 `or 0` 으로 접는다 — 0 과 구분되지 않는다.
-    documents_count: (await countActiveDocuments(deps.client, userId)) ?? 0,
+    storage: {
+      // 조회 실패는 `null` 인데 0 으로 접는다 — 장애가 "안 쓴 것" 으로 보인다(원본 관행).
+      used_bytes: (await storageUsedBytes(deps.client, userId)) ?? 0,
+      limit_bytes: plan.storage_bytes_limit,
+    },
+    vision_pages: {
+      used: (await visionPagesUsedMonth(deps.client, userId, nowMs)) ?? 0,
+      limit: plan.vision_pages_per_month,
+      // 화면이 "이번 달" 의 기준을 말할 수 있어야 한다 — KST 1일 00:00 이다.
+      period_start: kstMonthStartIso(nowMs),
+    },
+    answers: {
+      per_day: plan.answers_per_day,
+      used_today: await getTodaysCount(deps.client, userId, "answers", nowMs),
+    },
   };
 }
 

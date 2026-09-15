@@ -26,6 +26,10 @@
  * ## 인증·상한은 원본 순서 그대로
  * 원본은 `require_authenticated_user` → `check_rate_limit("docs")` 를 **의존성**으로
  * 걸어 본문보다 먼저 돌린다. 무효한 파일이어도 상한 카운터는 올라간다. 그 순서를 지킨다.
+ *
+ * ## 2026-09-15 — 상한의 내용이 바뀌었다 (스펙 §4 S4)
+ * 일일 30건·보유 문서 수 대신 **분당 60건(남용 방지)** + **플랜 저장 용량**이다. 용량은
+ * 본문 파싱 뒤라야 크기를 알 수 있어 `persist.ts` 안(`checkStorage`)에서 402 를 낸다.
  */
 
 import { loadSettings } from "../_shared/config.ts";
@@ -34,7 +38,7 @@ import { createServiceClient } from "../_shared/db.ts";
 import { getCurrentUser, requireAuthenticatedUser, touchDeviceUser } from "../_shared/current_user.ts";
 import { deviceScopeAllows } from "../_shared/device_token.ts";
 import { jsonResponse, methodNotAllowed, notFound, toResponse } from "../_shared/errors.ts";
-import { enforceRateLimit, METRIC_DOCS, RateLimitError } from "../_shared/rate_limit.ts";
+import { enforceUploadBurst, RateLimitError } from "../_shared/rate_limit.ts";
 import { handleUpload } from "../_shared/documents/upload.ts";
 import { parsePrecheckBody, precheckHashes } from "../_shared/documents/precheck.ts";
 import {
@@ -47,6 +51,7 @@ import {
 import { batchStatus, listActiveDocuments } from "../_shared/documents/active.ts";
 import { reingestDocument, reingestMissingVision } from "../_shared/documents/reingest.ts";
 import { handleEmailWebhook } from "../_shared/ingest/email_route.ts";
+import { makeStorageCheck } from "../_shared/me/quota.ts";
 
 const FUNCTION_PREFIX = "/api-documents";
 
@@ -188,9 +193,10 @@ Deno.serve(async (req: Request) => {
     // ① 인증 — 쓰기는 로그인 필수(수익화 W1).
     const user = requireAuthenticatedUser(caller);
 
-    // ② 일일 상한(수익화 W2). **본문 검증보다 먼저**다 — 원본이 의존성으로 걸어 뒀다.
+    // ② 남용 방지 — 분당 60건. 플랜 quota 는 용량으로 persist 안에서 본다(S4).
+    // **본문 검증보다 먼저**다 — 원본이 의존성으로 걸어 뒀다.
     try {
-      await enforceRateLimit(METRIC_DOCS, req, user, settings, { client });
+      await enforceUploadBurst(user, { client });
     } catch (e) {
       if (e instanceof RateLimitError) {
         return applyCorsHeaders(req, jsonResponse({ detail: e.detail }, e.status), settings);
@@ -213,6 +219,7 @@ Deno.serve(async (req: Request) => {
       client,
       bucket: settings.supabaseStorageBucket,
       userId: user.userId,
+      checkStorage: makeStorageCheck(client, user, settings),
     });
     return applyCorsHeaders(req, jsonResponse(result.body, result.status), settings);
   } catch (e) {

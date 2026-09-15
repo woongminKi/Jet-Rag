@@ -31,8 +31,8 @@
 - **로그인 유저**: `/ingest` 업로드 → 본인 user_id 격리 컨텍스트 (RLS 마이그 019/020) 에서 인제스트·검색·답변
 - **쓰기 게이트**: 업로드·재인제스트·feedback·eval 7 endpoint 는 `require_authenticated_user` — 익명 시 401
 - **admin 게이트**: `require_admin` — 익명 fallback 은 user_id 가 owner 와 같아도 403 (is_authenticated 체크)
-- **일일 rate limit (W2)**: 익명 데모(IP 기준)·로그인 사용자(user_id 기준) 모두 일일 답변 50회 / 업로드 30회 상한 — 초과 시 429. `JETRAG_RATE_LIMIT_*` ENV 로 조정(0=무제한).
-- **플랜 quota (W3)**: 로그인 사용자는 Free(보유 문서 10 · 답변 일 5회) / Pro(200 · 50회) 한도 — 초과 시 402 + 업그레이드 안내. 한도는 `plans` 테이블 seed(UPDATE 로 조정). 익명 데모는 W2 rate limit(429)만 적용.
+- **일일 rate limit (W2)**: 익명 데모(IP 기준)·로그인 사용자(user_id 기준) 모두 일일 답변 50회 상한 — 초과 시 429. `JETRAG_RATE_LIMIT_ANSWERS_PER_DAY` ENV 로 조정(0=무제한). 업로드는 일일 상한 대신 **분당 60건**(`upload_burst`) 남용 방지다.
+- **플랜 quota (W3 → 2026-09-15 계량 교체, 마이그 031)**: 문서 수 대신 **저장 용량 + 월 Vision 페이지**로 잰다 — Free(1GB · 100페이지/월 · 답변 일 5회) / Pro(10GB · 1,000페이지/월 · 50회). 용량 초과는 402, Vision 페이지 초과는 잡을 `deferred_quota` 로 보류했다가 매일 00:00 KST 에 되돌린다. 한도는 `plans` 테이블 seed(UPDATE 로 조정) — **잠정값**이라 출시 전 Vision 단가 실측으로 재산정한다. 익명 데모는 W2 rate limit(429)만 적용.
 
 ### 📱 모바일에서 설치하기 (PWA)
 

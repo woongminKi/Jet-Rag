@@ -156,28 +156,6 @@ function skipReason(r: Extract<PersistResult, { ok: false }>): string {
   }
 }
 
-/** 원본 `_increment_docs_counter` — 실패해도 인제스트를 막지 않는다. */
-export async function incrementDocsCounter(
-  client: SupabaseClient,
-  userId: string,
-  nowMs: number,
-): Promise<void> {
-  try {
-    const d = new Date(nowMs);
-    const day = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${
-      String(d.getUTCDate()).padStart(2, "0")
-    }`;
-    const { error } = await client.rpc("increment_usage_counter", {
-      p_user_key: userId,
-      p_metric: "docs",
-      p_period_date: day,
-    });
-    if (error) throw new Error(error.message);
-  } catch (e) {
-    console.warn(`email_ingest docs 카운터 실패 (user=${userId}): ${e}`);
-  }
-}
-
 /** 이메일 헤더 유래 값 로그용 — 개행 escape + 길이 제한(로그 인젝션 방어). */
 export function safeForLog(value: string, limit = 128): string {
   return value.replace(/\r/g, "\\r").replace(/\n/g, "\\n").slice(0, limit);

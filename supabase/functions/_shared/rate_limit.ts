@@ -16,6 +16,11 @@
  *
  * ## 전부 fail-open
  * RPC 가 실패하면 통과시킨다. DB 가 흔들릴 때 정상 사용자를 막지 않기 위해서다.
+ *
+ * ## 2026-09-15 — docs metric 은 없어졌다 (스펙 §4 S4)
+ * 업로드의 일일 상한(`docs` 30건)과 보유 문서 수 상한은 자동 수집과 맞지 않아 버렸다.
+ * 플랜 한도는 **저장 용량**으로 옮겨 `persist.ts` 안에서 보고(`me/quota.ts` 의
+ * `makeStorageCheck`), 여기 남은 건 남용 방지용 `enforceUploadBurst`(분당)뿐이다.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -23,7 +28,6 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { getEffectivePlan } from "./me/quota.ts";
 
 export const METRIC_ANSWERS = "answers";
-export const METRIC_DOCS = "docs";
 
 export class RateLimitError extends Error {
   constructor(readonly status: number, readonly detail: string) {
@@ -62,12 +66,10 @@ export interface RateLimitSettings {
   quotaEnforcementEnabled: boolean;
   ownerUserId: string | null;
   rateLimitAnswersPerDay: number;
-  rateLimitDocsPerDay: number;
 }
 
 function capForMetric(metric: string, s: RateLimitSettings): number {
   if (metric === METRIC_ANSWERS) return s.rateLimitAnswersPerDay;
-  if (metric === METRIC_DOCS) return s.rateLimitDocsPerDay;
   return 0; // 모르는 metric → 무제한
 }
 
@@ -129,17 +131,6 @@ export async function enforceRateLimit(
             "초과했습니다. 내일 다시 이용하시거나 Pro 로 업그레이드해 주세요.",
         );
       }
-      if (metric === METRIC_DOCS && plan.max_documents > 0) {
-        const { countActiveDocuments } = await import("./me/quota.ts");
-        const docCount = await countActiveDocuments(deps.client, user.userId);
-        if (docCount !== null && docCount >= plan.max_documents) {
-          throw new RateLimitError(
-            402,
-            `${plan.code} 플랜의 보유 문서 한도(${plan.max_documents}개)에 ` +
-              "도달했습니다. 기존 문서를 삭제하시거나 Pro 로 업그레이드해 주세요.",
-          );
-        }
-      }
     }
   }
 
@@ -148,6 +139,42 @@ export async function enforceRateLimit(
       429,
       `일일 사용 한도(${abuseCap}회)를 초과했습니다. ` +
         "내일 다시 시도하시거나 Pro 로 업그레이드해 주세요.",
+    );
+  }
+}
+
+export const UPLOAD_BURST_PER_MINUTE = 60;
+
+/** 분 단위 절삭 ISO — `upload_burst.minute`. */
+export function minuteFloorIso(nowMs: number): string {
+  return new Date(Math.floor(nowMs / 60_000) * 60_000).toISOString();
+}
+
+/**
+ * 분당 업로드 남용 방지 — 로그인·기기 토큰 공통. 초과면 429. RPC 실패는 fail-open.
+ * 플랜 quota 와 무관하게 전원에게 걸린다(owner 포함) — 오작동 에이전트가 무한 루프 돌 때를 위한 것이다.
+ */
+export async function enforceUploadBurst(
+  user: { userId: string },
+  deps: EnforceDeps,
+): Promise<void> {
+  const minute = minuteFloorIso((deps.now ?? Date.now)());
+  let n: unknown;
+  try {
+    const { data, error } = await deps.client.rpc("increment_upload_burst", {
+      p_user_key: user.userId,
+      p_minute: minute,
+    });
+    if (error) throw new Error(error.message);
+    n = data;
+  } catch (e) {
+    console.warn("upload_burst RPC 실패 — fail-open:", e);
+    return;
+  }
+  if (typeof n === "number" && n > UPLOAD_BURST_PER_MINUTE) {
+    throw new RateLimitError(
+      429,
+      `분당 업로드 한도(${UPLOAD_BURST_PER_MINUTE}건)를 초과했습니다. 잠시 후 다시 시도해 주세요.`,
     );
   }
 }

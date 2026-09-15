@@ -78,6 +78,11 @@ export interface WorkerDeps {
   vtSeconds?: number;
   /** 한 번에 꺼낼 작업 수. */
   batch?: number;
+  /**
+   * 사용자별 월 Vision 페이지 게이트(`quota_gate.ts`). 없으면 검사하지 않는다.
+   * 보류는 **실패가 아니다** — 메시지를 지우고 잡에 페이로드를 남겨 cron 이 되돌린다.
+   */
+  gate?: (task: TaskPayload) => Promise<{ defer: false } | { defer: true; reason: string }>;
   now?: () => number;
 }
 
@@ -86,6 +91,8 @@ export interface DrainResult {
   ok: number;
   retried: number;
   archived: number;
+  /** quota 게이트가 보류한 건수. 실패(`retried`)와 따로 센다. */
+  deferred: number;
   errors: { msg_id: number; stage: string; error: string }[];
 }
 
@@ -138,6 +145,7 @@ export async function drainLoop(
     ok: 0,
     retried: 0,
     archived: 0,
+    deferred: 0,
     errors: [],
     rounds: 0,
     elapsedMs: 0,
@@ -150,6 +158,7 @@ export async function drainLoop(
     total.ok += r.ok;
     total.retried += r.retried;
     total.archived += r.archived;
+    total.deferred += r.deferred;
     total.errors.push(...r.errors);
     // 큐가 비면 더 돌 이유가 없다.
     if (r.read === 0) break;
@@ -183,7 +192,14 @@ export async function drainOnce(deps: WorkerDeps): Promise<DrainResult> {
   if (error) throw new Error(`ingest_queue_read 실패: ${error.message}`);
 
   const msgs = (data ?? []) as QueueMessage[];
-  const out: DrainResult = { read: msgs.length, ok: 0, retried: 0, archived: 0, errors: [] };
+  const out: DrainResult = {
+    read: msgs.length,
+    ok: 0,
+    retried: 0,
+    archived: 0,
+    deferred: 0,
+    errors: [],
+  };
 
   for (const msg of msgs) {
     const task = msg.message;
@@ -217,6 +233,22 @@ export async function drainOnce(deps: WorkerDeps): Promise<DrainResult> {
         finished_at: nowIso(),
       });
       continue;
+    }
+
+    // 사용자별 월 Vision 페이지 게이트 — 보류는 실패가 아니다. 메시지는 지우고 페이로드를 잡에 남긴다.
+    if (deps.gate) {
+      const g = await deps.gate(task);
+      if (g.defer) {
+        await deps.client.rpc("ingest_queue_delete", { message_id: msg.msg_id });
+        await touchJob(deps.client, task.job_id, {
+          status: "deferred_quota",
+          deferred_task: task,
+          error_msg: g.reason,
+          last_heartbeat_at: nowIso(),
+        });
+        out.deferred++;
+        continue;
+      }
     }
 
     // 원본 `jobs.stage()` 자리 — 스테이지 1 회 실행을 `ingest_logs` 1 행으로 감싼다.

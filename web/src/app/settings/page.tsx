@@ -7,10 +7,14 @@ import { DevicesSection } from '@/components/jet-rag/devices-section';
 
 interface MePlan {
   plan_code: string;
-  max_documents: number;
-  answers_per_day: number;
-  answers_used_today: number;
-  documents_count: number;
+  storage: { used_bytes: number; limit_bytes: number };
+  vision_pages: { used: number; limit: number; period_start: string };
+  answers: { per_day: number; used_today: number };
+}
+
+// 1GB 미만은 소수 둘째 자리까지 — 0.0GB 로 뭉개면 남은 양을 못 읽는다.
+function gb(n: number): string {
+  return `${(n / 1024 ** 3).toFixed(n >= 1024 ** 3 ? 1 : 2)}GB`;
 }
 
 interface EmailIngest {
@@ -73,8 +77,9 @@ export default function SettingsPage() {
         {plan ? (
           <ul className="mt-2 space-y-1 text-sm">
             <li>플랜: <strong>{plan.plan_code === 'pro' ? 'Pro' : 'Free'}</strong></li>
-            <li>오늘 답변: {plan.answers_used_today} / {plan.answers_per_day}회</li>
-            <li>보유 문서: {plan.documents_count} / {plan.max_documents}개</li>
+            <li>저장 용량: {gb(plan.storage.used_bytes)} / {gb(plan.storage.limit_bytes)}</li>
+            <li>이번 달 Vision 페이지: {plan.vision_pages.used} / {plan.vision_pages.limit}장</li>
+            <li>오늘 답변: {plan.answers.used_today} / {plan.answers.per_day}회</li>
           </ul>
         ) : (
           <p className="mt-2 text-sm text-gray-500">불러오는 중…</p>

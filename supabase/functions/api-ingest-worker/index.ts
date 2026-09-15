@@ -24,6 +24,8 @@ import { loadSettings } from "../_shared/config.ts";
 import { createServiceClient } from "../_shared/db.ts";
 import { jsonResponse, methodNotAllowed, notFound, toResponse } from "../_shared/errors.ts";
 import { drainLoop, type TaskHandler } from "../_shared/ingest/worker.ts";
+import { makeQuotaGate } from "../_shared/ingest/quota_gate.ts";
+import { getEffectivePlan } from "../_shared/me/quota.ts";
 import { makeChunkHandler } from "../_shared/ingest/handlers/chunk.ts";
 import { makeEmbedHandler } from "../_shared/ingest/handlers/embed.ts";
 import { makeExtractHandler } from "../_shared/ingest/handlers/extract.ts";
@@ -121,6 +123,12 @@ Deno.serve(async (req: Request) => {
     const result = await drainLoop({
       client,
       handlers: buildHandlers(settings, client),
+      // 사용자별 월 Vision 페이지 한도(S4). 핸들러 넷에 흩뿌리지 않고 여기 한 곳에서 본다.
+      gate: makeQuotaGate({
+        client,
+        settings,
+        getPlan: (uid) => getEffectivePlan(client, uid),
+      }),
       batch: Number.isFinite(batch) && batch > 0 ? Math.min(batch, 10) : 1,
       budgetMs: Number.isFinite(budget) && budget > 0 ? Math.min(budget, 20_000) : undefined,
     });

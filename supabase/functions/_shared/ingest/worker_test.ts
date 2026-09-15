@@ -262,3 +262,45 @@ Deno.test("drainLoop — 판별 집계를 합산한다", async () => {
   assertEquals(r.archived, 1); // 핸들러 없는 stage 는 보관
   assertEquals(r.errors.length, 1);
 });
+
+Deno.test("게이트가 보류하면 delete + deferred_quota, 핸들러는 안 돈다", async () => {
+  const { client, calls, updates } = fakeClient([
+    msg({ message: { job_id: "j1", doc_id: "d1", stage: "vision" } }),
+  ]);
+  let ran = 0;
+  const r = await drainOnce({
+    // deno-lint-ignore no-explicit-any
+    client: client as any,
+    handlers: {
+      vision: () => {
+        ran++;
+        return Promise.resolve();
+      },
+    },
+    gate: () => Promise.resolve({ defer: true, reason: "한도" }),
+  });
+  assertEquals(ran, 0);
+  assertEquals(r.deferred, 1);
+  assertEquals(calls.some((c) => c.fn === "ingest_queue_delete"), true);
+  assertEquals(updates.some((u) => u.status === "deferred_quota" && u.error_msg === "한도"), true);
+  // **보관이 아니다** — 보관하면 cron 이 되돌릴 수 없다.
+  assertEquals(calls.some((c) => c.fn === "ingest_queue_archive"), false);
+  assertEquals([r.ok, r.retried, r.archived], [0, 0, 0]);
+});
+
+Deno.test("게이트가 통과시키면 평소대로 돈다", async () => {
+  const { client } = fakeClient([msg()]);
+  let ran = 0;
+  const r = await drainOnce({
+    // deno-lint-ignore no-explicit-any
+    client: client as any,
+    handlers: {
+      extract: () => {
+        ran++;
+        return Promise.resolve();
+      },
+    },
+    gate: () => Promise.resolve({ defer: false }),
+  });
+  assertEquals([ran, r.ok, r.deferred], [1, 1, 0]);
+});

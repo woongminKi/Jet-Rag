@@ -38,7 +38,15 @@ function fakeClient(): any {
       if (table === "ingest_jobs") return { insert: () => q({ id: "j1" }) };
       if (table === "subscriptions") return { select: () => q([{ plan_code: "pro", status: "active" }]) };
       if (table === "plans") {
-        return { select: () => q([{ code: "pro", max_documents: 1, answers_per_day: 1 }]) };
+        return {
+          select: () =>
+            q([{
+              code: "pro",
+              answers_per_day: 1,
+              storage_bytes_limit: 10737418240,
+              vision_pages_per_month: 1000,
+            }]),
+        };
       }
       return { select: () => q([]) };
     },
@@ -50,8 +58,13 @@ function post(body: unknown, secret = SECRET) {
     {
       client: fakeClient(),
       bucket: "documents",
-      settings: { emailWebhookSecret: SECRET },
-      nowMs: () => 0,
+      // quota 를 켠 채로 돈다 — 용량 검사(`makeStorageCheck`)까지 실제로 태운다.
+      settings: {
+        emailWebhookSecret: SECRET,
+        authEnabled: true,
+        quotaEnforcementEnabled: true,
+        ownerUserId: null,
+      },
     },
     new Request("https://x/ingest/email", {
       method: "POST",

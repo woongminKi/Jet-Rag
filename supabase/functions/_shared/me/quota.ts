@@ -3,9 +3,14 @@
  *
  * ## 전부 fail-open 이다
  * DB 가 흔들려도 사용자를 막지 않는다. 실패 시 `getEffectivePlan` 은 `null`,
- * `countActiveDocuments` 는 `null`, `getTodaysCount` 는 `0`, `getSubscriptionView` 는
- * free·none 을 돌려준다. **이 값들로 제한을 걸면 안 된다** — 장애가 "사용량 없음" 으로
- * 보이기 때문이다(원본 주석의 경고를 그대로 옮긴다).
+ * `storageUsedBytes`·`visionPagesUsedMonth` 는 `null`, `getTodaysCount` 는 `0`,
+ * `getSubscriptionView` 는 free·none 을 돌려준다. **이 값들로 제한을 걸면 안 된다** —
+ * 장애가 "사용량 없음" 으로 보이기 때문이다(원본 주석의 경고를 그대로 옮긴다).
+ *
+ * ## 2026-09-15 계량 교체 (스펙 §4 S4)
+ * 문서 수 상한(plans 컬럼과 문서 카운트 함수)을 버리고 **저장 용량 + 월 Vision 페이지**로
+ * 옮겼다. 자동 수집은 문서 수로 재면 첫 동기화에서 막히고, 실제 비용은
+ * 용량과 Vision 페이지(페이지당 $0.005~0.03 실측)에서 난다.
  *
  * ## 날짜 기준이 `/stats` 와 다르다
  * `getTodaysCount` 는 **UTC 날짜**를 쓴다. `/stats` 의 월·주 집계와 vision 사용량은
@@ -19,8 +24,9 @@ const EFFECTIVE_STATUSES = new Set(["active", "past_due"]);
 
 export interface PlanLimits {
   code: string;
-  max_documents: number;
   answers_per_day: number;
+  storage_bytes_limit: number;
+  vision_pages_per_month: number;
 }
 
 export interface SubscriptionView {
@@ -91,7 +97,7 @@ export async function getEffectivePlan(
 
     const { data: planData, error: planErr } = await client
       .from("plans")
-      .select("code, max_documents, answers_per_day")
+      .select("code, answers_per_day, storage_bytes_limit, vision_pages_per_month")
       .eq("code", code)
       .limit(1);
     if (planErr) throw new Error(planErr.message);
@@ -103,8 +109,9 @@ export async function getEffectivePlan(
     const row = planRows[0];
     return {
       code: row.code as string,
-      max_documents: Math.trunc(Number(row.max_documents)),
       answers_per_day: Math.trunc(Number(row.answers_per_day)),
+      storage_bytes_limit: Math.trunc(Number(row.storage_bytes_limit)),
+      vision_pages_per_month: Math.trunc(Number(row.vision_pages_per_month)),
     };
   } catch (e) {
     console.warn(`플랜 조회 실패 — quota fail-open (user=${userId}):`, e);
@@ -112,26 +119,80 @@ export async function getEffectivePlan(
   }
 }
 
-/** 보유 문서 수(삭제 제외). 실패는 `null`. `count` 질의라 1,000 행 상한과 무관하다. */
-export async function countActiveDocuments(
+/** 보유 용량(바이트). 실패는 `null` — 제한 판정은 fail-open. */
+export async function storageUsedBytes(
   client: SupabaseClient,
   userId: string,
 ): Promise<number | null> {
   try {
-    // 원본과 같은 모양 — `limit(1)` 로 payload 를 줄이되 `count` 는 전체를 받는다.
-    // (`head: true` 로 바꾸면 HTTP 메서드가 HEAD 가 돼 원본과 다른 요청이 나간다.)
-    const { count, error } = await client
-      .from("documents")
-      .select("id", { count: "exact" })
-      .eq("user_id", userId)
-      .is("deleted_at", null)
-      .limit(1);
+    const { data, error } = await client.rpc("storage_bytes_used", { p_user_id: userId });
     if (error) throw new Error(error.message);
-    return Math.trunc(Number(count ?? 0));
+    return Math.trunc(Number(data ?? 0));
   } catch (e) {
-    console.warn(`문서 수 카운트 실패 — quota fail-open (user=${userId}):`, e);
+    console.warn(`storage_bytes_used 실패 — fail-open (user=${userId}):`, e);
     return null;
   }
+}
+
+/** 이번 달(KST) 1일 00:00 의 ISO. `/stats` 의 월 집계와 같은 기준이다. */
+export function kstMonthStartIso(nowMs: number): string {
+  const kst = new Date(nowMs + 9 * 3600_000);
+  const start = Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), 1) - 9 * 3600_000;
+  return new Date(start).toISOString();
+}
+
+/** 이번 달 Vision 페이지 수. 실패는 `null`. */
+export async function visionPagesUsedMonth(
+  client: SupabaseClient,
+  userId: string,
+  nowMs: number,
+): Promise<number | null> {
+  try {
+    const { data, error } = await client.rpc("vision_pages_used_since", {
+      p_user_id: userId,
+      p_since: kstMonthStartIso(nowMs),
+    });
+    if (error) throw new Error(error.message);
+    return Math.trunc(Number(data ?? 0));
+  } catch (e) {
+    console.warn(`vision_pages_used_since 실패 — fail-open (user=${userId}):`, e);
+    return null;
+  }
+}
+
+export interface QuotaSettings {
+  authEnabled: boolean;
+  quotaEnforcementEnabled: boolean;
+  ownerUserId: string | null;
+}
+
+/** 플랜 quota 가 이 사용자에게 걸리는가 — `rate_limit.ts` 의 `quotaActive` 와 같은 규칙. */
+export function quotaActiveFor(
+  user: { userId: string; isAuthenticated: boolean },
+  s: QuotaSettings,
+): boolean {
+  return s.authEnabled && s.quotaEnforcementEnabled && user.isAuthenticated &&
+    user.userId !== (s.ownerUserId ?? "");
+}
+
+/** persist 에 꽂는 용량 검사. quota 비활성·조회 실패는 `null`(fail-open). */
+export function makeStorageCheck(
+  client: SupabaseClient,
+  user: { userId: string; isAuthenticated: boolean },
+  s: QuotaSettings,
+): (sizeBytes: number) => Promise<{ allowed: boolean; usedBytes: number; limitBytes: number } | null> {
+  return async (sizeBytes) => {
+    if (!quotaActiveFor(user, s)) return null;
+    const plan = await getEffectivePlan(client, user.userId);
+    if (plan === null || plan.storage_bytes_limit <= 0) return null;
+    const used = await storageUsedBytes(client, user.userId);
+    if (used === null) return null;
+    return {
+      allowed: used + sizeBytes <= plan.storage_bytes_limit,
+      usedBytes: used,
+      limitBytes: plan.storage_bytes_limit,
+    };
+  };
 }
 
 /** `YYYY-MM-DD` (**UTC**). `/stats` 의 KST 기준과 다르다 — 원본 그대로다. */

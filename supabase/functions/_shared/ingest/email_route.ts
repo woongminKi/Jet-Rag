@@ -9,16 +9,18 @@
  * | 그 밖의 거절 | **200 `ignored`** — Worker 재시도·반송 메일 회피 |
  *
  * Pro 플랜만 받는다. 플랜 조회가 실패해도 거절이다(쓰기 경로 — fail-closed).
+ *
+ * ## 2026-09-15 — `docs` 카운터는 없어졌다 (스펙 §4 S4)
+ * 문서 수·일일 건수 대신 **저장 용량**으로 잰다. 업로드와 같은 `makeStorageCheck` 를
+ * 꽂아 `persist.ts` 안에서 판정한다 — 여기만 빠지면 자동 수집의 구멍이 된다.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import type { StorageCheck } from "../documents/persist.ts";
-import { getEffectivePlan } from "../me/quota.ts";
+import { getEffectivePlan, makeStorageCheck, type QuotaSettings } from "../me/quota.ts";
 import {
   type AttachmentResult,
   constantTimeEquals,
-  incrementDocsCounter,
   ingestEmailAttachment,
   lookupByToken,
   parseToken,
@@ -29,10 +31,8 @@ import {
 export interface EmailRouteDeps {
   client: SupabaseClient;
   bucket: string;
-  settings: { emailWebhookSecret: string };
-  nowMs?: () => number;
-  /** S4 용량 한도. 지금은 아무도 넘기지 않지만 배선은 끊지 않는다. */
-  checkStorage?: (sizeBytes: number) => Promise<StorageCheck | null>;
+  /** 호출부는 `settings` 전체를 넘긴다 — quota 판정에 필요한 셋이 이미 들어 있다. */
+  settings: { emailWebhookSecret: string } & QuotaSettings;
 }
 
 export interface RouteResult {
@@ -68,8 +68,6 @@ export async function handleEmailWebhook(
   deps: EmailRouteDeps,
   req: Request,
 ): Promise<RouteResult> {
-  const now = deps.nowMs ?? (() => Date.now());
-
   if (!deps.settings.emailWebhookSecret) {
     return {
       status: 503,
@@ -137,6 +135,12 @@ export async function handleEmailWebhook(
   }
 
   const userId = String(addr.user_id);
+  // 용량 한도는 업로드와 같은 규칙으로 본다 — 이메일만 빠져나가면 자동 수집의 구멍이 된다.
+  const checkStorage = makeStorageCheck(
+    deps.client,
+    { userId, isAuthenticated: true },
+    deps.settings,
+  );
   const results: AttachmentResult[] = [];
   for (const a of attachments) {
     const att = (a ?? {}) as Record<string, unknown>;
@@ -152,10 +156,9 @@ export async function handleEmailWebhook(
       continue;
     }
     const r = await ingestEmailAttachment(
-      { client: deps.client, bucket: deps.bucket, checkStorage: deps.checkStorage },
+      { client: deps.client, bucket: deps.bucket, checkStorage },
       { userId, filename, contentType, raw },
     );
-    if (r.status === "accepted") await incrementDocsCounter(deps.client, userId, now());
     results.push(r);
   }
 
