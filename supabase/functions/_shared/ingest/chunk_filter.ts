@@ -100,18 +100,38 @@ export function lineMetrics(text: string): [number, number] {
   return [shortLineRatio, digitPunctRatio];
 }
 
-/** 원본 `_detect_header_footer_texts` — 문서 안에서 반복되는 짧은 텍스트. */
-export function detectHeaderFooterTexts(chunks: ChunkRecord[]): Set<string> {
-  const counts = new Map<string, number>();
+/**
+ * 짧은 텍스트의 등장 횟수만 센다 — 원본 `_detect_header_footer_texts` 의 앞 절반.
+ *
+ * `chunk` 가 창 단위로 돌기 때문에 **카운트와 판정을 떼어 놨다**. 한 창 안에서는
+ * "문서 전체에서 3회" 를 알 수 없어서, 창마다 이 카운트만 캐리에 누적하고 판정은
+ * 전부 끝난 뒤(`load`)에 한다. 수집 규칙이 한 곳에만 있어야 단일 창과 다중 창의
+ * 결과가 갈리지 않는다.
+ */
+export function collectShortCounts(
+  chunks: ChunkRecord[],
+  into?: Map<string, number>,
+): Map<string, number> {
+  const counts = into ?? new Map<string, number>();
   for (const c of chunks) {
     const t = pyStrip(c.text ?? "");
     if (t !== "" && cpLen(t) < HEADER_FOOTER_MAX_LEN) {
       counts.set(t, (counts.get(t) ?? 0) + 1);
     }
   }
+  return counts;
+}
+
+/** 원본 `_detect_header_footer_texts` 의 뒤 절반 — 3회 이상만 남긴다. */
+export function headerFooterTexts(counts: Iterable<[string, number]>): Set<string> {
   const out = new Set<string>();
   for (const [t, n] of counts) if (n >= HEADER_FOOTER_REPEAT_TH) out.add(t);
   return out;
+}
+
+/** 원본 `_detect_header_footer_texts` — 문서 안에서 반복되는 짧은 텍스트. */
+export function detectHeaderFooterTexts(chunks: ChunkRecord[]): Set<string> {
+  return headerFooterTexts(collectShortCounts(chunks));
 }
 
 /** 원본 `_classify_chunk` — `null` 이면 통과. **순서가 규칙이다.** */
