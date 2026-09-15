@@ -13,6 +13,7 @@
  * | `POST /documents/{id}/reingest` | 전체 재인제스트 — chunks 삭제 후 재실행 |
  * | `POST /documents/{id}/reingest-missing` | 증분 — chunks 보존 + 누락 vision 페이지만 |
  * | `POST /ingest/email` | 이메일 첨부 인제스트 (공유 secret 인증) |
+ * | `POST /documents/precheck` | sha256 목록 → existing/failed/new (에이전트 중복 회피) |
  *
  * ## 원본에 있었으나 사라진 것
  * `POST /documents/url` — 2026-09-07 폐기. 본문 추출이 `trafilatura`(Python 전용)에
@@ -35,6 +36,7 @@ import { deviceScopeAllows } from "../_shared/device_token.ts";
 import { jsonResponse, methodNotAllowed, notFound, toResponse } from "../_shared/errors.ts";
 import { enforceRateLimit, METRIC_DOCS, RateLimitError } from "../_shared/rate_limit.ts";
 import { handleUpload } from "../_shared/documents/upload.ts";
+import { parsePrecheckBody, precheckHashes } from "../_shared/documents/precheck.ts";
 import {
   getDocument,
   getDocumentStatus,
@@ -153,6 +155,31 @@ Deno.serve(async (req: Request) => {
         return applyCorsHeaders(req, jsonResponse(r.body, r.status), settings);
       }
       return notFound();
+    }
+
+    // ---- precheck — 업로드와 같은 게이트(로그인 필수), 본문은 JSON ----
+    // **GET 블록 뒤, POST 업로드 앞**이다. 뒤로 가면 `path !== "/documents"` 에 걸려 404 다.
+    // 일일 상한은 걸지 않는다 — 파일을 만들지 않는 조회이고, 상한에 걸린 사용자도
+    // "이미 있다"는 답은 받아야 에이전트 원장이 정리된다.
+    if (path === "/documents/precheck") {
+      if (req.method !== "POST") return methodNotAllowed();
+      const user = requireAuthenticatedUser(caller);
+      let body: unknown = null;
+      try {
+        body = await req.json();
+      } catch {
+        return applyCorsHeaders(
+          req,
+          jsonResponse({ detail: "JSON 본문이 필요합니다." }, 422),
+          settings,
+        );
+      }
+      const parsed = parsePrecheckBody(body);
+      if (!parsed.ok) {
+        return applyCorsHeaders(req, jsonResponse({ detail: parsed.detail }, 422), settings);
+      }
+      const results = await precheckHashes(client, user.userId, parsed.hashes);
+      return applyCorsHeaders(req, jsonResponse({ results }), settings);
     }
 
     if (path !== "/documents" && path !== "/") return notFound();

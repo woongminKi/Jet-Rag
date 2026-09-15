@@ -63,6 +63,10 @@ export const ROUTES = [
   // 처음엔 `/active`·`/batch-status` 가 Railway 라 부정 전방탐색으로 뺐었다.
   // 이 규칙은 **GET 전용**이다. `/documents/{id}` 의 쓰기를 옮길 때 여기를 다시 봐야 한다.
   // (`POST /documents/url` 은 2026-09-07 폐기됐다 — §47.)
+  // 2026-09-15 신설 — `POST /documents/precheck`(Edge 전용, 원본 FastAPI 에는 없다).
+  // **아래 `{id}` 규칙보다 먼저**여야 한다. 그 규칙이 `/documents/precheck` 도 삼키는데
+  // GET 전용이라 POST 가 404 로 죽는다.
+  [/^\/documents\/precheck$/, "api-documents", new Set(["POST"])],
   [/^\/documents\/[^/]+$/, "api-documents", new Set(["GET"])],
   [/^\/documents\/[^/]+\/status$/, "api-documents", new Set(["GET"])],
   // 2026-09-07 전환 — 재인제스트 2 종. **`{id}` 규칙보다 아래여도 된다** — 위 규칙은

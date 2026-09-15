@@ -135,6 +135,9 @@ Deno.test("`/documents` — 이관한 것만 Edge, 나머지는 Railway", () => 
   assertEquals(resolveTarget("/documents/active", "GET"), "api-documents");
   assertEquals(resolveTarget("/documents/batch-status", "GET"), "api-documents");
 
+  // 2026-09-15 신설 — precheck 는 POST 다. `{id}` GET 규칙보다 앞에 있어야 걸린다.
+  assertEquals(resolveTarget("/documents/precheck", "POST"), "api-documents");
+
   // 2026-09-07 전환 — 재인제스트 2 종.
   assertEquals(resolveTarget("/documents/abc/reingest", "POST"), "api-documents");
   assertEquals(resolveTarget("/documents/abc/reingest-missing", "POST"), "api-documents");
