@@ -2,9 +2,12 @@
  * `load` 핸들러 계약 — part 하나씩 읽어 `chunks` 에 upsert 하고 이어간다.
  *
  * 여기서 고정하는 것:
- * - part 를 **하나만** 읽는다 (전부 읽으면 SK 최대 문서에서 13MB 를 든다)
+ * - part 를 **하나만**, 그것도 **쓰는 필드만** 읽는다 (`payload` 를 통째로 읽으면
+ *   `carry` 가 따라온다 — SK 실측 0.64MB, 이 단계에서는 한 번도 안 보는 값이다)
  * - `chunk_filter` 마킹이 **여기서** 일어난다 (문서 전체 반복 횟수를 알아야 해서
  *   `chunk` 창 단위 처리에서 옮겨 왔다)
+ * - 머리말 목록은 `total_parts - 1` 로 **지목**해서 읽는다 (`order desc` 로 찾으면
+ *   재인제스트 잔존 행이 잡혀 마킹이 조용히 빠진다)
  * - upsert 를 batch 로 쪼갠다 (Supabase statement_timeout)
  * - `on_conflict` 는 `doc_id,chunk_idx` — 원본 `upsert_chunks` 와 같아야 한다
  * - 마지막 part 에서는 `embed` 를 넣는다 (dense_vec 을 채워야 검색이 된다)
@@ -32,53 +35,59 @@ function rec(idx: number, over: Record<string, unknown> = {}) {
 }
 
 /**
- * `ingest_artifacts` 단건 조회 · 머리말 목록 조회 · `chunks` upsert/count · rpc 를 흉내낸다.
+ * `ingest_artifacts` 단건 조회 · 머리말 목록 조회 · `chunks` upsert/count · rpc 흉내.
  *
- * `hfTexts` 가 `null` 이면 마지막 chunk 아티팩트에 `header_footer_texts` 가 아예 없는
- * 경우(창 분할 배포 직전에 끝난 잡)를 흉내낸다.
+ * `header_footer_texts` 는 **그 seq 의 행에만** 둔다 — 마지막 창 지목이 정확한지
+ * 보려면 seq 마다 달라야 한다. 없으면 그 행에는 키가 아예 없는 것이다.
  */
-function fakeClient(parts: Record<number, unknown>, hfTexts: string[] | null = []) {
+interface Part {
+  records?: unknown[];
+  total_parts?: number;
+  header_footer_texts?: string[];
+}
+
+function fakeClient(parts: Record<number, Part>) {
   const upserts: { rows: Record<string, unknown>[]; opts: unknown }[] = [];
   const sends: Record<string, unknown>[] = [];
   let askedSeq: number | null = null;
-  let hfAsked = 0;
+  const hfSeqs: number[] = [];
 
   const client = {
     from(table: string) {
       if (table === "ingest_artifacts") {
         // deno-lint-ignore no-explicit-any
-        const q: any = {
-          _seq: null as number | null,
-          eq(col: string, v: unknown) {
-            if (col === "seq") {
-              q._seq = v as number;
-              askedSeq = v as number;
-            }
-            return q;
-          },
-          // 머리말 목록은 `seq` 내림차순 한 행으로 읽는다.
-          order() {
-            hfAsked++;
-            q._hf = true;
-            return q;
-          },
-          limit() {
-            if (q._hf) {
-              const seqs = Object.keys(parts).map(Number).sort((a, b) => b - a);
-              if (seqs.length === 0) return Promise.resolve({ data: [], error: null });
+        const make = (select: string): any => {
+          const isHf = select.includes("header_footer_texts");
+          let seq: number | null = null;
+          // deno-lint-ignore no-explicit-any
+          const q: any = {
+            eq(col: string, v: unknown) {
+              if (col === "seq") {
+                seq = v as number;
+                if (isHf) hfSeqs.push(seq);
+                else askedSeq = seq;
+              }
+              return q;
+            },
+            order() {
+              throw new Error("머리말 목록을 order desc 로 찾으면 안 된다 — 잔존 행이 잡힌다");
+            },
+            limit() {
+              const p = seq !== null ? parts[seq] : undefined;
+              if (p === undefined) return Promise.resolve({ data: [], error: null });
               return Promise.resolve({
-                data: [{ seq: seqs[0], texts: hfTexts ?? undefined }],
+                data: [
+                  isHf
+                    ? { seq, texts: p.header_footer_texts }
+                    : { seq, records: p.records, total_parts: p.total_parts },
+                ],
                 error: null,
               });
-            }
-            const p = q._seq !== null ? parts[q._seq] : undefined;
-            return Promise.resolve({
-              data: p === undefined ? [] : [{ seq: q._seq, payload: p }],
-              error: null,
-            });
-          },
+            },
+          };
+          return q;
         };
-        return { select: () => q };
+        return { select: (sel: string) => make(sel) };
       }
       // chunks
       return {
@@ -104,7 +113,14 @@ function fakeClient(parts: Record<number, unknown>, hfTexts: string[] | null = [
       return Promise.resolve({ data: 1, error: null });
     },
   };
-  return { client, upserts, sends, askedSeq: () => askedSeq, hfAsked: () => hfAsked };
+  return {
+    client,
+    upserts,
+    sends,
+    askedSeq: () => askedSeq,
+    hfAsked: () => hfSeqs.length,
+    hfSeqs: () => hfSeqs,
+  };
 }
 
 Deno.test("part 가 없으면 던진다 — 청크를 조용히 잃지 않는다", async () => {
@@ -116,9 +132,9 @@ Deno.test("part 가 없으면 던진다 — 청크를 조용히 잃지 않는다
 
 Deno.test("요청받은 part 만 읽는다", async () => {
   const { client, askedSeq } = fakeClient({
-    0: { part: 0, total_parts: 3, records: [rec(0)] },
-    1: { part: 1, total_parts: 3, records: [rec(1)] },
-    2: { part: 2, total_parts: 3, records: [rec(2)] },
+    0: { total_parts: 3, records: [rec(0)] },
+    1: { total_parts: 3, records: [rec(1)] },
+    2: { total_parts: 3, records: [rec(2)], header_footer_texts: [] },
   });
   // deno-lint-ignore no-explicit-any
   const h = makeLoadHandler({ client: client as any });
@@ -128,7 +144,9 @@ Deno.test("요청받은 part 만 읽는다", async () => {
 
 Deno.test("upsert 를 batch 로 쪼개고 on_conflict 를 준다", async () => {
   const records = Array.from({ length: 7 }, (_, i) => rec(i));
-  const { client, upserts } = fakeClient({ 0: { part: 0, total_parts: 1, records } });
+  const { client, upserts } = fakeClient({
+    0: { total_parts: 1, records, header_footer_texts: [] },
+  });
   // deno-lint-ignore no-explicit-any
   const h = makeLoadHandler({ client: client as any, batchSize: 3 });
   await h(TASK, {} as never);
@@ -142,7 +160,8 @@ Deno.test("upsert 를 batch 로 쪼개고 on_conflict 를 준다", async () => {
 
 Deno.test("남은 part 가 있으면 다음을 큐에 넣는다", async () => {
   const { client, sends } = fakeClient({
-    0: { part: 0, total_parts: 3, records: [rec(0)] },
+    0: { total_parts: 3, records: [rec(0)] },
+    2: { total_parts: 3, records: [], header_footer_texts: [] },
   });
   // deno-lint-ignore no-explicit-any
   const h = makeLoadHandler({ client: client as any });
@@ -152,7 +171,7 @@ Deno.test("남은 part 가 있으면 다음을 큐에 넣는다", async () => {
 
 Deno.test("마지막 part 면 embed 를 넣는다 — dense_vec 이 NULL 이면 검색이 반만 된다", async () => {
   const { client, sends } = fakeClient({
-    2: { part: 2, total_parts: 3, records: [rec(9)] },
+    2: { total_parts: 3, records: [rec(9)], header_footer_texts: [] },
   });
   // deno-lint-ignore no-explicit-any
   const h = makeLoadHandler({ client: client as any });
@@ -162,7 +181,7 @@ Deno.test("마지막 part 면 embed 를 넣는다 — dense_vec 이 NULL 이면 
 
 Deno.test("records 가 비어도 던지지 않는다 (빈 문서)", async () => {
   const { client, upserts, sends, hfAsked } = fakeClient({
-    0: { part: 0, total_parts: 1, records: [] },
+    0: { total_parts: 1, records: [] },
   });
   // deno-lint-ignore no-explicit-any
   const h = makeLoadHandler({ client: client as any });
@@ -176,10 +195,13 @@ Deno.test("records 가 비어도 던지지 않는다 (빈 문서)", async () => 
 });
 
 Deno.test("total_parts 가 없으면 1 로 본다 — 곧장 embed 로 넘어간다", async () => {
-  const { client, sends } = fakeClient({ 0: { records: [rec(0)] } });
+  const { client, sends, hfSeqs } = fakeClient({
+    0: { records: [rec(0)], header_footer_texts: [] },
+  });
   // deno-lint-ignore no-explicit-any
   const h = makeLoadHandler({ client: client as any });
   await h(TASK, {} as never);
+  assertEquals(hfSeqs(), [0]); // 1 - 1
   assertEquals(sends, [{ job_id: "j1", doc_id: "d1", stage: "embed" }]);
 });
 
@@ -193,25 +215,45 @@ Deno.test("마지막 창이 남긴 목록으로 header_footer 를 마킹한다",
     rec(0, { text: "머리말" }),
     rec(1, { text: "이것은 충분히 긴 본문 문장입니다. 걸리지 않아야 합니다." }),
   ];
-  const { client, upserts, hfAsked } = fakeClient(
-    { 1: { part: 1, total_parts: 3, records } },
-    ["머리말"],
-  );
+  const { client, upserts, hfAsked, hfSeqs } = fakeClient({
+    1: { total_parts: 3, records },
+    // 목록은 **마지막 창**(seq = total_parts - 1)에만 있다.
+    2: { total_parts: 3, records: [], header_footer_texts: ["머리말"] },
+  });
   // deno-lint-ignore no-explicit-any
   const h = makeLoadHandler({ client: client as any });
   await h({ ...TASK, from: 1 }, {} as never);
 
   assertEquals(hfAsked(), 1);
+  assertEquals(hfSeqs(), [2]);
   const rows = upserts.flatMap((u) => u.rows) as { flags: Record<string, unknown> }[];
   assertEquals(rows[0].flags["filtered_reason"], "header_footer");
   assertEquals("filtered_reason" in rows[1].flags, false);
 });
 
+Deno.test("잔존 상위 seq 가 머리말 목록을 가리지 않는다", async () => {
+  // 재인제스트로 창 수가 줄어 옛 part 7 이 남아 있는 상황. `order desc limit 1` 로
+  // 찾으면 목록이 없는 그 행이 잡혀 **머리말 마킹이 통째로 조용히 빠진다**.
+  const { client, upserts, hfSeqs } = fakeClient({
+    0: {
+      total_parts: 1,
+      records: [rec(0, { text: "머리말" })],
+      header_footer_texts: ["머리말"],
+    },
+    7: { total_parts: 8, records: [] }, // 잔존 — 목록 없음
+  });
+  // deno-lint-ignore no-explicit-any
+  const h = makeLoadHandler({ client: client as any });
+  await h(TASK, {} as never);
+  assertEquals(hfSeqs(), [0]);
+  const rows = upserts.flatMap((u) => u.rows) as { flags: Record<string, unknown> }[];
+  assertEquals(rows[0].flags["filtered_reason"], "header_footer");
+});
+
 Deno.test("목록에 없으면 마킹하지 않는다 — 판정 출처는 문서 전체다", async () => {
-  const { client, upserts } = fakeClient(
-    { 0: { part: 0, total_parts: 1, records: [rec(0, { text: "머리말" })] } },
-    [],
-  );
+  const { client, upserts } = fakeClient({
+    0: { total_parts: 1, records: [rec(0, { text: "머리말" })], header_footer_texts: [] },
+  });
   // deno-lint-ignore no-explicit-any
   const h = makeLoadHandler({ client: client as any });
   await h(TASK, {} as never);
@@ -226,10 +268,9 @@ Deno.test("나머지 사유는 part 만 보고도 판정된다 — 순서가 규
     rec(2, { text: "머리말" }), // header_footer 가 table_noise 보다 먼저다
     rec(3, { text: "1 | 2\n".repeat(20) }), // table_noise
   ];
-  const { client, upserts } = fakeClient(
-    { 0: { part: 0, total_parts: 1, records } },
-    ["머리말"],
-  );
+  const { client, upserts } = fakeClient({
+    0: { total_parts: 1, records, header_footer_texts: ["머리말"] },
+  });
   // deno-lint-ignore no-explicit-any
   const h = makeLoadHandler({ client: client as any });
   await h(TASK, {} as never);
@@ -248,10 +289,7 @@ Deno.test("header_footer_texts 가 아예 없으면 머리말만 건너뛰고 �
     rec(0, { text: "머리말", flags: { filtered_reason: "header_footer" } }),
     rec(1, { text: "   " }),
   ];
-  const { client, upserts } = fakeClient(
-    { 0: { part: 0, total_parts: 1, records } },
-    null,
-  );
+  const { client, upserts } = fakeClient({ 0: { total_parts: 1, records } });
   // deno-lint-ignore no-explicit-any
   const h = makeLoadHandler({ client: client as any });
   await h(TASK, {} as never);
@@ -262,16 +300,13 @@ Deno.test("header_footer_texts 가 아예 없으면 머리말만 건너뛰고 �
 });
 
 Deno.test("기존 flags 는 지우지 않는다 — filtered_reason 만 덧쓴다", async () => {
-  const { client, upserts } = fakeClient(
-    {
-      0: {
-        part: 0,
-        total_parts: 1,
-        records: [rec(0, { text: "머리말", flags: { keep: 1 } })],
-      },
+  const { client, upserts } = fakeClient({
+    0: {
+      total_parts: 1,
+      records: [rec(0, { text: "머리말", flags: { keep: 1 } })],
+      header_footer_texts: ["머리말"],
     },
-    ["머리말"],
-  );
+  });
   // deno-lint-ignore no-explicit-any
   const h = makeLoadHandler({ client: client as any });
   await h(TASK, {} as never);

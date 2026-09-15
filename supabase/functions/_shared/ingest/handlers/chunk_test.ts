@@ -39,6 +39,7 @@ interface Filters {
   eq: Record<string, unknown>;
   in: Record<string, unknown[]>;
   gte?: [string, unknown];
+  range?: [number, number];
 }
 
 /**
@@ -82,7 +83,9 @@ function fakeClient(
         for (const r of srcOf(st)) out.push({ stage: st, seq: r.seq });
       }
       out.sort((a, b) => a.seq - b.seq);
-      return { data: out, error: null };
+      // PostgREST 의 `range` 를 흉내낸다 — 상한에 닿았는지 판정이 진짜로 돌아야 한다.
+      if (!f.range) throw new Error("플랜 조회에 range 가 없다 — 조용히 잘릴 수 있다");
+      return { data: out.slice(f.range[0], f.range[1] + 1), error: null };
     }
     // (B) 창 읽기 — 지정한 seq 만.
     if (stage !== undefined) {
@@ -114,8 +117,13 @@ function fakeClient(
         f.in[col] = v;
         return q;
       },
+      range(lo: number, hi: number) {
+        f.range = [lo, hi];
+        return q;
+      },
+      // `order` 는 체인 중간이다 — 여기서 resolve 하면 뒤에 붙는 `range` 를 놓친다.
       order() {
-        return Promise.resolve(resolve(f, select));
+        return q;
       },
       limit() {
         return Promise.resolve(resolve(f, select));
@@ -140,12 +148,16 @@ function fakeClient(
         // deno-lint-ignore no-explicit-any
         const dq: any = {
           eq: () => dq,
-          limit: () => Promise.resolve({ data: [{ flags: docFlags }], error: null }),
+          limit: () => Promise.resolve({ data: [{ flags: { ...docFlags } }], error: null }),
         };
         return {
           select: () => dq,
           update(row: Record<string, unknown>) {
-            flagUpdates.push(row.flags as Record<string, unknown>);
+            const flags = row.flags as Record<string, unknown>;
+            flagUpdates.push(flags);
+            // **쓴 값이 남아야** 한다 — 마지막 창 재배달 판정이 이 값을 다시 읽는다.
+            for (const k of Object.keys(docFlags)) delete docFlags[k];
+            Object.assign(docFlags, flags);
             return { eq: () => Promise.resolve({ error: null }) };
           },
         };
@@ -226,15 +238,48 @@ Deno.test("직전 창의 캐리가 없으면 던진다 — 순서가 깨진 것�
   );
 });
 
-Deno.test("범위 밖 창은 아무것도 안 만들고 끝낸다 — 잔존 메시지 재배달", async () => {
+Deno.test("범위 밖 창은 던진다 — 조용히 성공으로 끝내면 청크가 사라진다", async () => {
   const { client, upserts, sends } = fakeClient([
     { seq: 0, payload: { sections: [sec("본문 문장입니다.", 1)] } },
   ]);
   // deno-lint-ignore no-explicit-any
   const h = makeChunkHandler({ client: client as any, env: ENV, artifactsPerTask: 1 });
-  await h({ ...TASK, from: 3, count: 1 }, {} as never);
+  await assertRejects(
+    () => h({ ...TASK, from: 3, count: 1 }, {} as never),
+    Error,
+    "범위 밖",
+  );
   assertEquals(upserts.length, 0);
   assertEquals(sends.length, 0);
+});
+
+Deno.test("창의 소스에서 sections 를 하나도 못 읽으면 던진다", async () => {
+  // 플랜에는 있는데 payload 에서 배열이 안 나온 경우 — 별칭이 안 먹었거나 행이 사라졌다.
+  // 그냥 두면 이 창이 청크 0 개를 만들고 잡은 **성공으로** 끝난다.
+  const { client, upserts, sends } = fakeClient([
+    { seq: 0, payload: { metadata: {} } },
+    { seq: 1, payload: null },
+  ]);
+  // deno-lint-ignore no-explicit-any
+  const h = makeChunkHandler({ client: client as any, env: ENV, artifactsPerTask: 2 });
+  await assertRejects(
+    () => h(TASK, {} as never),
+    Error,
+    "sections 를 하나도 못 읽었다",
+  );
+  assertEquals(upserts.length, 0);
+  assertEquals(sends.length, 0);
+});
+
+Deno.test("소스 행이 플랜 상한에 닿으면 던진다 — 잘린 플랜으로 청킹하지 않는다", async () => {
+  const rows = Array.from({ length: 5000 }, (_, i) => ({
+    seq: i,
+    payload: { sections: [sec(`문장 ${i} 입니다.`, i + 1)] },
+  }));
+  const { client } = fakeClient(rows);
+  // deno-lint-ignore no-explicit-any
+  const h = makeChunkHandler({ client: client as any, env: ENV, artifactsPerTask: 4 });
+  await assertRejects(() => h(TASK, {} as never), Error, "플랜 상한");
 });
 
 // ---------------------------------------------------------------------------
@@ -490,6 +535,7 @@ Deno.test("content_gate — PII·워터마크를 metadata 와 문서 flags 에 �
     has_watermark: true,
     third_party: false,
     watermark_hits: ["대외비"],
+    chunk_finalized_job: "j1",
   });
 });
 
@@ -505,6 +551,7 @@ Deno.test("content_gate — 아무것도 없으면 false 3개만 남긴다", asy
     has_pii: false,
     has_watermark: false,
     third_party: false,
+    chunk_finalized_job: "j1",
   });
 });
 
@@ -609,6 +656,7 @@ Deno.test("문서 flags 는 창을 넘어 OR 로 누적된다 — 마지막 창�
     has_watermark: true,
     third_party: false,
     watermark_hits: ["대외비"],
+    chunk_finalized_job: "j1",
   });
 });
 
@@ -644,6 +692,21 @@ Deno.test("창을 재배달해도 결과가 같다 (멱등)", async () => {
   assertEquals(JSON.stringify(upserts.at(-1)!.row.payload), first);
   // upsert 라 행은 늘지 않는다.
   assertEquals(new Set(upserts.map((u) => u.row.seq)).size, 2);
+});
+
+Deno.test("마지막 창을 재배달해도 tag_summarize 는 한 번만 들어간다", async () => {
+  // 두 번 들어가면 LLM 2 회 + load 사슬 전체가 다시 돈다.
+  const { client, sends, flagUpdates } = fakeClient(MULTI);
+  // deno-lint-ignore no-explicit-any
+  const h = makeChunkHandler({ client: client as any, env: ENV, artifactsPerTask: 1 });
+  for (const from of [0, 1, 2]) await h({ ...TASK, from, count: 1 }, {} as never);
+  assertEquals(sends.filter((x) => x.stage === "tag_summarize").length, 1);
+
+  // 마지막 창만 한 번 더 — flags 에 남은 chunk_finalized_job 이 막아야 한다.
+  await h({ ...TASK, from: 2, count: 1 }, {} as never);
+  assertEquals(sends.filter((x) => x.stage === "tag_summarize").length, 1);
+  // flags 는 다시 써도 같은 값이라 무해하다.
+  assertEquals(flagUpdates.at(-1)!["chunk_finalized_job"], "j1");
 });
 
 Deno.test("한 창이 통째로 같은 page 면 청크 0 개로 넘긴다 — 잘라도 되는 곳이 없다", async () => {

@@ -76,6 +76,19 @@ const SYNONYM_LLM_INPUT_CHARS = 3000;
 const SOURCE_STAGES = ["extract", "scan", "vision"];
 
 /**
+ * 소스 플랜 한 번에 읽을 최대 행 수.
+ *
+ * **PostgREST 는 기본 상한(`db-max-rows`, Supabase 기본 1,000)을 넘으면 조용히 자른다.**
+ * 잘린 플랜으로 돌면 `totalWindows` 가 작아져 뒷부분이 통째로 사라지고, 잡은 성공으로
+ * 끝난다 — 가장 찾기 어려운 실패다. 그래서 상한을 명시하고, 그 값에 **닿으면** 잘렸다고
+ * 보고 던진다.
+ *
+ * 5,000 인 근거: SK 사업보고서 1,513p 가 extract 152 + vision 최대 ~379 = 531 행이다.
+ * 열 배 여유다.
+ */
+const PLAN_MAX = 5000;
+
+/**
  * 창을 넘기는 상태.
  *
  * `sections` 는 "마지막 page 값을 공유하는 꼬리 묶음" 이라 **한 페이지분**으로 유계다.
@@ -104,20 +117,33 @@ function emptyCarry(): ChunkCarry {
   };
 }
 
-/** 원본 `content_gate._merge_doc_flags` — 기존 flags 를 읽어 머지한다(덮어쓰지 않는다). */
-async function mergeDocFlags(
+/**
+ * `documents.flags` 현재 값.
+ *
+ * 마지막 창이 이 값을 **두 가지로** 쓴다: ① 머지 베이스(덮어쓰지 않으려고)
+ * ② `chunk_finalized_job` 으로 `tag_summarize` 중복 투입 판정. 그래서 읽기와 쓰기를
+ * 나눠 뒀다 — 한 함수로 묶으면 같은 행을 두 번 읽게 된다.
+ */
+async function readDocFlags(
   client: SupabaseClient,
   docId: string,
-  updates: Record<string, unknown>,
-): Promise<void> {
+): Promise<Record<string, unknown>> {
   const { data, error } = await client
     .from("documents").select("flags").eq("id", docId).limit(1);
   if (error) throw new Error(`flags 조회 실패: ${error.message}`);
-  const existing = ((data ?? [])[0] as { flags?: Record<string, unknown> } | undefined)
-    ?.flags ?? {};
-  const { error: uErr } = await client
+  return ((data ?? [])[0] as { flags?: Record<string, unknown> } | undefined)?.flags ?? {};
+}
+
+/** 원본 `content_gate._merge_doc_flags` — 기존 flags 에 덧쓴다(덮어쓰지 않는다). */
+async function writeDocFlags(
+  client: SupabaseClient,
+  docId: string,
+  existing: Record<string, unknown>,
+  updates: Record<string, unknown>,
+): Promise<void> {
+  const { error } = await client
     .from("documents").update({ flags: { ...existing, ...updates } }).eq("id", docId);
-  if (uErr) throw new Error(`flags 갱신 실패: ${uErr.message}`);
+  if (error) throw new Error(`flags 갱신 실패: ${error.message}`);
 }
 
 /**
@@ -218,9 +244,17 @@ export function makeChunkHandler(deps: ChunkDeps): TaskHandler {
       .select("stage, seq")
       .eq("job_id", task.job_id)
       .in("stage", SOURCE_STAGES)
-      .order("seq", { ascending: true });
+      .order("seq", { ascending: true })
+      .range(0, PLAN_MAX - 1);
     if (planErr) throw new Error(`소스 산출물 목록 조회 실패: ${planErr.message}`);
     const allRefs = (planData ?? []) as SourceRef[];
+    if (allRefs.length >= PLAN_MAX) {
+      // 잘린 플랜으로 돌면 문서 뒷부분이 통째로 사라지는데 잡은 성공으로 끝난다.
+      throw new Error(
+        `소스 산출물이 ${allRefs.length}행 — 플랜 상한 ${PLAN_MAX} 에 닿았다 ` +
+          `(job=${task.job_id}). 잘린 플랜으로 청킹하면 문서 뒷부분이 조용히 사라진다.`,
+      );
+    }
 
     const extractSeqs = allRefs.filter((r) => r.stage === "extract").map((r) => r.seq);
     if (extractSeqs.length === 0) {
@@ -228,8 +262,11 @@ export function makeChunkHandler(deps: ChunkDeps): TaskHandler {
       // **문서가 조용히 사라진다** — 던져서 재시도·failed 로 보낸다.
       throw new Error(`extract 산출물이 없다 (job=${task.job_id}). 순서가 깨졌다.`);
     }
-    // 페이지 범위가 빠짐없이 이어지는지 확인한다. 중간이 비면 그 페이지 내용이
-    // 통째로 누락된 청크가 만들어지고, 그건 나중에 찾기 어렵다.
+    // seq 가 겹치면 같은 페이지 범위를 두 번 넣게 된다. **빠진 구간(gap)까지는 못 본다** —
+    // extract 의 seq 는 `page_from` 이고 간격이 창 길이에 따라 달라져서, 여기서 읽는
+    // `stage, seq` 만으로는 "10 다음이 20 인 게 정상인지" 를 알 수 없다. 그걸 보려면
+    // `page_count` 를 같이 읽어야 하는데, 그건 이 쿼리를 무겁게 만든다. 누락은 아래
+    // "창의 섹션이 0 개" 검사와 `load` 의 part 누락 검사가 잡는다.
     const dup = extractSeqs.filter((s, i) => extractSeqs.indexOf(s) !== i);
     if (dup.length > 0) {
       throw new Error(`extract 산출물 seq 가 중복됐다: ${[...new Set(dup)].join(", ")}`);
@@ -237,12 +274,13 @@ export function makeChunkHandler(deps: ChunkDeps): TaskHandler {
 
     const { plan, totalWindows, extractCount, scanCount, visionCount } = windowPlan(allRefs, per);
     if (window >= totalWindows) {
-      // 재인제스트로 창 수가 줄었는데 옛 메시지가 남아 있는 경우다. 여기서 만들면
-      // `load` 가 읽을 잔존 part 가 생긴다 — 아무것도 안 하고 끝낸다.
-      console.warn(
-        `chunk: 창 ${window} 는 범위 밖이다 (total=${totalWindows}, job=${task.job_id}) — 건너뛴다`,
+      // 조용히 넘기면 잡이 성공으로 끝난다. 이 상태는 둘 중 하나인데 **둘 다 사고**다:
+      // 재인제스트로 창 수가 줄어 옛 메시지가 남았거나, 플랜이 잘렸거나.
+      // 던져서 재시도·archive 로 보내고 잡을 failed 로 남긴다.
+      throw new Error(
+        `창 ${window} 는 범위 밖 (total=${totalWindows}, job=${task.job_id}) — ` +
+          "재인제스트로 창 수가 줄었거나 플랜이 잘렸다.",
       );
-      return;
     }
     const isLast = window === totalWindows - 1;
 
@@ -250,9 +288,25 @@ export function makeChunkHandler(deps: ChunkDeps): TaskHandler {
     const refs = plan.slice(window * per, window * per + per);
     const rows = await loadWindowRows(deps.client, task.job_id, refs);
     const windowSections: ExtractedSection[] = [];
+    let resolved = 0;
     for (const ref of refs) {
       const part = rows.get(`${ref.stage}:${ref.seq}`)?.sections;
-      if (Array.isArray(part)) windowSections.push(...part);
+      // 빈 배열도 "풀린" 것이다 — 섹션이 0 개인 페이지 범위는 정상이다.
+      if (Array.isArray(part)) {
+        resolved++;
+        windowSections.push(...part);
+      }
+    }
+    if (refs.length > 0 && resolved === 0) {
+      // 플랜에는 있는데 payload 에서 배열이 하나도 안 나왔다. 그냥 두면 이 창이
+      // **청크 0 개**를 만들고 잡은 성공으로 끝난다 — 청크가 사라졌는데 아무도 모른다.
+      // 실제 원인 후보 둘: ① `sections:payload->sections` 별칭이 안 먹어 키가 안 옴
+      // ② 플랜을 읽은 뒤 그 행들이 사라짐(재인제스트 중 삭제).
+      throw new Error(
+        `창 ${window} 의 소스 ${refs.length}행에서 sections 를 하나도 못 읽었다 ` +
+          `(job=${task.job_id}, refs=${refs.map((r) => `${r.stage}:${r.seq}`).join(",")}). ` +
+          "`payload->sections` 별칭이 안 먹었거나 아티팩트 행이 사라졌다.",
+      );
     }
 
     // 3) 캐리 — 직전 창의 꼬리 섹션·chunk_idx·카운트·flags.
@@ -299,7 +353,7 @@ export function makeChunkHandler(deps: ChunkDeps): TaskHandler {
     // `vision_type` 은 `ExtractionResult.metadata` 에서 온다 — 단독 이미지 업로드에서만
     // 채워진다(스캔 PDF 경로는 원본이 그 값을 안 넘긴다). 문서의 **첫** 소스 행에만
     // 있으므로 창 0 에서만 본다. 나머지 창은 undefined → false, OR 누적이라 결과가 같다.
-    const visionType = window === 0
+    const visionType = window === 0 && refs[0]
       ? rows.get(`${refs[0].stage}:${refs[0].seq}`)?.metadata?.["vision_type"]
       : undefined;
     const gated = runContentGateStage({ chunks: records, visionType });
@@ -370,17 +424,14 @@ export function makeChunkHandler(deps: ChunkDeps): TaskHandler {
 
     // 마지막 창 — 문서 flags 를 **누적값으로** 머지한다. 창마다 덮어쓰면 마지막 창에
     // PII 가 없다는 이유로 앞 창의 true 가 지워진다.
-    const flagsUpdate: Record<string, unknown> = { ...nextCarry.docFlags };
-    await mergeDocFlags(deps.client, task.doc_id, flagsUpdate);
-    console.info(
-      `content_gate: doc=${task.doc_id} has_pii=${flagsUpdate.has_pii} ` +
-        `has_watermark=${flagsUpdate.has_watermark} ` +
-        `third_party=${flagsUpdate.third_party} windows=${totalWindows} ` +
-        `chunks=${nextCarry.nextChunkIdx}`,
-    );
+    const existingFlags = await readDocFlags(deps.client, task.doc_id);
+    // 이 잡의 마지막 창이 이미 끝났는가. `tag_summarize` 는 LLM 2 회 + load 사슬 전체를
+    // 다시 돌리므로, 창이 재배달될 때 두 번 들어가면 안 된다.
+    const alreadyFinalized = existingFlags["chunk_finalized_job"] === task.job_id;
 
     // 재인제스트로 창 수가 줄면 옛 part 가 남는다. 그걸 `load` 가 읽으면 이번에 안 만든
-    // 청크가 되살아난다 — 넘기기 전에 지운다.
+    // 청크가 되살아난다 — 넘기기 전에 지운다. flags 쓰기 **앞**에 둔다: 아래 두 줄
+    // (flags 쓰기 → enqueue) 사이가 좁을수록 "flags 만 쓰고 죽어 잡이 멈추는" 창이 좁다.
     const { error: delErr } = await deps.client
       .from("ingest_artifacts")
       .delete()
@@ -388,6 +439,26 @@ export function makeChunkHandler(deps: ChunkDeps): TaskHandler {
       .eq("stage", "chunk")
       .gte("seq", totalWindows);
     if (delErr) throw new Error(`잔존 chunk 산출물 정리 실패: ${delErr.message}`);
+
+    const flagsUpdate: Record<string, unknown> = {
+      ...nextCarry.docFlags,
+      // 이 잡의 chunk 가 끝났다는 표식. 재인제스트는 job_id 가 달라 자동으로 풀린다.
+      chunk_finalized_job: task.job_id,
+    };
+    await writeDocFlags(deps.client, task.doc_id, existingFlags, flagsUpdate);
+    console.info(
+      `content_gate: doc=${task.doc_id} has_pii=${flagsUpdate.has_pii} ` +
+        `has_watermark=${flagsUpdate.has_watermark} ` +
+        `third_party=${flagsUpdate.third_party} windows=${totalWindows} ` +
+        `chunks=${nextCarry.nextChunkIdx}`,
+    );
+
+    if (alreadyFinalized) {
+      console.warn(
+        `chunk: 마지막 창 재배달 (job=${task.job_id}) — tag_summarize 를 다시 넣지 않는다`,
+      );
+      return;
+    }
 
     // 원본 순서: chunk_filter → content_gate → **tag_summarize** → load.
     const { error: sendErr } = await deps.client.rpc("ingest_queue_send", {

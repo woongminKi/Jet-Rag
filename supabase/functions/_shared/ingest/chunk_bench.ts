@@ -46,7 +46,20 @@ function arg(name: string, fallback?: string): string {
   const i = Deno.args.indexOf(`--${name}`);
   if (i >= 0 && i + 1 < Deno.args.length) return Deno.args[i + 1];
   if (fallback !== undefined) return fallback;
-  throw new Error(`--${name} 이 필요하다`);
+  console.error(`--${name} 이 필요하다`);
+  Deno.exit(2);
+}
+
+/** 숫자 인자. NaN 이면 즉시 죽는다 — `Number("4개")` 로 창 수가 NaN 이 되면 벤치가
+ * 0 창을 돌고도 "통과" 처럼 보인다. */
+function numArg(name: string, fallback: string): number {
+  const raw = arg(name, fallback);
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) {
+    console.error(`--${name} 은 1 이상의 수여야 한다 (받은 값: ${raw})`);
+    Deno.exit(2);
+  }
+  return Math.floor(n);
 }
 
 function mb(n: number): string {
@@ -99,8 +112,8 @@ interface WindowStat {
 
 function main(): void {
   const path = arg("sections");
-  const perWindow = Number(arg("window", "4"));
-  const pagesPerArtifact = Number(arg("pages-per-artifact", "10"));
+  const perWindow = numArg("window", "4");
+  const pagesPerArtifact = numArg("pages-per-artifact", "10");
   // `mem` 이면 (C) 만 돈다 — 앞 패스가 남긴 쓰레기 없이 heap 을 재려면 그래야 한다.
   const pass = arg("pass", "all");
 

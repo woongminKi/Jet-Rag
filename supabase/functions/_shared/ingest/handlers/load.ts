@@ -45,13 +45,14 @@ export interface LoadDeps {
   batchSize?: number;
 }
 
+/**
+ * `load` 가 실제로 쓰는 필드만. `payload` 를 통째로 읽으면 `carry`(SK 실측 0.64MB) 가
+ * 따라온다 — 이 단계에서는 한 번도 안 보는 값이다.
+ */
 interface ChunkArtifact {
   seq: number;
-  payload: {
-    part?: number;
-    total_parts?: number;
-    records?: ChunkRecord[];
-  } | null;
+  records?: ChunkRecord[] | null;
+  total_parts?: number | null;
 }
 
 function readBatchSize(deps: LoadDeps): number {
@@ -65,19 +66,23 @@ function readBatchSize(deps: LoadDeps): number {
 /**
  * `chunk` 의 **마지막 창**이 남긴 머리말/꼬리말 목록.
  *
- * 어느 seq 가 마지막인지는 `seq` 내림차순 한 행으로 안다. 목록만 읽고 `records` 는
- * 안 읽는다 — part 하나가 수백 KB 다.
+ * 마지막 seq 를 `order desc limit 1` 로 찾으면 안 된다 — 재인제스트로 창 수가 줄었을 때
+ * 잔존 행이 더 큰 seq 를 갖고 있으면 그게 잡히고, 그 행에는 목록이 없어 **머리말 마킹이
+ * 통째로 조용히 빠진다**. 이번 잡의 `total_parts` 로 정확히 지목한다.
+ *
+ * 목록만 읽고 `records` 는 안 읽는다 — part 하나가 수백 KB 다.
  */
 async function loadHeaderFooterTexts(
   client: SupabaseClient,
   jobId: string,
+  lastSeq: number,
 ): Promise<Set<string>> {
   const { data, error } = await client
     .from("ingest_artifacts")
     .select("seq, texts:payload->header_footer_texts")
     .eq("job_id", jobId)
     .eq("stage", "chunk")
-    .order("seq", { ascending: false })
+    .eq("seq", lastSeq)
     .limit(1);
   if (error) throw new Error(`머리말 목록 조회 실패: ${error.message}`);
   const texts = ((data ?? [])[0] as { texts?: unknown } | undefined)?.texts;
@@ -86,7 +91,7 @@ async function loadHeaderFooterTexts(
     // `chunk` 가 `filtered_reason` 을 붙여 뒀으므로 빈 집합으로 둬도 결과가 같다
     // (이미 붙은 flags 는 아래에서 보존한다). 조용히 넘기지 않고 남긴다.
     console.warn(
-      `load: chunk 산출물에 header_footer_texts 가 없다 (job=${jobId}) — ` +
+      `load: chunk 산출물 seq=${lastSeq} 에 header_footer_texts 가 없다 (job=${jobId}) — ` +
         "창 분할 이전 산출물로 보고 머리말 마킹을 건너뛴다",
     );
     return new Set();
@@ -142,7 +147,7 @@ export function makeLoadHandler(deps: LoadDeps): TaskHandler {
 
     const { data, error } = await deps.client
       .from("ingest_artifacts")
-      .select("seq, payload")
+      .select("seq, records:payload->records, total_parts:payload->total_parts")
       .eq("job_id", task.job_id)
       .eq("stage", "chunk")
       .eq("seq", part)
@@ -158,13 +163,13 @@ export function makeLoadHandler(deps: LoadDeps): TaskHandler {
       );
     }
 
-    const raw = row.payload?.records ?? [];
-    const totalParts = row.payload?.total_parts ?? 1;
+    const raw = row.records ?? [];
+    const totalParts = row.total_parts ?? 1;
 
     // 원본 파이프라인 순서: chunk → **chunk_filter** → content_gate → … → load.
     // 청크를 지우지 않는다. 표시만 남기고 검색 쪽 쿼리가 그걸 보고 거른다.
     const hfTexts = raw.length > 0
-      ? await loadHeaderFooterTexts(deps.client, task.job_id)
+      ? await loadHeaderFooterTexts(deps.client, task.job_id, totalParts - 1)
       : new Set<string>();
     const filtered = runChunkFilterStage(raw, hfTexts);
     const records = filtered.chunks;
