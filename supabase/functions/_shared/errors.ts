@@ -20,13 +20,19 @@ export function jsonResponse(body: unknown, status = 200, headers: Record<string
   });
 }
 
-/** FastAPI 의 `HTTPException` 과 같은 본문. */
+/**
+ * FastAPI 의 `HTTPException` 과 같은 본문. `code` 를 주면 `{detail, code}` 로 나간다.
+ *
+ * `detail` 은 건드리지 않는다 — 프론트가 그 키를 읽는다. `code` 는 **덧붙이는** 값이고,
+ * 상태코드를 못 읽는 클라이언트(iOS 단축어)가 분기에 쓴다. 안 주면 예전과 같은 `{detail}` 이다.
+ */
 export function detailResponse(
   status: number,
   detail: string,
   headers: Record<string, string> = {},
+  code?: string,
 ): Response {
-  return jsonResponse({ detail }, status, headers);
+  return jsonResponse(code === undefined ? { detail } : { detail, code }, status, headers);
 }
 
 /**
@@ -35,7 +41,7 @@ export function detailResponse(
  */
 export function toResponse(e: unknown): Response {
   if (e instanceof AuthError) {
-    return detailResponse(e.status, e.detail, e.headers);
+    return detailResponse(e.status, e.detail, e.headers, e.code);
   }
   // 내부 사정을 밖으로 내보내지 않는다. 진단은 로그로 한다.
   console.error("처리되지 않은 예외:", e);

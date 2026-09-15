@@ -7,7 +7,7 @@
  * 경계(60 통과 / 61 차단)와 fail-open 둘 다 여기서 고정한다.
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 
 import {
   enforceRateLimit,
@@ -65,6 +65,19 @@ Deno.test("분당 60건까지는 통과한다", async () => {
 Deno.test("61번째는 429 — 402 가 아니다(플랜이 아니라 남용 방지다)", async () => {
   assertEquals(await run(UPLOAD_BURST_PER_MINUTE + 1), 429);
   assertEquals(await run(1000), 429);
+});
+
+Deno.test("429 는 code rate_limited 를 싣는다 — 상태코드를 못 읽는 클라이언트용", async () => {
+  const { client } = fakeClient(UPLOAD_BURST_PER_MINUTE + 1);
+  const e = await assertRejects(
+    // deno-lint-ignore no-explicit-any
+    () => enforceUploadBurst({ userId: "u1" }, { client: client as any, now: () => 0 }),
+    RateLimitError,
+  );
+  assertEquals(e.status, 429);
+  assertEquals(e.code, "rate_limited");
+  // 문구는 그대로다 — code 는 덧붙이는 값이지 대체가 아니다.
+  assertEquals(e.detail.includes("분당 업로드 한도"), true);
 });
 
 Deno.test("RPC 실패·비숫자 응답은 fail-open", async () => {
@@ -165,4 +178,36 @@ Deno.test("enforceRateLimit 의 quota 판정은 quotaActiveFor 와 한 몸이다
   assertEquals(quotaActiveFor(u, { ...BASE, quotaEnforcementEnabled: false }), false);
   assertEquals(quotaActiveFor({ userId: "owner", isAuthenticated: true }, BASE), false);
   assertEquals(quotaActiveFor({ userId: "u1", isAuthenticated: false }, BASE), false);
+});
+
+Deno.test("enforceRateLimit 의 402·429 는 서로 다른 code 를 싣는다", async () => {
+  // 402 — 플랜 답변 한도. quotaClient 의 pro 플랜은 1회/일이고 카운터는 이미 2다.
+  const quota = await assertRejects(
+    () =>
+      enforceRateLimit(
+        METRIC_ANSWERS,
+        new Request("https://x/answer"),
+        { userId: "u1", isAuthenticated: true },
+        BASE,
+        { client: quotaClient(), now: () => 0 },
+      ),
+    RateLimitError,
+  );
+  assertEquals(quota.status, 402);
+  assertEquals(quota.code, "answers_quota");
+
+  // 429 — 남용 방지 cap. quota 를 끄고 abuse cap 만 켜면 같은 카운터(2)가 429 로 간다.
+  const abuse = await assertRejects(
+    () =>
+      enforceRateLimit(
+        METRIC_ANSWERS,
+        new Request("https://x/answer"),
+        { userId: "u1", isAuthenticated: true },
+        { ...BASE, quotaEnforcementEnabled: false, rateLimitAnswersPerDay: 1 },
+        { client: quotaClient(), now: () => 0 },
+      ),
+    RateLimitError,
+  );
+  assertEquals(abuse.status, 429);
+  assertEquals(abuse.code, "rate_limited");
 });

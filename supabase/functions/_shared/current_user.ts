@@ -77,18 +77,34 @@ export interface DeviceAuth {
  */
 export type CurrentUser = CurrentUserBase & ({ authKind: "session" } | DeviceAuth);
 
-/** HTTP 상태와 detail 을 담은 인증/권한 실패. `errors.ts` 가 Response 로 바꾼다. */
+/**
+ * HTTP 상태와 detail 을 담은 인증/권한 실패. `errors.ts` 가 Response 로 바꾼다.
+ *
+ * ## `code` 는 상태코드를 못 읽는 클라이언트를 위한 것이다 (2026-09-16)
+ * iOS 단축어의 `Get Contents of URL` 은 **응답 상태코드를 노출하지 않는다.** 본문만 본다.
+ * 그래서 401/403 을 구분하려면 본문 안에 기계가 읽을 값이 있어야 한다 — 한국어 `detail` 을
+ * 문자열 매칭시키면 문구를 다듬는 순간 조용히 갈린다(업로드 4xx 가 `code` 를 싣는 이유와 같다).
+ * `detail` 은 그대로 두고 `code` 만 **덧붙인다** — 기존 프론트의 오류 표시는 안 바뀐다.
+ */
 export class AuthError extends Error {
   readonly status: number;
   readonly detail: string;
   readonly headers: Record<string, string>;
+  /** 기계 판독용 사유. 인증 실패 `auth`, 스코프 밖 `scope`, 운영자 전용 `admin`. */
+  readonly code: string | undefined;
 
-  constructor(status: number, detail: string, headers: Record<string, string> = {}) {
+  constructor(
+    status: number,
+    detail: string,
+    headers: Record<string, string> = {},
+    code?: string,
+  ) {
     super(detail);
     this.name = "AuthError";
     this.status = status;
     this.detail = detail;
     this.headers = headers;
+    this.code = code;
   }
 }
 
@@ -226,7 +242,7 @@ export async function getCurrentUser(
   if (opts.deviceClient && isDeviceTokenFormat(token)) {
     const row = await lookupDeviceToken(opts.deviceClient, token);
     if (row === null) {
-      throw new AuthError(401, "인증이 필요합니다.", { "WWW-Authenticate": "Bearer" });
+      throw new AuthError(401, "인증이 필요합니다.", { "WWW-Authenticate": "Bearer" }, "auth");
     }
     // **여기서 `last_used_at` 을 올리지 않는다.** 이 지점은 스코프 게이트보다 앞이라,
     // 거절될 요청(`GET /documents` 같은)까지 "마지막 사용"으로 기록된다. 폐기 판단의
@@ -254,7 +270,7 @@ export async function getCurrentUser(
   } catch (e) {
     if (e instanceof JWTValidationError) {
       // 세부 사유는 밖으로 내보내지 않는다 — 원본과 같다.
-      throw new AuthError(401, "인증이 필요합니다.", { "WWW-Authenticate": "Bearer" });
+      throw new AuthError(401, "인증이 필요합니다.", { "WWW-Authenticate": "Bearer" }, "auth");
     }
     throw e;
   }
@@ -268,7 +284,7 @@ export async function getCurrentUser(
  */
 export function requireAuthenticatedUser(user: CurrentUser): CurrentUser {
   if (!user.isAuthenticated) {
-    throw new AuthError(401, "로그인이 필요합니다.", { "WWW-Authenticate": "Bearer" });
+    throw new AuthError(401, "로그인이 필요합니다.", { "WWW-Authenticate": "Bearer" }, "auth");
   }
   return user;
 }
@@ -276,7 +292,7 @@ export function requireAuthenticatedUser(user: CurrentUser): CurrentUser {
 /** 기기 토큰 호출자를 막는 게이트 — 기기 관리·결제처럼 세션만 허용하는 곳. */
 export function requireSessionUser(user: CurrentUser): CurrentUser {
   if (user.authKind === "device") {
-    throw new AuthError(403, "기기 토큰으로는 이 작업을 할 수 없습니다.");
+    throw new AuthError(403, "기기 토큰으로는 이 작업을 할 수 없습니다.", {}, "scope");
   }
   return user;
 }
@@ -309,7 +325,7 @@ export async function touchDeviceUser(
 export function requireAdmin(user: CurrentUser, settings: AuthSettings): CurrentUser {
   if (!settings.authEnabled) return user;
   if (!user.isAuthenticated || !settings.ownerUserId || user.userId !== settings.ownerUserId) {
-    throw new AuthError(403, "운영자 권한이 필요합니다.");
+    throw new AuthError(403, "운영자 권한이 필요합니다.", {}, "admin");
   }
   return user;
 }

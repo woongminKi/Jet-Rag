@@ -110,7 +110,11 @@ Deno.serve(async (req: Request) => {
         await enforceRateLimit(METRIC_ANSWERS, req, user, settings, { client });
       } catch (e) {
         if (e instanceof RateLimitError) {
-          return applyCorsHeaders(req, jsonResponse({ detail: e.detail }, e.status), settings);
+          return applyCorsHeaders(
+            req,
+            jsonResponse({ detail: e.detail, code: e.code }, e.status),
+            settings,
+          );
         }
         throw e;
       }

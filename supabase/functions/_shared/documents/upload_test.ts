@@ -144,12 +144,15 @@ Deno.test("file 필드가 없으면 422", async () => {
   const f = fakeClient();
   const r = await handleUpload(new FormData(), f.deps);
   assertEquals(r.status, 422);
+  // 422 도 code 를 싣는다 — 상태코드를 못 읽는 클라이언트(iOS 단축어)가 분기할 유일한 값.
+  assertEquals(r.body.code, "form");
 });
 
 Deno.test("source_channel 이 목록 밖이면 422", async () => {
   const f = fakeClient();
   const r = await handleUpload(formOf("a.pdf", PDF, { source_channel: "해킹" }), f.deps);
   assertEquals(r.status, 422);
+  assertEquals(r.body.code, "form");
   assertEquals(f.uploads.length, 0);
 });
 

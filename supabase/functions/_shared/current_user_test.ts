@@ -202,6 +202,8 @@ Deno.test("무효 토큰은 401 — 익명으로 강등하지 않는다", async 
     // 왜 틀렸는지는 알려주지 않는다 — 원본과 같다.
     assertEquals(e.detail, "인증이 필요합니다.");
     assertEquals(e.headers["WWW-Authenticate"], "Bearer");
+    // 상태코드를 못 읽는 클라이언트(iOS 단축어)가 읽을 값. detail 문구와 독립이어야 한다.
+    assertEquals(e.code, "auth");
   }
 });
 
@@ -262,6 +264,8 @@ Deno.test("requireAuthenticatedUser — 익명은 401", () => {
   const e = assertThrows(() => requireAuthenticatedUser(user({ isAuthenticated: false })), AuthError);
   assertEquals(e.status, 401);
   assertEquals(e.detail, "로그인이 필요합니다.");
+  // 401 두 경로("인증이 필요합니다."·"로그인이 필요합니다.")는 같은 code 를 쓴다.
+  assertEquals(e.code, "auth");
 });
 
 Deno.test("requireAdmin — authEnabled=false 면 무조건 통과", () => {
@@ -276,6 +280,8 @@ Deno.test("requireAdmin — owner 만 통과", () => {
   const e = assertThrows(() => requireAdmin(user({ userId: USER }), s), AuthError);
   assertEquals(e.status, 403);
   assertEquals(e.detail, "운영자 권한이 필요합니다.");
+  // 스코프 밖(403 scope)과 구분된다 — 단축어가 "토큰 재발급"과 "권한 없음"을 갈라야 한다.
+  assertEquals(e.code, "admin");
 });
 
 Deno.test("requireAdmin — owner 미설정이면 owner 자신도 못 들어온다 (전면 차단)", () => {
@@ -368,6 +374,7 @@ Deno.test("기기 토큰 — 폐기된 토큰은 401 + WWW-Authenticate", async 
   assertEquals(e.status, 401);
   assertEquals(e.detail, "인증이 필요합니다.");
   assertEquals(e.headers["WWW-Authenticate"], "Bearer");
+  assertEquals(e.code, "auth");
 });
 
 Deno.test("기기 토큰 — 없는 토큰도 같은 401 (폐기와 구분하지 않는다)", async () => {
@@ -408,6 +415,7 @@ Deno.test("requireSessionUser — 기기 토큰은 403, 세션은 통과", () =>
   const e = assertThrows(() => requireSessionUser(deviceUser()), AuthError);
   assertEquals(e.status, 403);
   assertEquals(e.detail, "기기 토큰으로는 이 작업을 할 수 없습니다.");
+  assertEquals(e.code, "scope");
 });
 
 Deno.test("기기 토큰 — deviceClient 없이는 401 (JWT 로 취급)", async () => {

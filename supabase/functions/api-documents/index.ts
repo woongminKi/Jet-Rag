@@ -80,7 +80,8 @@ Deno.serve(async (req: Request) => {
       if (!deviceScopeAllows(caller.scopes, req.method, path)) {
         return applyCorsHeaders(
           req,
-          jsonResponse({ detail: "기기 토큰의 권한 범위를 벗어난 요청입니다." }, 403),
+          // `code` 는 상태코드를 못 읽는 클라이언트(iOS 단축어)가 401 과 구분하는 유일한 단서다.
+          jsonResponse({ detail: "기기 토큰의 권한 범위를 벗어난 요청입니다.", code: "scope" }, 403),
           settings,
         );
       }
@@ -199,7 +200,11 @@ Deno.serve(async (req: Request) => {
       await enforceUploadBurst(user, { client });
     } catch (e) {
       if (e instanceof RateLimitError) {
-        return applyCorsHeaders(req, jsonResponse({ detail: e.detail }, e.status), settings);
+        return applyCorsHeaders(
+          req,
+          jsonResponse({ detail: e.detail, code: e.code }, e.status),
+          settings,
+        );
       }
       throw e;
     }

@@ -293,5 +293,6 @@ CI에서 `deno compile --target` 3종 → GitHub Releases. 코드서명·공증 
 | (없음) | 마이그 031 의 `documents` CHECK 는 `NOT VALID` + **별도 트랜잭션 VALIDATE**. `supabase db query --linked -f` 로 적용 | 락 회피 형식 |
 | (없음) | 500 은 `text/plain "Internal Server Error"` (FastAPI 동등) — 에이전트 클라이언트는 content-type 을 보고 파싱 | |
 | (없음) | 분당 상한 키는 **user_id** — 한 사용자의 모든 기기와 웹이 60건/분을 나눠 씀 | 에이전트 백로그 동시성 설계 입력 |
+| 업로드 4xx 만 `code` | **401·403·429·422 도 `code` 를 싣는다** — 401 `auth` · 403 `scope`(기기 토큰 스코프 밖·세션 전용) · 403 `admin`(운영자 전용) · 429 `rate_limited` · 402 `answers_quota`(답변 한도) · 422 `form`. `detail` 문구는 그대로 두고 덧붙인 것이라 기존 프론트·에이전트 동작은 안 바뀜. 5xx 는 여전히 `text/plain` | iOS 단축어의 `Get Contents of URL` 은 **상태코드를 노출하지 않아** 본문 없이는 401/403/429 를 구분할 수 없다 (2026-09-16 단축어 설계 §5) |
 
-**에이전트가 다뤄야 할 상태코드(계약)**: 202 `{doc_id, job_id|null, duplicated}` · 400 `code ext|empty|magic` · 413 `code too_large` · 402 `code storage_limit, used, limit` · 422 (폼 필드·채널 값 오류) · 503 `code channel`(재시도) · 429 (분당 60, 백오프) · 401(토큰 폐기·무효) · 403(스코프 밖) · 5xx text/plain(백오프).
+**에이전트가 다뤄야 할 상태코드(계약)**: 202 `{doc_id, job_id|null, duplicated}` · 400 `code ext|empty|magic` · 413 `code too_large` · 402 `code storage_limit, used, limit` · 422 `code form`(폼 필드·채널 값 오류) · 503 `code channel`(재시도) · 429 `code rate_limited`(분당 60, 백오프) · 401 `code auth`(토큰 폐기·무효) · 403 `code scope|admin`(스코프 밖·운영자 전용) · 5xx text/plain(백오프).

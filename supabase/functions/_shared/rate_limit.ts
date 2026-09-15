@@ -29,8 +29,16 @@ import { getEffectivePlan, quotaActiveFor } from "./me/quota.ts";
 
 export const METRIC_ANSWERS = "answers";
 
+/**
+ * 사용량 게이트 거절. `code` 는 상태코드를 못 읽는 클라이언트(iOS 단축어)용 판독 값이다 —
+ * 429 는 `rate_limited`, 402(플랜 답변 한도)는 `answers_quota`. `detail` 문구는 그대로다.
+ */
 export class RateLimitError extends Error {
-  constructor(readonly status: number, readonly detail: string) {
+  constructor(
+    readonly status: number,
+    readonly detail: string,
+    readonly code?: string,
+  ) {
     super(detail);
     this.name = "RateLimitError";
   }
@@ -129,6 +137,7 @@ export async function enforceRateLimit(
           402,
           `${plan.code} 플랜의 일일 답변 한도(${plan.answers_per_day}회)를 ` +
             "초과했습니다. 내일 다시 이용하시거나 Pro 로 업그레이드해 주세요.",
+          "answers_quota",
         );
       }
     }
@@ -139,6 +148,7 @@ export async function enforceRateLimit(
       429,
       `일일 사용 한도(${abuseCap}회)를 초과했습니다. ` +
         "내일 다시 시도하시거나 Pro 로 업그레이드해 주세요.",
+      "rate_limited",
     );
   }
 }
@@ -175,6 +185,7 @@ export async function enforceUploadBurst(
     throw new RateLimitError(
       429,
       `분당 업로드 한도(${UPLOAD_BURST_PER_MINUTE}건)를 초과했습니다. 잠시 후 다시 시도해 주세요.`,
+      "rate_limited",
     );
   }
 }

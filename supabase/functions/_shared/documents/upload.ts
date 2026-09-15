@@ -43,11 +43,17 @@ export interface UploadDeps {
 export async function handleUpload(form: FormData, deps: UploadDeps): Promise<UploadResult> {
   const file = form.get("file");
   if (!(file instanceof File)) {
-    return { status: 422, body: { detail: "file 필드가 필요합니다 (multipart/form-data)." } };
+    return {
+      status: 422,
+      body: { detail: "file 필드가 필요합니다 (multipart/form-data).", code: "form" },
+    };
   }
   const sourceChannel = String(form.get("source_channel") ?? "api");
   if (!SOURCE_CHANNELS.has(sourceChannel)) {
-    return { status: 422, body: { detail: `source_channel 이 올바르지 않습니다: ${sourceChannel}` } };
+    return {
+      status: 422,
+      body: { detail: `source_channel 이 올바르지 않습니다: ${sourceChannel}`, code: "form" },
+    };
   }
   const titleField = form.get("title");
   const fileName = file.name || "untitled";
