@@ -138,6 +138,11 @@ async function assertNoRunningJob(
  *
  * `assertNoRunningJob` 은 queued·running 만 막으므로 보류는 여기까지 온다. 그게 맞다 —
  * 한도에 걸려 멈춘 문서를 사용자가 다시 시도하는 것은 정상이고, 그때 옛 잡을 닫으면 된다.
+ *
+ * ## 진행 중 검사(`assertNoRunningJob`)보다 **먼저** 부른다
+ * cron(`vision_quota_release`)과 경합할 수 있다. cron 이 먼저 이겨 보류 잡이 이미
+ * `queued` 로 돌아갔다면, 여기서 닫을 것은 없고 **진행 중 검사가 409 를 내야 한다.**
+ * 순서를 뒤집으면 검사를 통과한 뒤 cron 이 되살려, 같은 문서에 잡이 둘 돌게 된다.
  */
 async function cancelDeferredJobs(client: SupabaseClient, docId: string): Promise<void> {
   const { error } = await client
@@ -228,6 +233,8 @@ export async function reingestDocument(
 ): Promise<ReingestResult> {
   try {
     const doc = await fetchOwnedDoc(deps.client, docId, userId, "id, flags, user_id");
+    // 보류 잡부터 닫는다 — 진행 중 검사보다 먼저여야 cron 경합에서 409 가 나온다.
+    await cancelDeferredJobs(deps.client, docId);
     await assertNoRunningJob(deps.client, docId, " 완료 후 다시 시도하세요.");
     const mode = resolveMode(params.get("mode"), doc.flags ?? {});
 
@@ -240,7 +247,6 @@ export async function reingestDocument(
       .eq("id", docId);
     if (error) throw new Error(`flags 갱신 실패: ${error.message}`);
 
-    await cancelDeferredJobs(deps.client, docId);
     const jobId = await createJob(deps.client, docId);
     await enqueue(deps.client, { job_id: jobId, doc_id: docId, stage: "extract" });
 
@@ -276,6 +282,7 @@ export async function reingestMissingVision(
     if (doc.doc_type !== "pdf") {
       throw new HttpError(400, "incremental vision reingest 는 PDF 만 지원합니다.");
     }
+    await cancelDeferredJobs(deps.client, docId);
     await assertNoRunningJob(deps.client, docId, "");
     const existingFlags = doc.flags ?? {};
     const mode = resolveMode(params.get("mode"), existingFlags);
@@ -300,7 +307,6 @@ export async function reingestMissingVision(
       if (error) throw new Error(`flags 갱신 실패: ${error.message}`);
     }
 
-    await cancelDeferredJobs(deps.client, docId);
     const jobId = await createJob(deps.client, docId);
     await enqueue(deps.client, {
       job_id: jobId,

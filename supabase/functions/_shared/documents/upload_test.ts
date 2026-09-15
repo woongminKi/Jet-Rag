@@ -22,6 +22,8 @@ function formOf(name: string, bytes: Uint8Array, extra: Record<string, string> =
 
 interface FakeOpts {
   existing?: { id: string; flags?: Record<string, unknown> }[];
+  /** `documents` insert 가 CHECK 위반(23514)으로 실패 — 마이그가 밀린 서버. */
+  insertCheckViolation?: boolean;
 }
 
 function fakeClient(opts: FakeOpts = {}) {
@@ -40,8 +42,22 @@ function fakeClient(opts: FakeOpts = {}) {
         single: () => Promise.resolve({ data: { id: `${table}-new` }, error: null }),
         insert(row: Record<string, unknown>) {
           inserts.push({ table, row });
+          const failed = opts.insertCheckViolation && table === "documents";
           return {
-            select: () => ({ single: () => Promise.resolve({ data: { id: `${table}-new` }, error: null }) }),
+            select: () => ({
+              single: () =>
+                Promise.resolve(
+                  failed
+                    ? {
+                      data: null,
+                      error: {
+                        code: "23514",
+                        message: 'violates check constraint "documents_source_channel_check"',
+                      },
+                    }
+                    : { data: { id: `${table}-new` }, error: null },
+                ),
+            }),
           };
         },
         update(row: Record<string, unknown>) {
@@ -76,6 +92,36 @@ Deno.test("허용 안 된 확장자는 400 — Storage 를 건드리지 않는�
   assertEquals(r.status, 400);
   assertEquals(f.uploads.length, 0);
   assertEquals(f.inserts.length, 0);
+});
+
+Deno.test("거절 본문은 code 를 항상 싣는다 — 에이전트가 산문을 파싱하지 않도록", async () => {
+  const f = fakeClient();
+  // 확장자 거절은 `ext` 까지 — 에이전트가 "이 확장자는 빼라" 를 원장에 적을 수 있어야 한다.
+  const ext = await handleUpload(formOf("bad.exe", PDF), f.deps);
+  assertEquals(ext.status, 400);
+  assertEquals(ext.body.code, "ext");
+  assertEquals(ext.body.ext, ".exe");
+
+  // 나머지 거절도 code 는 온다. `ext` 는 해당 없으면 아예 없다(빈 문자열이 아니다).
+  const magic = await handleUpload(formOf("fake.pdf", PNG), f.deps);
+  assertEquals(magic.body.code, "magic");
+  assertEquals("ext" in magic.body, false);
+  const empty = await handleUpload(formOf("a.pdf", new Uint8Array(0)), f.deps);
+  assertEquals(empty.body.code, "empty");
+});
+
+Deno.test("source_channel CHECK 위반은 503 — 4xx 면 에이전트가 파일을 영구 제외한다", async () => {
+  const f = fakeClient({ insertCheckViolation: true });
+  const r = await handleUpload(
+    formOf("a.pdf", PDF, { source_channel: "pc-agent" }),
+    f.deps,
+  );
+  // 마이그를 적용하면 그대로 성공할 요청이다 — "나중에 다시 보내라"가 맞는 답이다.
+  assertEquals(r.status, 503);
+  assertEquals(r.body.code, "channel");
+  // 잡·큐까지 가지 않는다.
+  assertEquals(f.inserts.some((i) => i.table === "ingest_jobs"), false);
+  assertEquals(f.sends.length, 0);
 });
 
 Deno.test("빈 파일은 400", async () => {

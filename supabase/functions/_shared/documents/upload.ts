@@ -75,12 +75,17 @@ export async function handleUpload(form: FormData, deps: UploadDeps): Promise<Up
     deps,
   );
   if (!r.ok) {
-    const body: Record<string, unknown> = { detail: r.detail };
+    // `code` 는 **언제나** 싣는다. 에이전트가 거절 사유로 분기하려면 한국어 `detail` 을
+    // 문자열 매칭하는 수밖에 없고, 그러면 문구를 다듬는 순간 조용히 갈린다.
+    const body: Record<string, unknown> = { detail: r.detail, code: r.code };
+    if (r.ext !== undefined) body.ext = r.ext;
     if (r.reason) {
       body.reason = r.reason;
       body.used = r.used;
       body.limit = r.limit;
     }
+    // status 는 persist 가 정한 값을 그대로 쓴다 — `channel` 은 503(서버 설정 문제라
+    // 재시도해야 한다), 나머지 거절은 4xx(영구)다.
     return { status: r.status, body };
   }
   return {

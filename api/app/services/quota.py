@@ -1,5 +1,8 @@
 """quota 모듈 — Gemini API quota 초과 감지 + 수익화 W3 플랜/사용량 조회.
 
+**폐기 대상** — 2026-09-15 계량 교체(마이그 031)로 max_documents 가 사라짐. 이 원본은
+배포되지 않으며 지금 실행하면 plans 조회에서 500 이다. 계량은 supabase/functions/_shared/me/quota.ts.
+
 W9 Day 4·6·7: is_quota_exhausted — Gemini API 초과 감지 유틸리티.
   - class name 화이트리스트 + status code attribute + 메시지 fallback 3단계.
   - stdlib only, google SDK 직접 import 없이 type name 검사로 우회.

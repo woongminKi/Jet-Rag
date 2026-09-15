@@ -200,7 +200,7 @@ Deno.test("persist — 용량 검사는 dedup 뒤에 온다: 중복이면 검사
   assertEquals(called, 0);
 });
 
-Deno.test("persist — CHECK 위반(23514)은 500 이 아니라 422: 아직 안 열린 source_channel", async () => {
+Deno.test("persist — CHECK 위반(23514)은 500 도 4xx 도 아닌 503: 마이그가 밀린 서버다", async () => {
   const f = fakeClient({ insertCheckViolation: true });
   const r = await persistDocument(
     { ...base, bytes: PDF, sourceChannel: "pc-agent" },
@@ -208,7 +208,9 @@ Deno.test("persist — CHECK 위반(23514)은 500 이 아니라 422: 아직 안 
   );
   assertEquals(r.ok, false);
   if (r.ok) return;
-  assertEquals(r.status, 422);
+  // 4xx 면 에이전트가 이 파일을 "영구 실패" 로 보고 원장에서 지운다(스펙 §5.2).
+  // 파일 잘못이 아니라 서버 설정이므로 재시도 가능한 503 이어야 한다.
+  assertEquals(r.status, 503);
   assertEquals(r.code, "channel");
   assertEquals(r.detail.includes("pc-agent"), true);
   // 잡·큐까지 가지 않는다 — documents 가 없으니 만들 것도 없다.

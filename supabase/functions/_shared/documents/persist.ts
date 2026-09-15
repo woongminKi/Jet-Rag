@@ -78,7 +78,7 @@ export type PersistResult =
   | { ok: true; outcome: PersistOutcome; docId: string; jobId: string | null }
   | {
     ok: false;
-    status: 400 | 402 | 413 | 422;
+    status: 400 | 402 | 413 | 422 | 503;
     code: PersistFailureCode;
     detail: string;
     /** `code: "ext"` 일 때만 채운다 — 호출자가 사유 문구에 확장자를 넣는다. */
@@ -260,12 +260,16 @@ export async function persistDocument(
         const raced = await findBySha(deps.client, deps.userId, sha256);
         if (raced) return { ok: true, outcome: "duplicated", docId: raced.id, jobId: null };
       }
-      // CHECK(source_channel) — 마이그 031 전까지 `pc-agent` 계열은 DB 가 거절한다.
-      // 그대로 던지면 500 이라 에이전트가 무한 재시도한다. 422 로 닫아 "보내지 마라"를 알린다.
+      // CHECK(source_channel) — 마이그가 밀린 서버에서 `pc-agent` 계열을 DB 가 거절한다.
+      //
+      // **503 이다.** 그대로 던지면 500 이라 에이전트가 무한 재시도하지만, 4xx 로 닫으면
+      // 스펙 §5.2 상 **영구 실패**라 에이전트가 그 파일을 원장에서 제외해 버린다. 이건
+      // 파일 잘못이 아니라 **서버 설정 문제**이고 마이그를 적용하면 그대로 성공한다 —
+      // "나중에 다시 보내라"가 맞는 답이다. HTTP 층(`upload.ts`)도 이 값을 그대로 보낸다.
       if (pgCode === "23514") {
         return {
           ok: false,
-          status: 422,
+          status: 503,
           code: "channel",
           detail: `source_channel 이 아직 서버에서 허용되지 않습니다: ${sourceChannel}`,
         };
