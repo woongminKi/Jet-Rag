@@ -32,6 +32,11 @@ from unittest.mock import MagicMock, patch
 # Supabase 환경이 없으면 전체 모듈 skip — CI/오프라인에서 무해.
 # config.py 가 .env 를 load_dotenv 로 자동 로드하므로 settings 경유로 확인.
 def _has_supabase_env() -> bool:
+    # CI 에서는 무조건 skip — 앞선 테스트 모듈이 os.environ 에 가짜 SUPABASE_URL 을 남겨 두면
+    # 이 가드가 참이 되어 존재하지 않는 호스트로 접속을 시도하다 setUpClass 에서 죽는다
+    # (2026-09-07 ~ 09-15 CI 4 errors 의 원인). 실 DB 회귀는 로컬 .env 에서만 돈다.
+    if os.environ.get("CI", "").lower() == "true":
+        return False
     try:
         from app.config import get_settings
 
