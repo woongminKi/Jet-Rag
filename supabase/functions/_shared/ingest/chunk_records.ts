@@ -185,6 +185,14 @@ export function toChunkRecords(opts: {
   env: ChunkEnv;
   docLlmPairs?: [string, string[]][] | null;
   injectSynonyms?: SynonymInjector;
+  /**
+   * 이 묶음의 첫 청크가 받을 `chunk_idx`.
+   *
+   * 창 분할(`handlers/chunk.ts`)이 문서를 여러 태스크로 나눠 부르므로 창마다 0 부터
+   * 다시 시작하면 `chunks(doc_id, chunk_idx)` upsert 가 앞 창을 덮어쓴다. 기본 0 이면
+   * 현행과 한 글자도 다르지 않다.
+   */
+  idxOffset?: number;
 }): ChunkRecord[] {
   const {
     docId,
@@ -192,15 +200,18 @@ export function toChunkRecords(opts: {
     env,
     docLlmPairs = null,
     injectSynonyms = notPortedInjector,
+    idxOffset = 0,
   } = opts;
 
   const records: ChunkRecord[] = [];
   for (let idx = 0; idx < sections.length; idx++) {
     const section = sections[idx];
+    const chunkIdx = idxOffset + idx;
     const metadata: Record<string, unknown> = {};
-    if (idx > 0) {
+    if (chunkIdx > 0) {
       // 원본 TODO 그대로 — 정확히는 split 인접만 overlap 이지만 idx>0 에 일괄 표시.
-      metadata["overlap_with_prev_chunk_idx"] = idx - 1;
+      // 창 경계의 첫 청크도 **앞 창의 마지막 청크**와 이어지므로 offset 기준으로 본다.
+      metadata["overlap_with_prev_chunk_idx"] = chunkIdx - 1;
     }
 
     let tableCaption: string | null = null;
@@ -251,7 +262,7 @@ export function toChunkRecords(opts: {
 
     records.push({
       doc_id: docId,
-      chunk_idx: idx,
+      chunk_idx: chunkIdx,
       text: textNfc,
       page: section.page,
       section_title: titleNfc,
@@ -270,6 +281,8 @@ export function runChunkStage(opts: {
   env?: ChunkEnv;
   docLlmPairs?: [string, string[]][] | null;
   injectSynonyms?: SynonymInjector;
+  /** 창 분할용 시작 `chunk_idx`. `toChunkRecords` 로 그대로 흘린다. */
+  idxOffset?: number;
 }): ChunkRecord[] {
   const env = opts.env ?? readChunkEnv();
   const split = splitLongSections(opts.sections);
@@ -280,5 +293,6 @@ export function runChunkStage(opts: {
     env,
     docLlmPairs: opts.docLlmPairs ?? null,
     injectSynonyms: opts.injectSynonyms,
+    idxOffset: opts.idxOffset ?? 0,
   });
 }
