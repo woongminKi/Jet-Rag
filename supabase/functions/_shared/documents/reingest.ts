@@ -29,6 +29,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { isUuid } from "./uuid_guard.ts";
 
 import { countPdfPages } from "../ingest/pdf_raster.ts";
+
+/** 재인제스트 리셋의 DELETE 배치 폭. 2,000행 ≈ 1.2s (2026-09-15 실측 비례 환산). */
+const DELETE_BATCH = 2000;
 import {
   asIngestMode,
   DEFAULT_INGEST_MODE,
@@ -191,8 +194,21 @@ export async function resetDocForReingest(
   if (cErr) throw new Error(`chunks 수 조회 실패: ${cErr.message}`);
   const chunksDeleted = count ?? 0;
   if (chunksDeleted > 0) {
+    // 한 번에 지우지 않는다 — 2026-09-15 실측: 25,806행(dense_vec 는 TOAST) 단일 DELETE 가
+    // 15.6s(shared hit 193k) 라 요청 타임아웃(~14s)에 걸려 500 이 났다. chunk_idx 범위로 끊어
+    // 한 호출당 수 초 안에 끝나게 한다. 범위 밖(chunk_idx NULL)은 마지막에 한 번 더 지운다.
+    const { data: mx, error: mErr } = await client
+      .from("chunks").select("chunk_idx").eq("doc_id", docId)
+      .order("chunk_idx", { ascending: false }).limit(1);
+    if (mErr) throw new Error(`chunk_idx 최대값 조회 실패: ${mErr.message}`);
+    const maxIdx = Number(((mx ?? [])[0] as { chunk_idx?: number } | undefined)?.chunk_idx ?? -1);
+    for (let from = 0; from <= maxIdx; from += DELETE_BATCH) {
+      const { error: dErr } = await client.from("chunks").delete()
+        .eq("doc_id", docId).gte("chunk_idx", from).lt("chunk_idx", from + DELETE_BATCH);
+      if (dErr) throw new Error(`chunks 삭제 실패 (idx ${from}~): ${dErr.message}`);
+    }
     const { error: dErr } = await client.from("chunks").delete().eq("doc_id", docId);
-    if (dErr) throw new Error(`chunks 삭제 실패: ${dErr.message}`);
+    if (dErr) throw new Error(`chunks 잔여 삭제 실패: ${dErr.message}`);
   }
 
   const { data, error: fErr } = await client
