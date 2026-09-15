@@ -215,7 +215,7 @@ Deno.serve(async (req: Request) => {
     } catch {
       return applyCorsHeaders(
         req,
-        jsonResponse({ detail: "multipart/form-data 본문이 필요합니다." }, 422),
+        jsonResponse({ detail: "multipart/form-data 본문이 필요합니다.", code: "form" }, 422),
         settings,
       );
     }
