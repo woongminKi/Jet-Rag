@@ -269,3 +269,29 @@ CI에서 `deno compile --target` 3종 → GitHub Releases. 코드서명·공증 
 - 업로드 계약 현행: `supabase/functions/_shared/documents/upload.ts`, 이메일: `_shared/ingest/email_ingest.ts`, Storage RLS: `api/migrations/020_storage_per_user_prefix.sql`, 플랜: `api/migrations/022_plans_subscriptions.sql`.
 - Vision 단가 실측: 메모리 `jetrag_vision_cost_measured` (페이지당 $0.005~0.03).
 - 보안 페르소나 합의(전체 스캔 금지, 지정 폴더만): 메모리 `jetrag_beta_feedback_auto_ingest`.
+
+---
+
+## 10. 구현 드리프트 (2026-09-15 서버 편 구현 후 정정)
+
+서버 S1~S4 구현(플랜 Task 1~4, 커밋 `10b6cdf`…`3846c50`)에서 위 본문과 달라진 것. **이 절이 본문보다 우선**한다.
+
+| 본문 | 실제 구현 | 이유 |
+|---|---|---|
+| S4 남용 방지 "`usage_counters` 에 분 단위 period" | 별도 표 `upload_burst` + RPC `increment_upload_burst` + 매시 `upload-burst-sweep` cron | `usage_counters.period_date` 가 DATE 라 분 단위 불가 |
+| S4 월초 cron `0 0 1 * *` | **매일** `0 15 * * *`(00:00 KST) + KST 월 경계 가드 + `p_force` 인자 | 월초 하루만 실제로 풀고, 결제 훅에서 즉시 해제 가능 |
+| S4 용량 검사 "저장 전" | dedup **뒤** (신규·재시도만) | 중복 파일은 용량을 안 쓰고, 한도 찬 사용자도 "있다"는 답을 들어야 원장이 정리됨 |
+| S4 402 본문 `{reason, used, limit}` | + `detail` 문구, + `code:"storage_limit"` | 모든 4xx 가 `code` 를 실음(아래) |
+| (없음) | 업로드 4xx 는 `code ∈ ext·empty·too_large·magic·storage_limit` 을 항상 실음. `channel`(DB CHECK 미적용)은 **503** — 재시도 대상 | 에이전트가 한국어 문구를 매칭하지 않게 |
+| S3 403 `{detail:"device token scope"}` | `{detail:"기기 토큰의 권한 범위를 벗어난 요청입니다."}` | 한국어 통일 |
+| S3 `/me/devices` POST 응답 | `{id,name,token,token_prefix,scopes,created_at,last_used_at,revoked_at}` (201). GET 은 `{devices:[…]}` 로 감쌈 | |
+| S3 인덱스 `(user_id)` | `(user_id, created_at DESC)` | 목록 정렬 |
+| S4 `/me/plan.vision_pages.period` | `period_start` (ISO) | |
+| (없음) | `ingest_jobs.deferred_task JSONB` — 보류 시 태스크 페이로드 보존, 재투입 시 사용. `deferred_quota` 는 active 목록·웹("한도 대기 중")에 노출 | 회복 가능성 |
+| (없음) | `GET /documents/precheck` 는 프록시에서 404(Edge 단독은 405) | 삽입 위치 |
+| (없음) | CORS `ALLOW_METHODS` 에 DELETE — Python 원본과 의도적 이탈(원본에도 반영해 대조 유지) | 기기 폐기 버튼 |
+| (없음) | 마이그 031 의 `documents` CHECK 는 `NOT VALID` + **별도 트랜잭션 VALIDATE**. `supabase db query --linked -f` 로 적용 | 락 회피 형식 |
+| (없음) | 500 은 `text/plain "Internal Server Error"` (FastAPI 동등) — 에이전트 클라이언트는 content-type 을 보고 파싱 | |
+| (없음) | 분당 상한 키는 **user_id** — 한 사용자의 모든 기기와 웹이 60건/분을 나눠 씀 | 에이전트 백로그 동시성 설계 입력 |
+
+**에이전트가 다뤄야 할 상태코드(계약)**: 202 `{doc_id, job_id|null, duplicated}` · 400 `code ext|empty|magic` · 413 `code too_large` · 402 `code storage_limit, used, limit` · 422 (폼 필드·채널 값 오류) · 503 `code channel`(재시도) · 429 (분당 60, 백오프) · 401(토큰 폐기·무효) · 403(스코프 밖) · 5xx text/plain(백오프).
