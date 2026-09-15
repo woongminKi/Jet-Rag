@@ -185,7 +185,7 @@ def build_client():
         allow_origins=ORIGINS,
         allow_origin_regex=r"https://.*\.vercel\.app",
         allow_credentials=True,
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["*"],
     )
     return TestClient(app)

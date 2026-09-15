@@ -153,7 +153,9 @@ app.add_middleware(
     allow_origins=_cors_origins,
     allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    # 2026-09-15: DELETE 는 Edge 전용 라우트(`/me/devices/{id}`)를 위해 Edge 가 먼저 열었다.
+    # 이 원본은 배포되지 않지만 대조 하네스의 기준이라 같은 값으로 맞춘다.
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
