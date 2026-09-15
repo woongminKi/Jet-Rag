@@ -9,15 +9,19 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { persistDocument } from "./persist.ts";
+import { buildUserPath, extOf, persistDocument } from "./persist.ts";
 
 const PDF = new Uint8Array([...new TextEncoder().encode("%PDF-1.7\n"), ...new Uint8Array(400)]);
 const PNG = new Uint8Array([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, ...new Uint8Array(400)]);
+/** OOXML·HWPX 공통 ZIP 매직 — 확장자만 다른 같은 바이트를 만드는 데 쓴다. */
+const ZIP = new Uint8Array([0x50, 0x4B, 0x03, 0x04, ...new Uint8Array(400)]);
 
 interface FakeOpts {
   existing?: { id: string; flags?: Record<string, unknown> }[];
   /** documents insert 가 UNIQUE 충돌(23505)을 내게 한다. */
   insertConflict?: boolean;
+  /** documents insert 가 CHECK 위반(23514)을 내게 한다 — 마이그 031 전의 새 채널. */
+  insertCheckViolation?: boolean;
 }
 
 function fakeClient(opts: FakeOpts = {}) {
@@ -42,6 +46,20 @@ function fakeClient(opts: FakeOpts = {}) {
         },
         insert(row: Record<string, unknown>) {
           inserts.push({ table, row });
+          if (table === "documents" && opts.insertCheckViolation) {
+            return {
+              select: () => ({
+                single: () =>
+                  Promise.resolve({
+                    data: null,
+                    error: {
+                      code: "23514",
+                      message: 'new row violates check constraint "documents_source_channel_check"',
+                    },
+                  }),
+              }),
+            };
+          }
           if (table === "documents" && opts.insertConflict) {
             return {
               select: () => ({
@@ -180,4 +198,61 @@ Deno.test("persist — 용량 검사는 dedup 뒤에 온다: 중복이면 검사
   });
   assertEquals(r.ok, true);
   assertEquals(called, 0);
+});
+
+Deno.test("persist — CHECK 위반(23514)은 500 이 아니라 422: 아직 안 열린 source_channel", async () => {
+  const f = fakeClient({ insertCheckViolation: true });
+  const r = await persistDocument(
+    { ...base, bytes: PDF, sourceChannel: "pc-agent" },
+    f.deps,
+  );
+  assertEquals(r.ok, false);
+  if (r.ok) return;
+  assertEquals(r.status, 422);
+  assertEquals(r.code, "channel");
+  assertEquals(r.detail.includes("pc-agent"), true);
+  // 잡·큐까지 가지 않는다 — documents 가 없으니 만들 것도 없다.
+  assertEquals(f.inserts.some((i) => i.table === "ingest_jobs"), false);
+  assertEquals(f.sends.length, 0);
+});
+
+Deno.test("persist — 거절 코드는 산문이 아니라 code 로 갈린다", async () => {
+  const f = fakeClient();
+  const ext = await persistDocument({ ...base, fileName: "bad.exe", bytes: PDF }, f.deps);
+  assertEquals(ext.ok, false);
+  if (!ext.ok) {
+    assertEquals(ext.code, "ext");
+    assertEquals(ext.ext, ".exe"); // 호출자가 사유 문구에 쓴다
+  }
+  const empty = await persistDocument({ ...base, bytes: new Uint8Array(0) }, f.deps);
+  if (!empty.ok) assertEquals(empty.code, "empty");
+  const magic = await persistDocument({ ...base, fileName: "fake.pdf", bytes: PNG }, f.deps);
+  if (!magic.ok) assertEquals(magic.code, "magic");
+});
+
+Deno.test("persist — 재시도는 doc_type·크기까지 갱신한다 (.hwpx→.docx 는 같은 ZIP 매직)", async () => {
+  const f = fakeClient({ existing: [{ id: "failed", flags: { failed: true } }] });
+  const r = await persistDocument(
+    { ...base, fileName: "계약서.docx", bytes: ZIP, contentType: "application/zip" },
+    f.deps,
+  );
+  assertEquals(r.ok, true);
+  const up = f.updates[0];
+  assertEquals(up.doc_type, "docx"); // 낡은 채로 두면 extract 가 엉뚱한 파서를 고른다
+  assertEquals(up.size_bytes, ZIP.length);
+  assertEquals(up.content_type, "application/zip");
+  // 삭제 복구는 아직 없다 — findBySha 가 살아있는 행만 주므로 도달 불가다.
+  assertEquals("deleted_at" in up, false);
+});
+
+Deno.test("extOf — Python PurePosixPath.suffix 와 같다", () => {
+  assertEquals(extOf("a.PDF"), ".pdf");
+  assertEquals(extOf("a.tar.gz"), ".gz");
+  assertEquals(extOf("noext"), "");
+  assertEquals(extOf(".hidden"), ""); // 숨김 파일은 확장자로 치지 않는다
+  assertEquals(extOf("dir/x.png"), ".png");
+});
+
+Deno.test("buildUserPath — user/<uid>/<sha256><ext>", () => {
+  assertEquals(buildUserPath("u1", "abc", ".pdf"), "user/u1/abc.pdf");
 });

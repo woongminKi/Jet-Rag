@@ -8,7 +8,7 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { buildUserPath, extOf, handleUpload } from "./upload.ts";
+import { handleUpload } from "./upload.ts";
 
 const PDF = new Uint8Array([...new TextEncoder().encode("%PDF-1.7\n"), ...new Uint8Array(400)]);
 const PNG = new Uint8Array([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, ...new Uint8Array(400)]);
@@ -69,18 +69,6 @@ function fakeClient(opts: FakeOpts = {}) {
   };
   return { deps, inserts, updates, sends, uploads };
 }
-
-Deno.test("extOf — Python PurePosixPath.suffix 와 같다", () => {
-  assertEquals(extOf("a.PDF"), ".pdf");
-  assertEquals(extOf("a.tar.gz"), ".gz");
-  assertEquals(extOf("noext"), "");
-  assertEquals(extOf(".hidden"), ""); // 숨김 파일은 확장자로 치지 않는다
-  assertEquals(extOf("dir/x.png"), ".png");
-});
-
-Deno.test("buildUserPath — user/<uid>/<sha256><ext>", () => {
-  assertEquals(buildUserPath("u1", "abc", ".pdf"), "user/u1/abc.pdf");
-});
 
 Deno.test("허용 안 된 확장자는 400 — Storage 를 건드리지 않는다", async () => {
   const f = fakeClient();

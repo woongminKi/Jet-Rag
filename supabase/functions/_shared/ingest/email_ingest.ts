@@ -17,7 +17,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { persistDocument, type StorageCheck } from "../documents/persist.ts";
+import { persistDocument, type PersistResult, type StorageCheck } from "../documents/persist.ts";
 import { pyIsAlnum } from "../pychar.ts";
 import { PY_SP } from "../search/pystr.ts";
 
@@ -123,15 +123,8 @@ export async function ingestEmailAttachment(
     );
     if (!r.ok) {
       // 이전 구현의 사유 문구를 유지한다 — Worker 로그·사용자 안내가 이 문구를 본다.
-      const reason = r.status === 413
-        ? "50MB 초과"
-        : r.status === 402
-        ? "저장 용량 한도 초과"
-        : r.detail.startsWith("지원되지 않는 확장자")
-        ? `비허용 확장자: ${extOfName(filename) || "(없음)"}`
-        : r.detail === "빈 파일입니다."
-        ? "빈 첨부"
-        : "파일 형식 불일치";
+      // 분기는 `code` 로만 한다. `detail` 한국어 산문을 매칭하면 문구를 다듬는 순간 갈린다.
+      const reason = skipReason(r);
       console.warn(`email_ingest skip — ${reason} (user=${userId}, ${filename})`);
       return { status: "skipped", filename, reason };
     }
@@ -143,10 +136,24 @@ export async function ingestEmailAttachment(
   }
 }
 
-/** 로그 사유 문구용 확장자 — persist 가 이미 거절한 뒤라 판정에는 쓰지 않는다. */
-function extOfName(filename: string): string {
-  const dot = filename.lastIndexOf(".");
-  return dot >= 0 ? filename.slice(dot).toLowerCase() : "";
+/** persist 거절 코드 → 이메일 결과의 `reason`. 문구는 통합 이전 구현 그대로다. */
+function skipReason(r: Extract<PersistResult, { ok: false }>): string {
+  switch (r.code) {
+    case "ext":
+      return `비허용 확장자: ${r.ext || "(없음)"}`;
+    case "empty":
+      return "빈 첨부";
+    case "too_large":
+      return "50MB 초과";
+    case "storage_limit":
+      return "저장 용량 한도 초과";
+    case "magic":
+      return "파일 형식 불일치";
+    case "channel":
+      // 이메일은 `source_channel` 이 언제나 "email" 이라 CHECK 에 걸릴 수 없다.
+      // 그래도 코드가 늘면 여기서 컴파일이 깨지도록 명시적으로 닫아 둔다.
+      return "내부 오류";
+  }
 }
 
 /** 원본 `_increment_docs_counter` — 실패해도 인제스트를 막지 않는다. */

@@ -13,6 +13,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import type { StorageCheck } from "../documents/persist.ts";
 import { getEffectivePlan } from "../me/quota.ts";
 import {
   type AttachmentResult,
@@ -30,6 +31,8 @@ export interface EmailRouteDeps {
   bucket: string;
   settings: { emailWebhookSecret: string };
   nowMs?: () => number;
+  /** S4 용량 한도. 지금은 아무도 넘기지 않지만 배선은 끊지 않는다. */
+  checkStorage?: (sizeBytes: number) => Promise<StorageCheck | null>;
 }
 
 export interface RouteResult {
@@ -149,7 +152,7 @@ export async function handleEmailWebhook(
       continue;
     }
     const r = await ingestEmailAttachment(
-      { client: deps.client, bucket: deps.bucket },
+      { client: deps.client, bucket: deps.bucket, checkStorage: deps.checkStorage },
       { userId, filename, contentType, raw },
     );
     if (r.status === "accepted") await incrementDocsCounter(deps.client, userId, now());

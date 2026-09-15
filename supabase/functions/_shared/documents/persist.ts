@@ -61,12 +61,28 @@ export interface PersistDeps {
 
 export type PersistOutcome = "created" | "duplicated" | "retried";
 
+/**
+ * 거절 사유의 **판별자**. 호출자(이메일 Worker 로그 등)가 사유 문구를 만들 때
+ * `detail` 한국어 산문을 문자열 매칭하지 않도록 두었다 — 문구를 다듬는 순간
+ * 조용히 갈리는 종류의 결합이다.
+ */
+export type PersistFailureCode =
+  | "ext"
+  | "empty"
+  | "too_large"
+  | "magic"
+  | "storage_limit"
+  | "channel";
+
 export type PersistResult =
   | { ok: true; outcome: PersistOutcome; docId: string; jobId: string | null }
   | {
     ok: false;
-    status: 400 | 402 | 413;
+    status: 400 | 402 | 413 | 422;
+    code: PersistFailureCode;
     detail: string;
+    /** `code: "ext"` 일 때만 채운다 — 호출자가 사유 문구에 확장자를 넣는다. */
+    ext?: string;
     reason?: "storage_limit";
     used?: number;
     limit?: number;
@@ -89,8 +105,10 @@ export function stemOf(name: string): string {
 }
 
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  // `bytes.buffer` 가 ArrayBufferLike 라 그대로는 BufferSource 로 안 받는다.
-  const digest = await crypto.subtle.digest("SHA-256", bytes.slice().buffer as ArrayBuffer);
+  // 뷰를 그대로 넘긴다 — `.slice()` 를 끼우면 최대 50MB 를 통째로 한 번 더 복사한다.
+  // 캐스팅은 `Uint8Array<ArrayBufferLike>` 가 `BufferSource` 와 명목상 안 맞아서지,
+  // 런타임에서는 TypedArray 뷰가 그대로 허용된다.
+  const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
@@ -131,18 +149,28 @@ export async function persistDocument(
   const ext = extOf(fileName);
   const docType = ALLOWED_EXTENSIONS[ext];
   if (docType === undefined) {
-    return { ok: false, status: 400, detail: `지원되지 않는 확장자입니다: ${ext || "(없음)"}` };
+    return {
+      ok: false,
+      status: 400,
+      code: "ext",
+      ext,
+      detail: `지원되지 않는 확장자입니다: ${ext || "(없음)"}`,
+    };
   }
-  if (bytes.length === 0) return { ok: false, status: 400, detail: "빈 파일입니다." };
+  if (bytes.length === 0) {
+    return { ok: false, status: 400, code: "empty", detail: "빈 파일입니다." };
+  }
   if (bytes.length > MAX_SIZE_BYTES) {
-    return { ok: false, status: 413, detail: "파일 크기 상한(50MB) 초과" };
+    return { ok: false, status: 413, code: "too_large", detail: "파일 크기 상한(50MB) 초과" };
   }
 
   // ---- 게이트 ②: 매직바이트 ----
   try {
     validateMagic(ext, bytes.subarray(0, HEAD_BYTES));
   } catch (e) {
-    if (e instanceof InputGateError) return { ok: false, status: 400, detail: e.message };
+    if (e instanceof InputGateError) {
+      return { ok: false, status: 400, code: "magic", detail: e.message };
+    }
     throw e;
   }
 
@@ -161,6 +189,7 @@ export async function persistDocument(
       return {
         ok: false,
         status: 402,
+        code: "storage_limit",
         reason: "storage_limit",
         used: check.usedBytes,
         limit: check.limitBytes,
@@ -188,12 +217,19 @@ export async function persistDocument(
     // 실패 흔적이 있는 행 — 재업로드는 재시도 의도다. flags 를 비우고 다시 돌린다.
     docId = dup.id;
     outcome = "retried";
+    // 같은 바이트가 **다른 허용 확장자**로 다시 올 수 있다(.hwpx→.docx 는 둘 다 ZIP 매직이라
+    // 게이트를 통과한다). 경로·타입·크기를 같이 갱신하지 않으면 doc_type 이 낡은 채 남아
+    // extract 가 엉뚱한 파서를 고른다.
+    // `deleted_at: null` 은 쓰지 않는다 — findBySha 가 이미 살아있는 행만 돌려주므로 도달 불가다.
+    // 삭제된 문서를 되살리려면 UNIQUE(user_id, sha256) 를 부분 인덱스로 바꾸는 게 먼저다.
     const { error } = await deps.client
       .from("documents")
       .update({
         storage_path: path,
+        doc_type: docType,
+        content_type: contentType,
+        size_bytes: bytes.length,
         flags: flagsWithIngestMode({}, ingestMode),
-        deleted_at: null,
       })
       .eq("id", docId);
     if (error) throw new Error(`documents 갱신 실패: ${error.message}`);
@@ -218,9 +254,20 @@ export async function persistDocument(
       .single();
     if (error) {
       // UNIQUE(user_id, sha256) — 같은 파일이 동시에 들어온 경합. 먼저 온 쪽이 이겼다.
-      if ((error as { code?: string }).code === "23505") {
+      const pgCode = (error as { code?: string }).code;
+      if (pgCode === "23505") {
         const raced = await findBySha(deps.client, deps.userId, sha256);
         if (raced) return { ok: true, outcome: "duplicated", docId: raced.id, jobId: null };
+      }
+      // CHECK(source_channel) — 마이그 031 전까지 `pc-agent` 계열은 DB 가 거절한다.
+      // 그대로 던지면 500 이라 에이전트가 무한 재시도한다. 422 로 닫아 "보내지 마라"를 알린다.
+      if (pgCode === "23514") {
+        return {
+          ok: false,
+          status: 422,
+          code: "channel",
+          detail: `source_channel 이 아직 서버에서 허용되지 않습니다: ${sourceChannel}`,
+        };
       }
       throw new Error(`documents 생성 실패: ${error.message}`);
     }

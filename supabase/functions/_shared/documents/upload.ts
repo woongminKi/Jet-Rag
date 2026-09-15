@@ -13,8 +13,6 @@ import { validateIngestMode } from "../ingest/ingest_mode.ts";
 import { MAX_SIZE_BYTES } from "./input_gate.ts";
 import { persistDocument, type StorageCheck } from "./persist.ts";
 
-export { buildUserPath, extOf, stemOf } from "./persist.ts";
-
 /** 원본 `_SourceChannel` + 자동 수집 채널 3종(2026-09-15 스펙 §4 S1). */
 export const SOURCE_CHANNELS = new Set([
   "drag-drop",
