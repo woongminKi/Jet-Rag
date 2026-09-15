@@ -116,7 +116,8 @@ export async function runAgent(deps: RunDeps): Promise<void> {
         ledger.markDone(sha, t.docId ?? null, now);
         break;
       case "registered":
-        ledger.markRegistered(sha, t.docId ?? "", t.jobId ?? null, t.nextAttemptAt, now);
+        // docId/jobId 가 없으면(= 폴링 전이) 기존 값을 유지한다 — 덮어쓰면 추적이 끊긴다.
+        ledger.markRegistered(sha, t.docId ?? null, t.jobId ?? null, t.nextAttemptAt, now, t.lastError);
         if (t.lastError) ledger.event("info", `${sha.slice(0, 8)} ${t.lastError}`, now);
         break;
       case "excluded":

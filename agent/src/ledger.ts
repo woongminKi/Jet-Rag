@@ -205,11 +205,26 @@ export class Ledger {
     return Number(row.n);
   }
 
-  markRegistered(sha256: string, docId: string, jobId: string | null, nextPollAt: number, now: number): void {
+  /**
+   * 등록·폴링 재예약 공용.
+   *
+   * `docId`/`jobId` 에 null 을 넘기면 **기존 값을 유지한다**(COALESCE). 폴링 전이는
+   * `planJob` 이 만드는데 거기엔 doc_id 가 없다 — 그대로 덮어쓰면 첫 폴링에 doc_id 가
+   * 날아가 그 문서는 영영 완료되지 않는다(2026-09-15 run_test 가 잡은 버그).
+   * `lastError` 는 `deferred_quota` 처럼 "비종단이지만 사유는 보여야 하는" 경우에 쓴다.
+   */
+  markRegistered(
+    sha256: string,
+    docId: string | null,
+    jobId: string | null,
+    nextPollAt: number,
+    now: number,
+    lastError: string | null = null,
+  ): void {
     this.#db.prepare(
-      `UPDATE files SET state = 'registered', doc_id = ?, job_id = ?, last_error = NULL,
-         next_attempt_at = ?, updated_at = ? WHERE sha256 = ?`,
-    ).run(docId, jobId, nextPollAt, now, sha256);
+      `UPDATE files SET state = 'registered', doc_id = COALESCE(?, doc_id), job_id = COALESCE(?, job_id),
+         last_error = ?, next_attempt_at = ?, updated_at = ? WHERE sha256 = ?`,
+    ).run(docId, jobId, lastError, nextPollAt, now, sha256);
   }
 
   markDone(sha256: string, docId: string | null, now: number): void {

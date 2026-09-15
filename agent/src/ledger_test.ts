@@ -158,3 +158,18 @@ Deno.test("ledger — 손상된 파일은 .bak 으로 밀어내고 새로 연다
   l.close();
   assertEquals((await Deno.stat(`${path}.bak`)).isFile, true);
 });
+
+Deno.test("ledger — markRegistered 에 null 을 주면 doc_id·job_id 를 유지한다 (폴링 재예약)", () => {
+  // planJob 이 만드는 폴링 전이에는 doc_id 가 없다. 덮어쓰면 그 문서는 영영 완료되지 않는다.
+  const l = mem();
+  l.discover({ sha256: SHA(20), path: "/a/g.pdf", size: 1, mtime: T0, queue: "live" }, T0);
+  l.markRegistered(SHA(20), "doc-20", "job-20", T0 + 1000, T0);
+  l.markRegistered(SHA(20), null, null, T0 + 9000, T0 + 1, "한도 대기 중 (월 Vision 페이지)");
+  const row = l.get(SHA(20))!;
+  assertEquals(row.doc_id, "doc-20");
+  assertEquals(row.job_id, "job-20");
+  assertEquals(row.next_attempt_at, T0 + 9000);
+  // 비종단이어도 사유는 status 에 보여야 한다.
+  assertEquals(row.last_error, "한도 대기 중 (월 Vision 페이지)");
+  l.close();
+});
