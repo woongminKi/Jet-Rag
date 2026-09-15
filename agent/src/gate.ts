@@ -81,6 +81,8 @@ export interface StableOptions {
   checks?: number;
   stat?: (path: string) => Promise<{ size: number; mtime: Date | null }>;
   sleep?: (ms: number) => Promise<void>;
+  /** 시계도 주입한다 — `waitStable` 의 마감 로직을 실제로 2분 기다리지 않고 시험하기 위해서다. */
+  now?: () => number;
 }
 
 const defaultStat = async (path: string) => {
@@ -118,8 +120,9 @@ export async function waitStable(
   opts: StableOptions = {},
 ): Promise<boolean> {
   const interval = opts.intervalMs ?? 3000;
-  const deadline = Date.now() + maxWaitMs;
-  while (Date.now() < deadline) {
+  const now = opts.now ?? Date.now;
+  const deadline = now() + maxWaitMs;
+  while (now() < deadline) {
     if (await isStable(path, opts)) return true;
     await (opts.sleep ?? defaultSleep)(interval);
   }

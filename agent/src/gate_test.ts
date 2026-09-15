@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 import { ALLOWED_EXTENSIONS } from "../../supabase/functions/_shared/documents/input_gate.ts";
-import { extOf, gateEntry, isStable, isTempName, MAX_SIZE_BYTES } from "./gate.ts";
+import { extOf, gateEntry, isStable, isTempName, MAX_SIZE_BYTES, waitStable } from "./gate.ts";
 import { sha256File, sha256Hex } from "./hash.ts";
 
 Deno.test("gate — 확장자 표는 서버 것을 그대로 쓴다 (11종)", () => {
@@ -87,4 +87,34 @@ Deno.test("hash — 알려진 sha256", async () => {
     await sha256File(`${dir}/a.txt`),
     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
   );
+});
+
+Deno.test("gate — waitStable: 크기가 멈출 때까지 기다렸다가 통과 (가짜 시계)", async () => {
+  // 시계·sleep 을 주입해 실제로는 1ms 도 기다리지 않는다.
+  let clock = 0;
+  const sleep = (ms: number) => {
+    clock += ms;
+    return Promise.resolve();
+  };
+  const sizes = [100, 200, 300, 300, 300, 300];
+  let i = 0;
+  const stat = () => Promise.resolve({ size: sizes[Math.min(i++, sizes.length - 1)], mtime: new Date(0) });
+  const ok = await waitStable("/a/x.pdf", 120_000, { checks: 2, stat, sleep, now: () => clock });
+  assertEquals(ok, true);
+  // 120초 예산 안에서 끝났다 — 2회 시도(각 6초)면 충분하다.
+  assertEquals(clock, 9_000);
+});
+
+Deno.test("gate — waitStable: 계속 커지면 마감 시각에 포기한다 (무한 대기 금지)", async () => {
+  let clock = 0;
+  const sleep = (ms: number) => {
+    clock += ms;
+    return Promise.resolve();
+  };
+  let size = 0;
+  // 다운로드가 끝나지 않는 파일 — 매번 커진다.
+  const stat = () => Promise.resolve({ size: size += 100, mtime: new Date(0) });
+  const ok = await waitStable("/a/x.pdf", 10_000, { checks: 2, stat, sleep, now: () => clock });
+  assertEquals(ok, false);
+  assertEquals(clock >= 10_000, true);
 });

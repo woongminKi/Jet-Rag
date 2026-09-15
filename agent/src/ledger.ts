@@ -107,9 +107,19 @@ export class Ledger {
 
   /** 열기 실패 시 `.bak` 으로 밀고 새로 만든다. */
   static open(path: string): Ledger {
+    // SQLite 는 파일을 지연 검증한다 — 헤더가 깨진 파일도 생성자는 통과하고 첫 문장에서 터진다.
+    // 그때 핸들은 이미 열려 있다. 윈도우는 열린 핸들이 있으면 rename·remove 가 막히므로
+    // 밀어내기 전에 반드시 닫는다.
+    let db: DatabaseSync | null = null;
     try {
-      return new Ledger(new DatabaseSync(path));
+      db = new DatabaseSync(path);
+      return new Ledger(db);
     } catch (e) {
+      if (db !== null) {
+        try {
+          db.close();
+        } catch { /* 이미 닫혔거나 닫을 수 없는 상태 — 밀어내기를 막지 않는다. */ }
+      }
       try {
         Deno.renameSync(path, `${path}.bak`);
       } catch {
