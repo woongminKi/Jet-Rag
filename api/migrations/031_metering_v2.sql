@@ -38,12 +38,15 @@ ALTER TABLE plans DROP COLUMN IF EXISTS max_documents;
 
 -- 2. source_channel
 -- NOT VALID 로 붙인 뒤 따로 VALIDATE 한다 — 바로 붙이면 전체 스캔 동안 ACCESS EXCLUSIVE 락이
--- 걸려 업로드·조회가 멈춘다. VALIDATE 는 더 약한 락(SHARE UPDATE EXCLUSIVE)이라 읽기·쓰기가 계속된다.
+-- 걸려 업로드·조회가 멈춘다. VALIDATE 는 더 약한 락(SHARE UPDATE EXCLUSIVE)이다.
+-- **단, 이 파일을 한 트랜잭션으로 돌리면 ADD 의 락이 커밋까지 유지돼 이점이 없다.**
+-- 그래서 VALIDATE 는 이 파일 끝(§8)에 두고 **별도 실행(별도 트랜잭션)** 한다. 지금 규모(문서 14건)에선
+-- 어느 쪽이든 체감 0 이지만, 다음 채널 추가 때 같은 형식을 따라야 해서 형식을 맞춰 둔다.
 ALTER TABLE documents DROP CONSTRAINT IF EXISTS documents_source_channel_check;
 ALTER TABLE documents ADD CONSTRAINT documents_source_channel_check CHECK (source_channel IN
     ('drag-drop','os-share','clipboard','url','camera','api','email','pc-agent','ios-shortcut','android-agent'))
     NOT VALID;
-ALTER TABLE documents VALIDATE CONSTRAINT documents_source_channel_check;
+-- VALIDATE 는 §8 (파일 끝, 별도 실행).
 
 -- 3. ingest_jobs
 ALTER TABLE ingest_jobs DROP CONSTRAINT IF EXISTS ingest_jobs_status_check;
@@ -98,13 +101,13 @@ GRANT EXECUTE ON FUNCTION public.increment_upload_burst(TEXT, TIMESTAMPTZ) TO se
 -- (잡 UPDATE 2회 + 큐 왕복이 사용자 수만큼). 그래서 KST 기준 어제와 오늘의 '월' 이
 -- 다를 때만 실제로 푼다. cron 은 매일 돌지만 월초 하루만 일을 한다.
 --
--- 남은 과제: 플랜을 업그레이드한 사용자는 **다음 달 1일까지** 보류가 안 풀린다.
--- 즉시 해제는 결제 성공 훅에서 같은 함수를 부르는 쪽이 맞다 — 후속 작업으로 둔다.
-CREATE OR REPLACE FUNCTION public.vision_quota_release()
+-- 플랜을 업그레이드한 사용자는 다음 달 1일까지 기다리지 않도록 `p_force := TRUE` 로 부를 수 있다
+-- (결제 성공 훅에서 호출 — 결선은 후속 작업). cron 은 인자 없이 부른다.
+CREATE OR REPLACE FUNCTION public.vision_quota_release(p_force BOOLEAN DEFAULT FALSE)
 RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE r RECORD; n INTEGER := 0;
 BEGIN
-  IF date_trunc('month', now() AT TIME ZONE 'Asia/Seoul')
+  IF NOT p_force AND date_trunc('month', now() AT TIME ZONE 'Asia/Seoul')
      = date_trunc('month', (now() - interval '1 day') AT TIME ZONE 'Asia/Seoul') THEN
     RETURN 0;  -- 아직 같은 달 — 풀어도 곧바로 다시 보류된다.
   END IF;
@@ -120,7 +123,7 @@ BEGIN
   END LOOP;
   RETURN n;
 END; $$;
-REVOKE ALL ON FUNCTION public.vision_quota_release() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.vision_quota_release(BOOLEAN) FROM PUBLIC, anon, authenticated;
 
 -- 6-2. burst 표 청소는 따로 — 월 1회 함수에 얹으면 한 달 치가 쌓인다.
 CREATE OR REPLACE FUNCTION public.upload_burst_sweep()
@@ -150,11 +153,16 @@ $cron$);
 -- 롤백
 --   SELECT cron.unschedule('vision-quota-release');
 --   SELECT cron.unschedule('upload-burst-sweep');
---   DROP FUNCTION IF EXISTS public.vision_quota_release(), public.upload_burst_sweep(),
+--   DROP FUNCTION IF EXISTS public.vision_quota_release(BOOLEAN), public.upload_burst_sweep(),
 --     public.increment_upload_burst(TEXT, TIMESTAMPTZ),
 --     public.vision_pages_used_since(UUID, TIMESTAMPTZ), public.storage_bytes_used(UUID);
 --   DROP TABLE IF EXISTS upload_burst;
 --   ALTER TABLE ingest_jobs DROP COLUMN IF EXISTS deferred_task;  (status CHECK 는 001 값으로 되돌림)
 --   ALTER TABLE plans ADD COLUMN max_documents INTEGER NOT NULL DEFAULT 10; UPDATE plans SET max_documents = 200 WHERE code='pro';
 --   ALTER TABLE plans DROP COLUMN storage_bytes_limit, DROP COLUMN vision_pages_per_month;
+-- ============================================================
+
+-- ============================================================
+-- 8. VALIDATE — **위 본문과 별도 트랜잭션으로 실행** (§2 참조)
+--   supabase db query --linked "ALTER TABLE documents VALIDATE CONSTRAINT documents_source_channel_check;"
 -- ============================================================
