@@ -47,7 +47,20 @@ function walk(value: unknown, counter: { n: number }): unknown {
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       // 키에도 NUL 이 올 수 있다. 원본 dict 재귀는 값만 훑지만, 키가 NUL 을 담으면
       // 그대로 jsonb 에서 터지므로 여기서는 키도 씻는다.
-      out[walk(k, counter) as string] = walk(v, counter);
+      const key = walk(k, counter) as string;
+      const val = walk(v, counter);
+      if (key === "__proto__") {
+        // 보통 대입이면 own property 가 안 생기고 **키가 조용히 사라진다**.
+        // `chunk` 캐리의 머리말 카운트는 키가 청크 텍스트라 실제로 올 수 있다.
+        Object.defineProperty(out, key, {
+          value: val,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      } else {
+        out[key] = val;
+      }
     }
     return out;
   }

@@ -12,9 +12,13 @@
  * extract 는 HWP(통째로)와 PDF(페이지 단위)를 처리하고 다음 작업을 큐에 넣는다.
  * PDF 는 `current_title` 이 문서 전체 sticky 라 **순차**여야 해서, 범위를 한꺼번에
  * 넣지 않고 직전 범위가 끝날 때 다음 하나만 넣는다.
- * chunk 는 extract 산출물을 전부 모아 청크 레코드를 만들고 `CHUNKS_PER_ARTIFACT` 개씩
- * 쪼개 저장한다. load 는 그 part 를 하나씩 `chunks` 테이블에 upsert 하고, 마지막에
- * embed 를 넣는다. embed 는 `dense_vec` 이 NULL 인 청크를 BGE-M3 로 채운다.
+ * chunk 도 **창 단위**다 — 소스 아티팩트 `JETRAG_CHUNK_ARTIFACTS_PER_TASK`(기본 4,
+ * 40페이지) 개씩 읽어 창 하나를 `seq = 창 인덱스` 아티팩트로 남기고 다음 창을 스스로
+ * 큐에 넣는다. 병합이 페이지를 안 넘으므로 page 가 바뀌는 지점에서만 자르면 결과는
+ * 전체를 한 번에 처리한 것과 byte-identical 이다(`chunk_window.ts`).
+ * load 는 그 part 를 하나씩 `chunks` 테이블에 upsert 하고(머리말/꼬리말 마킹도 여기서
+ * 한다 — 문서 전체 반복 횟수를 알아야 해서 chunk 에서 옮겨 왔다), 마지막에 embed 를
+ * 넣는다. embed 는 `dense_vec` 이 NULL 인 청크를 BGE-M3 로 채운다.
  * 거기서 멈춘다 — `tag_summarize` 이후 핸들러가 없어서 넣는 순간 archive + 잡 failed 다.
  */
 
